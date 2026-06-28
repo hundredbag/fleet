@@ -2,28 +2,175 @@
 import { defaultAdapters } from '../core/registry.js';
 import { buildInventory } from '../core/inventory.js';
 import { renderInventory } from './render.js';
+import type { AgentAdapter } from '../core/adapter.js';
+import type { McpServerSpec } from '../core/types.js';
+import {
+  planInstall,
+  planRemove,
+  planSync,
+  applyPlan,
+  resolveTargets,
+  type Plan,
+} from '../core/orchestrator.js';
+import { rollback } from '../core/writer.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
 Usage:
-  fleet inventory [--json]   Show installed capabilities across all agents
-  fleet help                 Show this help
+  fleet inventory [--json]                 Show installed capabilities (all agents)
 
-v0 is read-only and covers the MCP-server primitive.`;
+  fleet install <name> --to <ids|all> \\
+        (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
+        [--scope user] [--commit]          Install an MCP server (dry-run unless --commit)
+
+  fleet sync <name> --from <id> --to <ids|all> [--commit]
+                                           Copy a server from one agent to others
+  fleet remove <name> --from <ids|all> [--commit]
+                                           Remove a server from agents
+  fleet rollback [<auditId>]               Undo the last (or a specific) change
+  fleet help
+
+Agents: claude-code, codex, gemini. Writes are dry-run by default; pass --commit
+to apply. Every applied change is backed up and reversible via 'fleet rollback'.`;
+
+interface ParsedArgs {
+  positionals: string[];
+  flags: Record<string, string | boolean>;
+  args: string[]; // repeated --arg values
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const positionals: string[] = [];
+  const flags: Record<string, string | boolean> = {};
+  const args: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        flags[key] = true;
+      } else if (key === 'arg') {
+        args.push(next);
+        i++;
+      } else {
+        flags[key] = next;
+        i++;
+      }
+    } else {
+      positionals.push(a);
+    }
+  }
+  return { positionals, flags, args };
+}
+
+function str(v: string | boolean | undefined): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+function specFromFlags(p: ParsedArgs): McpServerSpec {
+  const command = str(p.flags.command);
+  const url = str(p.flags.url);
+  if (command) {
+    return { transport: 'stdio', command, args: p.args.length ? p.args : undefined };
+  }
+  if (url) {
+    return {
+      transport: p.flags.sse ? 'sse' : 'http',
+      url,
+      bearerTokenEnvVar: str(p.flags['bearer-env']),
+    };
+  }
+  throw new Error(
+    "install: provide --command <cmd> (stdio) or --url <url> (remote), " +
+      "or use 'fleet sync' to copy from another agent",
+  );
+}
+
+function renderPlan(plan: Plan): string {
+  const out: string[] = [];
+  if (plan.changes.length === 0 && plan.skips.length === 0) return 'No changes.';
+  for (const c of plan.changes) {
+    out.push(`  ${c.op === 'remove' ? '−' : '+'} [${c.agent}] ${c.op} "${c.name}" (${c.scope}) → ${c.file}`);
+    for (const w of c.warnings ?? []) out.push(`      ⚠ ${w}`);
+  }
+  for (const s of plan.skips) out.push(`  · [${s.agent}] skipped: ${s.reason}`);
+  return out.join('\n');
+}
+
+async function runPlan(adapters: AgentAdapter[], plan: Plan, commit: boolean): Promise<number> {
+  process.stdout.write(renderPlan(plan) + '\n');
+  const hasError = plan.skips.some((s) => s.kind === 'error');
+  const noopExit = plan.changes.length === 0 && hasError ? 1 : 0;
+  if (!commit) {
+    if (plan.changes.length > 0) {
+      process.stdout.write('\n(dry-run; re-run with --commit to apply)\n');
+    }
+    return noopExit;
+  }
+  if (plan.changes.length === 0) return noopExit;
+  try {
+    const results = await applyPlan(adapters, plan);
+    process.stdout.write(`\n✓ applied ${results.length} change(s). Undo with: fleet rollback\n`);
+    return 0;
+  } catch (err) {
+    const applied = (err as { applied?: unknown[] }).applied;
+    if (applied && applied.length > 0) {
+      process.stdout.write(
+        `\n⚠ applied ${applied.length} change(s) before failing; later agents were NOT changed.\n` +
+          `  undo the applied ones with: fleet rollback (run ${applied.length}×)\n`,
+      );
+    }
+    throw err;
+  }
+}
 
 async function main(argv: string[]): Promise<number> {
-  // Allow flags without a subcommand: `fleet --json` ⇒ default `inventory`.
   const first = argv[0];
   const cmd = first && !first.startsWith('-') ? first : 'inventory';
-  const flags = first && !first.startsWith('-') ? argv.slice(1) : argv;
+  const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
+  const p = parseArgs(rest);
+  const adapters = defaultAdapters();
+  const commit = p.flags.commit === true || p.flags.commit === 'true';
+
   switch (cmd) {
     case 'inventory': {
-      const inv = await buildInventory(defaultAdapters());
-      if (flags.includes('--json')) {
-        process.stdout.write(JSON.stringify(inv, null, 2) + '\n');
-      } else {
-        process.stdout.write(renderInventory(inv) + '\n');
-      }
+      const inv = await buildInventory(adapters);
+      process.stdout.write(
+        (p.flags.json ? JSON.stringify(inv, null, 2) : renderInventory(inv)) + '\n',
+      );
+      return 0;
+    }
+    case 'install': {
+      const name = p.positionals[0];
+      const to = str(p.flags.to);
+      if (!name || !to) throw new Error('usage: fleet install <name> --to <ids|all> (--command … | --url …)');
+      const spec = specFromFlags(p);
+      const scope = str(p.flags.scope) ?? 'user';
+      if (scope !== 'user') throw new Error(`scope '${scope}' is not supported in M2 (only 'user')`);
+      const targets = await resolveTargets(adapters, to);
+      return runPlan(adapters, await planInstall(adapters, spec, name, scope, targets), commit);
+    }
+    case 'sync': {
+      const name = p.positionals[0];
+      const from = str(p.flags.from);
+      const to = str(p.flags.to);
+      if (!name || !from || !to) throw new Error('usage: fleet sync <name> --from <id> --to <ids|all>');
+      const targets = await resolveTargets(adapters, to);
+      return runPlan(adapters, await planSync(adapters, name, from, targets), commit);
+    }
+    case 'remove': {
+      const name = p.positionals[0];
+      const from = str(p.flags.from);
+      if (!name || !from) throw new Error('usage: fleet remove <name> --from <ids|all>');
+      const targets = await resolveTargets(adapters, from);
+      return runPlan(adapters, await planRemove(adapters, name, targets), commit);
+    }
+    case 'rollback': {
+      const res = await rollback({ auditId: p.positionals[0] });
+      process.stdout.write(
+        `rollback: ${res.action} ${res.file}${res.reason ? ` (${res.reason})` : ''}\n`,
+      );
       return 0;
     }
     case 'help':
@@ -42,6 +189,6 @@ main(process.argv.slice(2))
     process.exitCode = code;
   })
   .catch((err) => {
-    console.error('fleet: fatal:', err);
+    process.stderr.write(`fleet: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exitCode = 1;
   });

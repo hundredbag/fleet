@@ -3,22 +3,27 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { parse as parseToml } from 'smol-toml';
-import type { AgentAdapter } from '../core/adapter.js';
+import type {
+  AgentAdapter,
+  AgentWriter,
+  CapabilityRef,
+  RenderResult,
+} from '../core/adapter.js';
 import type {
   DetectedAgent,
   InstalledCapability,
   McpServerSpec,
 } from '../core/types.js';
-import { asStringArray, asStringRecord } from '../core/coerce.js';
+import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
+import { sha256 } from '../core/hash.js';
 
 const DEFAULT_CODEX_TOML = join(homedir(), '.codex', 'config.toml');
 
 /**
  * Codex declares MCP servers under `[mcp_servers.<name>]` in config.toml.
- * Remote servers use streamable HTTP only (no SSE), keyed by `url` (flat) or
- * a nested `transport = { type = "streamable_http", url = ... }` table. Auth
- * lives in `bearer_token_env_var` / `http_headers` (preserved in `raw`; the
- * generic `headers` field maps from `http_headers`).
+ * Remote servers use streamable HTTP only (no SSE), keyed by `url` (flat) or a
+ * nested `transport = { type = "streamable_http", url = ... }` table. Auth lives
+ * in `bearer_token_env_var` / `http_headers`.
  */
 export function parseCodexEntry(raw: unknown): McpServerSpec {
   const r = (raw ?? {}) as Record<string, unknown>;
@@ -29,6 +34,8 @@ export function parseCodexEntry(raw: unknown): McpServerSpec {
       transport: 'http',
       url: String(url),
       headers: asStringRecord(r.http_headers),
+      bearerTokenEnvVar:
+        typeof r.bearer_token_env_var === 'string' ? r.bearer_token_env_var : undefined,
     };
   }
   return {
@@ -39,10 +46,108 @@ export function parseCodexEntry(raw: unknown): McpServerSpec {
   };
 }
 
-export class CodexAdapter implements AgentAdapter {
+// --- TOML serialization (textual, comment-preserving edits) ---
+
+const BARE_KEY = /^[A-Za-z0-9_-]+$/;
+// JSON.stringify yields a valid TOML basic string for normal values; TOML also
+// requires escaping U+007F (DEL), which JSON does not.
+const tomlStr = (s: string): string => JSON.stringify(s).replace(/\u007f/g, '\\u007F');
+const tomlKey = (k: string): string => (BARE_KEY.test(k) ? k : JSON.stringify(k));
+const tomlArray = (a: string[]): string => `[${a.map(tomlStr).join(', ')}]`;
+const tomlInline = (o: Record<string, string>): string =>
+  `{ ${Object.entries(o).map(([k, v]) => `${tomlKey(k)} = ${tomlStr(v)}`).join(', ')} }`;
+
+/** Serialize an arbitrary parsed-TOML value back to TOML (for preserved keys). */
+function tomlValue(v: unknown): string {
+  if (typeof v === 'string') return tomlStr(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'bigint') return v.toString();
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : tomlStr(String(v));
+  if (Array.isArray(v)) return `[${v.map(tomlValue).join(', ')}]`;
+  if (v && typeof v === 'object') {
+    return `{ ${Object.entries(v as Record<string, unknown>)
+      .map(([k, val]) => `${tomlKey(k)} = ${tomlValue(val)}`)
+      .join(', ')} }`;
+  }
+  return tomlStr(String(v));
+}
+
+/** Keys fleet manages on a Codex server table; everything else is preserved. */
+const MANAGED_CODEX = new Set([
+  'command', 'args', 'env', 'url', 'bearer_token_env_var', 'http_headers', 'transport',
+]);
+
+/** Render a `[mcp_servers.<name>]` table block from a spec (+ preserved keys). */
+function serializeCodexTable(
+  name: string,
+  spec: McpServerSpec,
+  extras: Record<string, unknown> = {},
+): string {
+  const header = BARE_KEY.test(name) ? name : JSON.stringify(name);
+  const lines = [`[mcp_servers.${header}]`];
+  if (spec.transport === 'stdio') {
+    lines.push(`command = ${tomlStr(spec.command)}`);
+    if (spec.args?.length) lines.push(`args = ${tomlArray(spec.args)}`);
+    if (spec.env && Object.keys(spec.env).length) lines.push(`env = ${tomlInline(spec.env)}`);
+  } else {
+    lines.push(`url = ${tomlStr(spec.url)}`);
+    if (spec.bearerTokenEnvVar) {
+      lines.push(`bearer_token_env_var = ${tomlStr(spec.bearerTokenEnvVar)}`);
+    }
+    if (spec.headers && Object.keys(spec.headers).length) {
+      lines.push(`http_headers = ${tomlInline(spec.headers)}`);
+    }
+  }
+  // Preserve keys fleet doesn't model (enabled, cwd, env_vars, timeouts, …).
+  for (const [k, v] of Object.entries(extras)) lines.push(`${tomlKey(k)} = ${tomlValue(v)}`);
+  return lines.join('\n');
+}
+
+/** The dotted path of a TOML table header line (allowing a trailing comment),
+ * or null. Quotes stripped. */
+function tableHeaderPath(line: string): string | null {
+  const m = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/);
+  return m ? m[1]!.trim().replace(/"/g, '') : null;
+}
+
+/** Pull `end` back over trailing blank/comment lines so they stay attached to
+ * the following table (not the one being edited). */
+function trimTrailing(lines: string[], start: number, end: number): number {
+  let e = end;
+  while (e - 1 > start) {
+    const l = lines[e - 1]!.trim();
+    if (l === '' || l.startsWith('#')) e--;
+    else break;
+  }
+  return e;
+}
+
+/**
+ * Find the line range [start, end) of the `[mcp_servers.<name>]` table,
+ * including its sub-tables, stopping at the next unrelated table header.
+ */
+function findTableBlock(
+  lines: string[],
+  name: string,
+): { start: number; end: number } | null {
+  const target = `mcp_servers.${name}`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const path = tableHeaderPath(lines[i]!);
+    if (path === null) continue;
+    if (start === -1) {
+      if (path === target) start = i;
+    } else if (path !== target && !path.startsWith(target + '.')) {
+      return { start, end: trimTrailing(lines, start, i) };
+    }
+  }
+  return start === -1 ? null : { start, end: trimTrailing(lines, start, lines.length) };
+}
+
+export class CodexAdapter implements AgentAdapter, AgentWriter {
   readonly id = 'codex';
   readonly displayName = 'OpenAI Codex';
-  readonly supportsWrite = false;
+  readonly supportsWrite = true;
 
   constructor(private readonly configPath: string = DEFAULT_CODEX_TOML) {}
 
@@ -58,9 +163,10 @@ export class CodexAdapter implements AgentAdapter {
   async readInventory(): Promise<InstalledCapability[]> {
     if (!existsSync(this.configPath)) return [];
     const data = parseToml(await readFile(this.configPath, 'utf8')) as {
-      mcp_servers?: Record<string, unknown>;
+      mcp_servers?: unknown;
     };
-    return Object.entries(data.mcp_servers ?? {}).map(([name, raw]) => {
+    const servers = isPlainObject(data.mcp_servers) ? data.mcp_servers : {};
+    return Object.entries(servers).map(([name, raw]) => {
       const r = (raw ?? {}) as Record<string, unknown>;
       return {
         kind: 'mcp-server' as const,
@@ -73,5 +179,105 @@ export class CodexAdapter implements AgentAdapter {
         raw,
       };
     });
+  }
+
+  // --- AgentWriter (TOML, comment-preserving) ---
+
+  private async readText(): Promise<string | undefined> {
+    return existsSync(this.configPath) ? readFile(this.configPath, 'utf8') : undefined;
+  }
+
+  private guardTransport(spec: McpServerSpec): void {
+    if (spec.transport === 'sse' || spec.transport === 'ws') {
+      throw new Error(
+        `codex: transport '${spec.transport}' is not supported (stdio or streamable http only)`,
+      );
+    }
+  }
+
+  async renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult> {
+    this.guardTransport(spec);
+    const warnings: string[] = [];
+    if (ref.scope !== 'user') {
+      warnings.push(`codex: only 'user' scope is supported in M2 (got '${ref.scope}')`);
+    }
+    const text = await this.readText();
+
+    // preserve keys fleet doesn't model on the existing server (enabled, cwd, …)
+    const extras: Record<string, unknown> = {};
+    if (text !== undefined) {
+      try {
+        const parsed = parseToml(text) as { mcp_servers?: unknown };
+        const existing = isPlainObject(parsed.mcp_servers)
+          ? parsed.mcp_servers[ref.name]
+          : undefined;
+        if (isPlainObject(existing)) {
+          for (const [k, v] of Object.entries(existing)) {
+            if (!MANAGED_CODEX.has(k)) extras[k] = v;
+          }
+        }
+      } catch {
+        /* unparseable file — the engine refuses on apply; skip extras */
+      }
+    }
+    const block = serializeCodexTable(ref.name, spec, extras);
+
+    let newContent: string;
+    let before: unknown;
+    if (text === undefined) {
+      newContent = block + '\n';
+    } else {
+      const lines = text.split('\n');
+      const range = findTableBlock(lines, ref.name);
+      if (range) {
+        before = lines.slice(range.start, range.end).join('\n');
+        // Replace in place WITHOUT adding a separator line — trimTrailing left
+        // any existing blank lines after the block, so this stays idempotent.
+        lines.splice(range.start, range.end - range.start, ...block.split('\n'));
+        newContent = lines.join('\n');
+      } else {
+        const sep = text.endsWith('\n') ? '' : '\n';
+        newContent = `${text}${sep}\n${block}\n`;
+      }
+    }
+    return {
+      file: this.configPath,
+      newContent,
+      before,
+      after: block,
+      baseHash: text !== undefined ? sha256(text) : undefined,
+      warnings: warnings.length ? warnings : undefined,
+    };
+  }
+
+  async renderRemove(ref: CapabilityRef): Promise<RenderResult> {
+    const text = await this.readText();
+    if (text === undefined) {
+      throw new Error(`codex: nothing to remove — config not found at ${this.configPath}`);
+    }
+    const lines = text.split('\n');
+    const range = findTableBlock(lines, ref.name);
+    if (!range) {
+      return {
+        file: this.configPath,
+        newContent: text,
+        before: undefined,
+        baseHash: sha256(text),
+        warnings: [`codex: "${ref.name}" is not installed`],
+      };
+    }
+    const before = lines.slice(range.start, range.end).join('\n');
+    lines.splice(range.start, range.end - range.start);
+    return {
+      file: this.configPath,
+      newContent: lines.join('\n'),
+      before,
+      after: undefined,
+      baseHash: sha256(text),
+    };
+  }
+
+  validate(content: string): void {
+    parseToml(content); // throws on invalid TOML
   }
 }

@@ -95,6 +95,7 @@ async function fsyncPath(path: string): Promise<void> {
 /** Write content to `file` durably and atomically (tmp + fsync + rename). */
 async function writeFileAtomic(file: string, content: string): Promise<void> {
   const dir = dirname(file);
+  await mkdir(dir, { recursive: true }); // create a new agent's config dir if needed
   const tmp = join(dir, `.fleet-tmp-${process.pid}-${randomUUID()}`);
   const fh = await open(tmp, 'w');
   try {
@@ -156,7 +157,29 @@ export async function applyChanges(
   const release = await acquireLock(home);
   const results: ApplyResult[] = [];
   try {
-    for (const change of changes) {
+    try {
+      await applyEach(changes, validate, home, backupsDir, results, opts.force ?? false);
+    } catch (err) {
+      // surface what was applied before the failure (partial fan-out)
+      (err as { applied?: ApplyResult[] }).applied = results;
+      throw err;
+    }
+  } finally {
+    await release();
+  }
+  return results;
+}
+
+async function applyEach(
+  changes: PlannedChange[],
+  validate: ChangeValidator,
+  home: string,
+  backupsDir: string,
+  results: ApplyResult[],
+  force: boolean,
+): Promise<void> {
+  for (const change of changes) {
+    {
       const existedBefore = existsSync(change.file);
       let backup = '';
 
@@ -169,7 +192,7 @@ export async function applyChanges(
             `fleet: refusing to write ${change.file}: existing file does not parse (${msg(err)})`,
           );
         }
-        if (!opts.force && change.baseHash !== undefined && sha256(current) !== change.baseHash) {
+        if (!force && change.baseHash !== undefined && sha256(current) !== change.baseHash) {
           throw new Error(
             `fleet: ${change.file} changed since the plan was made; re-plan (or pass force)`,
           );
@@ -217,10 +240,7 @@ export async function applyChanges(
       });
       results.push({ change, auditId: id, backup });
     }
-  } finally {
-    await release();
   }
-  return results;
 }
 
 /** Read all audit records (oldest first), skipping any corrupt lines. */

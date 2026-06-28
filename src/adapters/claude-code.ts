@@ -14,30 +14,17 @@ import type {
   McpServerSpec,
   Scope,
 } from '../core/types.js';
-import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
-import { sha256 } from '../core/hash.js';
+import { asStringArray, asStringRecord } from '../core/coerce.js';
+import {
+  loadJsonDoc,
+  getServers,
+  renderJson,
+  validateJsonObject,
+  mergePreservingUnmanaged,
+  MANAGED_JSON_KEYS,
+} from '../core/json-config.js';
 
-/** Infer the file's existing JSON indentation so writes don't churn it. */
-function detectIndent(text: string): string | number {
-  const m = text.match(/\n([ \t]+)"/);
-  if (!m) return 2;
-  const ws = m[1] ?? '';
-  return ws.includes('\t') ? '\t' : ws.length;
-}
-
-/** Render a normalized MCP spec into a Claude Code config entry. */
-function toClaudeEntry(spec: McpServerSpec): Record<string, unknown> {
-  if (spec.transport === 'stdio') {
-    const entry: Record<string, unknown> = { command: spec.command };
-    if (spec.args) entry.args = spec.args;
-    if (spec.env) entry.env = spec.env;
-    return entry;
-  }
-  const entry: Record<string, unknown> = { type: spec.transport, url: spec.url };
-  if (spec.headers) entry.headers = spec.headers;
-  return entry;
-}
-
+const CLAUDE_LABEL = 'claude-code';
 const DEFAULT_CLAUDE_JSON = join(homedir(), '.claude.json');
 
 /**
@@ -63,6 +50,19 @@ export function parseMcpEntry(raw: unknown): McpServerSpec {
     args: asStringArray(r.args),
     env: asStringRecord(r.env),
   };
+}
+
+/** Render a normalized MCP spec into a Claude Code config entry. */
+function toClaudeEntry(spec: McpServerSpec): Record<string, unknown> {
+  if (spec.transport === 'stdio') {
+    const entry: Record<string, unknown> = { command: spec.command };
+    if (spec.args) entry.args = spec.args;
+    if (spec.env) entry.env = spec.env;
+    return entry;
+  }
+  const entry: Record<string, unknown> = { type: spec.transport, url: spec.url };
+  if (spec.headers) entry.headers = spec.headers;
+  return entry;
 }
 
 export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
@@ -110,10 +110,8 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
       }
     };
 
-    // user scope (global)
     collect(data.mcpServers, 'user', this.claudeJsonPath);
 
-    // per-project entries recorded inside ~/.claude.json + on-disk .mcp.json.
     // NOTE: only projects Claude already tracks are discoverable here — a
     // .mcp.json in a never-opened project won't be found (no FS scan in v0).
     for (const [path, proj] of Object.entries(data.projects ?? {})) {
@@ -133,44 +131,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
     return items;
   }
 
-  // --- AgentWriter (M2 Part 1: user scope only) ---
-
-  /** Read + validate the config doc, returning its raw text for hashing/indent. */
-  private async loadDoc(): Promise<{ doc: Record<string, unknown>; text?: string }> {
-    if (!existsSync(this.claudeJsonPath)) return { doc: {} };
-    const text = await readFile(this.claudeJsonPath, 'utf8');
-    const parsed: unknown = JSON.parse(text);
-    if (!isPlainObject(parsed)) {
-      throw new Error(`claude-code: ${this.claudeJsonPath} is not a JSON object`);
-    }
-    return { doc: parsed, text };
-  }
-
-  private serversOf(doc: Record<string, unknown>): Record<string, unknown> {
-    const servers = doc.mcpServers;
-    if (servers !== undefined && !isPlainObject(servers)) {
-      throw new Error(`claude-code: "mcpServers" in ${this.claudeJsonPath} is not an object`);
-    }
-    return (servers ?? {}) as Record<string, unknown>;
-  }
-
-  private render(
-    doc: Record<string, unknown>,
-    text: string | undefined,
-    before: unknown,
-    after: unknown,
-    warnings: string[],
-  ): RenderResult {
-    const indent = text ? detectIndent(text) : 2;
-    return {
-      file: this.claudeJsonPath,
-      newContent: JSON.stringify(doc, null, indent) + '\n',
-      before,
-      after,
-      baseHash: text ? sha256(text) : undefined,
-      warnings: warnings.length ? warnings : undefined,
-    };
-  }
+  // --- AgentWriter (M2: user scope only) ---
 
   async renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult> {
     const warnings: string[] = [];
@@ -182,30 +143,30 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
         `claude-code: no native env-var bearer token; set headers manually for "${ref.name}"`,
       );
     }
-    const { doc, text } = await this.loadDoc();
-    const servers = this.serversOf(doc);
+    const { doc, text } = await loadJsonDoc(this.claudeJsonPath, CLAUDE_LABEL);
+    const servers = getServers(doc, this.claudeJsonPath, CLAUDE_LABEL);
     const before = servers[ref.name];
-    const after = toClaudeEntry(spec);
+    const after = mergePreservingUnmanaged(before, toClaudeEntry(spec), MANAGED_JSON_KEYS);
     doc.mcpServers = { ...servers, [ref.name]: after };
-    return this.render(doc, text, before, after, warnings);
+    return renderJson(this.claudeJsonPath, doc, text, before, after, warnings);
   }
 
   async renderRemove(ref: CapabilityRef): Promise<RenderResult> {
-    const { doc, text } = await this.loadDoc();
-    const servers = this.serversOf(doc);
+    if (!existsSync(this.claudeJsonPath)) {
+      throw new Error(`claude-code: nothing to remove — config not found at ${this.claudeJsonPath}`);
+    }
+    const { doc, text } = await loadJsonDoc(this.claudeJsonPath, CLAUDE_LABEL);
+    const servers = getServers(doc, this.claudeJsonPath, CLAUDE_LABEL);
     const before = servers[ref.name];
     const warnings: string[] = [];
     if (before === undefined) warnings.push(`claude-code: "${ref.name}" is not installed`);
     const next = { ...servers };
     delete next[ref.name];
     doc.mcpServers = next;
-    return this.render(doc, text, before, undefined, warnings);
+    return renderJson(this.claudeJsonPath, doc, text, before, undefined, warnings);
   }
 
   validate(content: string): void {
-    const parsed: unknown = JSON.parse(content);
-    if (!isPlainObject(parsed)) {
-      throw new Error('claude-code: config is not a JSON object');
-    }
+    validateJsonObject(content, CLAUDE_LABEL);
   }
 }
