@@ -44,7 +44,7 @@ export function writerAdapters(adapters: AgentAdapter[]): WriterAdapter[] {
 }
 
 /** Names fleet refuses to mutate (its own entry once self-installed in M3). */
-export const SELF_PROTECTED = new Set<string>(['fleet']);
+export const SELF_PROTECTED = new Set<string>(['fleet', 'fleet-mcp']);
 
 /** Resolve a `--to`/`--from` target string to concrete writer agent ids. */
 export async function resolveTargets(
@@ -174,4 +174,37 @@ export async function applyPlan(
   opts?: ApplyOptions,
 ): Promise<ApplyResult[]> {
   return applyChanges(plan.changes, makeValidator(adapters), opts);
+}
+
+/** The outcome of executing a plan (dry-run or committed). */
+export interface ExecuteResult {
+  changes: PlannedChange[];
+  skips: PlanSkip[];
+  committed: boolean;
+  applied: ApplyResult[];
+  /** set when a commit failed partway: how many changes were applied first */
+  failedAfter?: number;
+  error?: string;
+}
+
+/**
+ * Single entrypoint shared by every face (CLI/MCP/web): dry-run unless
+ * `commit`, with partial-apply surfaced rather than thrown. This makes
+ * "dry-run unless committed" a property of the core, not each UI.
+ */
+export async function execute(
+  adapters: AgentAdapter[],
+  plan: Plan,
+  opts: { commit: boolean; fleetHome?: string },
+): Promise<ExecuteResult> {
+  const base = { changes: plan.changes, skips: plan.skips };
+  if (!opts.commit) return { ...base, committed: false, applied: [] };
+  if (plan.changes.length === 0) return { ...base, committed: true, applied: [] };
+  try {
+    const applied = await applyPlan(adapters, plan, { fleetHome: opts.fleetHome });
+    return { ...base, committed: true, applied };
+  } catch (err) {
+    const applied = (err as { applied?: ApplyResult[] }).applied ?? [];
+    return { ...base, committed: true, applied, failedAfter: applied.length, error: msg(err) };
+  }
 }

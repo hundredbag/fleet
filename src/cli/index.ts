@@ -8,7 +8,7 @@ import {
   planInstall,
   planRemove,
   planSync,
-  applyPlan,
+  execute,
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
@@ -108,21 +108,20 @@ async function runPlan(adapters: AgentAdapter[], plan: Plan, commit: boolean): P
     }
     return noopExit;
   }
-  if (plan.changes.length === 0) return noopExit;
-  try {
-    const results = await applyPlan(adapters, plan);
-    process.stdout.write(`\n✓ applied ${results.length} change(s). Undo with: fleet rollback\n`);
-    return 0;
-  } catch (err) {
-    const applied = (err as { applied?: unknown[] }).applied;
-    if (applied && applied.length > 0) {
+  const result = await execute(adapters, plan, { commit: true });
+  if (result.error) {
+    if (result.applied.length > 0) {
       process.stdout.write(
-        `\n⚠ applied ${applied.length} change(s) before failing; later agents were NOT changed.\n` +
-          `  undo the applied ones with: fleet rollback (run ${applied.length}×)\n`,
+        `\n⚠ applied ${result.applied.length} change(s) before failing; later agents were NOT changed.\n` +
+          `  undo the applied ones with: fleet rollback (run ${result.applied.length}×)\n`,
       );
     }
-    throw err;
+    throw new Error(result.error);
   }
+  if (result.applied.length > 0) {
+    process.stdout.write(`\n✓ applied ${result.applied.length} change(s). Undo with: fleet rollback\n`);
+  }
+  return noopExit;
 }
 
 async function main(argv: string[]): Promise<number> {

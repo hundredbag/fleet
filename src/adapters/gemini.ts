@@ -112,9 +112,12 @@ export class GeminiAdapter implements AgentAdapter, AgentWriter {
 
   async readInventory(): Promise<InstalledCapability[]> {
     if (!existsSync(this.settingsPath)) return [];
-    const data = JSON.parse(await readFile(this.settingsPath, 'utf8')) as {
-      mcpServers?: Record<string, unknown>;
-    };
+    let data: { mcpServers?: Record<string, unknown> };
+    try {
+      data = JSON.parse(await readFile(this.settingsPath, 'utf8'));
+    } catch {
+      throw new Error(`gemini: ${this.settingsPath} is not valid JSON`);
+    }
     // Gemini has no per-server disable flag → enabled is always true.
     return Object.entries(data.mcpServers ?? {}).map(([name, raw]) => ({
       kind: 'mcp-server' as const,

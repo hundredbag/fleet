@@ -162,9 +162,12 @@ export class CodexAdapter implements AgentAdapter, AgentWriter {
 
   async readInventory(): Promise<InstalledCapability[]> {
     if (!existsSync(this.configPath)) return [];
-    const data = parseToml(await readFile(this.configPath, 'utf8')) as {
-      mcp_servers?: unknown;
-    };
+    let data: { mcp_servers?: unknown };
+    try {
+      data = parseToml(await readFile(this.configPath, 'utf8')) as { mcp_servers?: unknown };
+    } catch {
+      throw new Error(`codex: ${this.configPath} is not valid TOML`);
+    }
     const servers = isPlainObject(data.mcp_servers) ? data.mcp_servers : {};
     return Object.entries(servers).map(([name, raw]) => {
       const r = (raw ?? {}) as Record<string, unknown>;
@@ -278,6 +281,10 @@ export class CodexAdapter implements AgentAdapter, AgentWriter {
   }
 
   validate(content: string): void {
-    parseToml(content); // throws on invalid TOML
+    try {
+      parseToml(content);
+    } catch {
+      throw new Error('codex: config is not valid TOML');
+    }
   }
 }

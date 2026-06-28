@@ -83,10 +83,15 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
 
   async readInventory(): Promise<InstalledCapability[]> {
     if (!existsSync(this.claudeJsonPath)) return [];
-    const data = JSON.parse(await readFile(this.claudeJsonPath, 'utf8')) as {
+    let data: {
       mcpServers?: Record<string, unknown>;
       projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
     };
+    try {
+      data = JSON.parse(await readFile(this.claudeJsonPath, 'utf8'));
+    } catch {
+      throw new Error(`claude-code: ${this.claudeJsonPath} is not valid JSON`);
+    }
     const items: InstalledCapability[] = [];
 
     const collect = (

@@ -27,7 +27,13 @@ export async function loadJsonDoc(
 ): Promise<{ doc: Record<string, unknown>; text?: string }> {
   if (!existsSync(path)) return { doc: {} };
   const text = await readFile(path, 'utf8');
-  const parsed: unknown = JSON.parse(text);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // don't echo the parser's content snippet (may contain secrets) to callers
+    throw new Error(`${label}: ${path} is not valid JSON`);
+  }
   if (!isPlainObject(parsed)) throw new Error(`${label}: ${path} is not a JSON object`);
   return { doc: parsed, text };
 }
@@ -82,6 +88,11 @@ export function renderJson(
 }
 
 export function validateJsonObject(content: string, label: string): void {
-  const parsed: unknown = JSON.parse(content);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error(`${label}: config is not valid JSON`);
+  }
   if (!isPlainObject(parsed)) throw new Error(`${label}: config is not a JSON object`);
 }

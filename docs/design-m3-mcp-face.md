@@ -7,10 +7,13 @@
 Expose the core as an **MCP server** so any agent (Claude/Codex/Gemini) can
 drive the whole fleet *in-loop* by calling tools — "the AI is the UI."
 
-## Scope
-- Tools: `inventory`, `install`, `remove`, `update`, `sync`, `whats_new`,
-  `trust_check`. Thin shell over the same core as the CLI (no logic duplication).
-- Read tools return structured inventory; write tools reuse the M2 engine.
+## Scope (shipped)
+- Tools: `inventory`, `install`, `sync`, `remove`, `rollback`. Thin shell over
+  the same core as the CLI (no logic duplication). Mutating tools are **dry-run
+  unless `commit: true`** via the shared core `execute()`.
+- Read tools return a redacted structured inventory; write tools reuse the M2 engine.
+- **Deferred:** `whats_new` → M4; `trust_check` → M6; a first-class `update`
+  tool (vs remove+install) → later.
 
 ## Approach (sketch)
 - `@modelcontextprotocol/sdk` (TS), stdio transport.
