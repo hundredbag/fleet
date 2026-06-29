@@ -38,8 +38,8 @@ test(
       }),
     );
 
-    const items = await new ClaudeCodeAdapter(claudeJson).readInventory();
-    const byName = new Map(items.map((i) => [i.name, i]));
+    const items = await new ClaudeCodeAdapter(claudeJson, join(dir, '_sk')).readInventory();
+    const byName = new Map(items.map((i) => [i.name, i as any]));
     assert.equal(items.length, 3);
     assert.equal(byName.get('glob')?.scope, 'user');
     assert.equal(byName.get('loc')?.scope, 'local');
@@ -69,8 +69,8 @@ test(
       ].join('\n'),
     );
 
-    const items = await new CodexAdapter(toml).readInventory();
-    const byName = new Map(items.map((i) => [i.name, i]));
+    const items = await new CodexAdapter(toml, join(dir, '_sk')).readInventory();
+    const byName = new Map(items.map((i) => [i.name, i as any]));
     assert.equal(items.length, 3);
     assert.equal(byName.get('local')?.spec.transport, 'stdio');
     assert.equal(byName.get('remote')?.spec.transport, 'http');
@@ -95,7 +95,7 @@ test(
     );
 
     const items = await new GeminiAdapter(settings).readInventory();
-    const byName = new Map(items.map((i) => [i.name, i]));
+    const byName = new Map(items.map((i) => [i.name, i as any]));
     assert.equal(byName.get('h')?.spec.transport, 'http');
     assert.equal(byName.get('s')?.spec.transport, 'sse');
     assert.equal(byName.get('c')?.spec.transport, 'stdio');
@@ -106,8 +106,8 @@ test(
   'adapter detect(): absent config reports not present',
   withTempDir(async (dir) => {
     const missing = join(dir, 'nope.json');
-    const det = await new ClaudeCodeAdapter(missing).detect();
+    const det = await new ClaudeCodeAdapter(missing, join(dir, '_sk')).detect();
     assert.equal(det.present, false);
-    assert.deepEqual(await new ClaudeCodeAdapter(missing).readInventory(), []);
+    assert.deepEqual(await new ClaudeCodeAdapter(missing, join(dir, '_sk')).readInventory(), []);
   }),
 );

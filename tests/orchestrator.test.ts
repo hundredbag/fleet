@@ -24,8 +24,8 @@ function setup(dir: string) {
   writeFileSync(codexToml, '# codex\nmodel = "gpt-5.5"\n');
   // gemini intentionally absent
   const adapters = [
-    new ClaudeCodeAdapter(claudeJson),
-    new CodexAdapter(codexToml),
+    new ClaudeCodeAdapter(claudeJson, join(dir, '_sk-claude')),
+    new CodexAdapter(codexToml, join(dir, '_sk-codex')),
     new GeminiAdapter(geminiJson),
   ];
   return { claudeJson, codexToml, geminiJson, adapters };

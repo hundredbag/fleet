@@ -6,12 +6,19 @@ import {
   planInstall,
   planRemove,
   planSync,
+  planInstallSkill,
+  planRemoveSkill,
+  planSyncSkill,
+  planInstallRule,
+  planRemoveRule,
+  planSyncRule,
   execute,
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { summarizeInventory, summarizeResult } from '../core/redact.js';
+import { analyzeConflicts } from '../core/conflicts.js';
 
 const targetArg = (v: unknown): string => (Array.isArray(v) ? v.join(',') : String(v));
 
@@ -117,6 +124,103 @@ export function buildTools(
         const plan = await planRemove(adapters, String(a.name), targets);
         return summarizeResult(await run(plan, a.commit));
       },
+    },
+    {
+      name: 'skill_sync',
+      description:
+        'Copy a skill (SKILL.md directory) from one agent to others. DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        from: z.string(),
+        to: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.to));
+        return summarizeResult(await run(await planSyncSkill(adapters, String(a.name), String(a.from), targets), a.commit));
+      },
+    },
+    {
+      name: 'skill_install',
+      description:
+        'Install a skill from a local directory into one or more agents. DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        fromDir: z.string().describe('local directory containing the skill (SKILL.md)'),
+        to: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.to));
+        const plan = await planInstallSkill(adapters, { name: String(a.name), dir: String(a.fromDir) }, String(a.name), targets);
+        return summarizeResult(await run(plan, a.commit));
+      },
+    },
+    {
+      name: 'skill_remove',
+      description: 'Remove a skill from one or more agents. DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        from: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.from));
+        return summarizeResult(await run(await planRemoveSkill(adapters, String(a.name), targets), a.commit));
+      },
+    },
+    {
+      name: 'rule_install',
+      description:
+        'Install a behavioral rule (instruction block) into one or more agents\' instruction files (CLAUDE.md/AGENTS.md). DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        text: z.string().describe('the instruction text'),
+        to: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.to));
+        return summarizeResult(await run(await planInstallRule(adapters, String(a.name), String(a.text), targets), a.commit));
+      },
+    },
+    {
+      name: 'rule_sync',
+      description:
+        'Copy a rule (instruction block) from one agent to others. DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        from: z.string(),
+        to: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.to));
+        return summarizeResult(await run(await planSyncRule(adapters, String(a.name), String(a.from), targets), a.commit));
+      },
+    },
+    {
+      name: 'rule_remove',
+      description: 'Remove a rule (instruction block) from one or more agents. DRY-RUN unless commit=true.',
+      inputSchema: {
+        name: z.string(),
+        from: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.from));
+        return summarizeResult(await run(await planRemoveRule(adapters, String(a.name), targets), a.commit));
+      },
+    },
+    {
+      name: 'conflicts',
+      description:
+        'Flag opposing ALWAYS-ON rules co-present on an agent (e.g. "be terse" vs "be detailed"). Heuristic candidates — verify before acting.',
+      inputSchema: {},
+      handler: async () => ({
+        findings: analyzeConflicts(await buildInventory(adapters)),
+        note: 'Heuristic, low-confidence candidates. Only fleet-managed always-on rules are checked (not hand-written instruction prose). Absence of findings is NOT a guarantee of no conflict — verify before acting.',
+      }),
     },
     {
       name: 'rollback',

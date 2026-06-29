@@ -7,6 +7,9 @@ import type {
   AgentWriter,
   CapabilityRef,
   RenderResult,
+  RuleWriter,
+  SkillSource,
+  SkillWriter,
 } from '../core/adapter.js';
 import type {
   DetectedAgent,
@@ -15,6 +18,8 @@ import type {
   Scope,
 } from '../core/types.js';
 import { asStringArray, asStringRecord } from '../core/coerce.js';
+import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
+import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
 import {
   loadJsonDoc,
   getServers,
@@ -26,6 +31,8 @@ import {
 
 const CLAUDE_LABEL = 'claude-code';
 const DEFAULT_CLAUDE_JSON = join(homedir(), '.claude.json');
+const DEFAULT_CLAUDE_SKILLS = join(homedir(), '.claude', 'skills');
+const DEFAULT_CLAUDE_RULES = join(homedir(), '.claude', 'CLAUDE.md');
 
 /**
  * Normalize a raw Claude Code MCP server entry into a structured spec.
@@ -65,33 +72,27 @@ function toClaudeEntry(spec: McpServerSpec): Record<string, unknown> {
   return entry;
 }
 
-export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
+export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter, RuleWriter {
   readonly id = 'claude-code';
   readonly displayName = 'Claude Code';
   readonly supportsWrite = true;
 
-  constructor(private readonly claudeJsonPath: string = DEFAULT_CLAUDE_JSON) {}
+  constructor(
+    private readonly claudeJsonPath: string = DEFAULT_CLAUDE_JSON,
+    private readonly skillsDir: string = DEFAULT_CLAUDE_SKILLS,
+    private readonly rulesPath: string = DEFAULT_CLAUDE_RULES,
+  ) {}
 
   async detect(): Promise<DetectedAgent> {
     return {
       id: this.id,
       displayName: this.displayName,
-      present: existsSync(this.claudeJsonPath),
-      configPaths: [this.claudeJsonPath, '<project>/.mcp.json'],
+      present: existsSync(this.claudeJsonPath) || existsSync(this.skillsDir),
+      configPaths: [this.claudeJsonPath, '<project>/.mcp.json', this.skillsDir],
     };
   }
 
   async readInventory(): Promise<InstalledCapability[]> {
-    if (!existsSync(this.claudeJsonPath)) return [];
-    let data: {
-      mcpServers?: Record<string, unknown>;
-      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
-    };
-    try {
-      data = JSON.parse(await readFile(this.claudeJsonPath, 'utf8'));
-    } catch {
-      throw new Error(`claude-code: ${this.claudeJsonPath} is not valid JSON`);
-    }
     const items: InstalledCapability[] = [];
 
     const collect = (
@@ -115,6 +116,22 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
       }
     };
 
+    if (!existsSync(this.claudeJsonPath)) {
+      items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+      items.push(...(await readRulesInventory(this.id, this.rulesPath)));
+      return items;
+    }
+
+    let data: {
+      mcpServers?: Record<string, unknown>;
+      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
+    };
+    try {
+      data = JSON.parse(await readFile(this.claudeJsonPath, 'utf8'));
+    } catch {
+      throw new Error(`claude-code: ${this.claudeJsonPath} is not valid JSON`);
+    }
+
     collect(data.mcpServers, 'user', this.claudeJsonPath);
 
     // NOTE: only projects Claude already tracks are discoverable here — a
@@ -133,7 +150,29 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter {
         }
       }
     }
+    items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+    items.push(...(await readRulesInventory(this.id, this.rulesPath)));
     return items;
+  }
+
+  // --- SkillWriter (directory-shaped) ---
+
+  renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+    return renderSkillInstall(this.skillsDir, source, ref);
+  }
+
+  renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+    return renderSkillRemove(this.skillsDir, ref);
+  }
+
+  // --- RuleWriter (managed block in CLAUDE.md) ---
+
+  renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+    return renderRuleInstall(this.rulesPath, body, ref);
+  }
+
+  renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+    return renderRuleRemove(this.rulesPath, ref);
   }
 
   // --- AgentWriter (M2: user scope only) ---

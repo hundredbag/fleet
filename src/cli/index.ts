@@ -8,11 +8,18 @@ import {
   planInstall,
   planRemove,
   planSync,
+  planInstallSkill,
+  planRemoveSkill,
+  planSyncSkill,
+  planInstallRule,
+  planRemoveRule,
+  planSyncRule,
   execute,
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
+import { analyzeConflicts } from '../core/conflicts.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -27,6 +34,18 @@ Usage:
                                            Copy a server from one agent to others
   fleet remove <name> --from <ids|all> [--commit]
                                            Remove a server from agents
+
+  fleet skill install <name> --from-dir <path> --to <ids|all> [--commit]
+  fleet skill sync <name> --from <id> --to <ids|all> [--commit]
+  fleet skill remove <name> --from <ids|all> [--commit]
+                                           Manage skills (SKILL.md directories)
+
+  fleet rule install <name> --text <instruction> --to <ids|all> [--commit]
+  fleet rule sync <name> --from <id> --to <ids|all> [--commit]
+  fleet rule remove <name> --from <ids|all> [--commit]
+                                           Manage rules (instruction blocks in CLAUDE.md/AGENTS.md)
+
+  fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
   fleet help
 
@@ -164,6 +183,80 @@ async function main(argv: string[]): Promise<number> {
       if (!name || !from) throw new Error('usage: fleet remove <name> --from <ids|all>');
       const targets = await resolveTargets(adapters, from);
       return runPlan(adapters, await planRemove(adapters, name, targets), commit);
+    }
+    case 'skill': {
+      const sub = p.positionals[0];
+      const name = p.positionals[1];
+      if (sub === 'install') {
+        const fromDir = str(p.flags['from-dir']);
+        const to = str(p.flags.to);
+        if (!name || !fromDir || !to) {
+          throw new Error('usage: fleet skill install <name> --from-dir <path> --to <ids|all>');
+        }
+        const targets = await resolveTargets(adapters, to);
+        return runPlan(adapters, await planInstallSkill(adapters, { name, dir: fromDir }, name, targets), commit);
+      }
+      if (sub === 'sync') {
+        const from = str(p.flags.from);
+        const to = str(p.flags.to);
+        if (!name || !from || !to) {
+          throw new Error('usage: fleet skill sync <name> --from <agent> --to <ids|all>');
+        }
+        const targets = await resolveTargets(adapters, to);
+        return runPlan(adapters, await planSyncSkill(adapters, name, from, targets), commit);
+      }
+      if (sub === 'remove') {
+        const from = str(p.flags.from);
+        if (!name || !from) throw new Error('usage: fleet skill remove <name> --from <ids|all>');
+        const targets = await resolveTargets(adapters, from);
+        return runPlan(adapters, await planRemoveSkill(adapters, name, targets), commit);
+      }
+      throw new Error('usage: fleet skill <install|sync|remove> …');
+    }
+    case 'rule': {
+      const sub = p.positionals[0];
+      const name = p.positionals[1];
+      if (sub === 'install') {
+        const text = str(p.flags.text);
+        const to = str(p.flags.to);
+        if (!name || text === undefined || !to) {
+          throw new Error('usage: fleet rule install <name> --text <instruction> --to <ids|all>');
+        }
+        const targets = await resolveTargets(adapters, to);
+        return runPlan(adapters, await planInstallRule(adapters, name, text, targets), commit);
+      }
+      if (sub === 'sync') {
+        const from = str(p.flags.from);
+        const to = str(p.flags.to);
+        if (!name || !from || !to) {
+          throw new Error('usage: fleet rule sync <name> --from <agent> --to <ids|all>');
+        }
+        const targets = await resolveTargets(adapters, to);
+        return runPlan(adapters, await planSyncRule(adapters, name, from, targets), commit);
+      }
+      if (sub === 'remove') {
+        const from = str(p.flags.from);
+        if (!name || !from) throw new Error('usage: fleet rule remove <name> --from <ids|all>');
+        const targets = await resolveTargets(adapters, from);
+        return runPlan(adapters, await planRemoveRule(adapters, name, targets), commit);
+      }
+      throw new Error('usage: fleet rule <install|sync|remove> …');
+    }
+    case 'conflicts': {
+      const findings = analyzeConflicts(await buildInventory(adapters));
+      const caveat =
+        '  (heuristic; checks only fleet-managed always-on rules, not hand-written\n' +
+        '   instructions — absence of findings is not a guarantee.)';
+      if (findings.length === 0) {
+        process.stdout.write(`No likely conflicts found.\n${caveat}\n`);
+        return 0;
+      }
+      process.stdout.write('Possible conflicts (verify yourself):\n');
+      for (const f of findings) {
+        process.stdout.write(`  ⚠ [${f.agent}] "${f.a}" vs "${f.b}" — possible ${f.axis} conflict\n`);
+      }
+      process.stdout.write(`  → ${findings[0]!.suggestion}\n${caveat}\n`);
+      return 0;
     }
     case 'rollback': {
       const res = await rollback({ auditId: p.positionals[0] });

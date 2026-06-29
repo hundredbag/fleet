@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import type { AgentAdapter, AgentWriter } from './adapter.js';
-import type { AgentId, McpServerSpec, Scope } from './types.js';
+import type { AgentAdapter, AgentWriter, RuleWriter, SkillSource, SkillWriter } from './adapter.js';
+import type { AgentId, McpServerSpec, RuleCapability, Scope } from './types.js';
+import { hashDir } from './fsutil.js';
+import { opposingRules, RESOLUTION_HINT } from './conflicts.js';
 import {
   applyChanges,
   toPlannedChange,
@@ -147,8 +149,12 @@ export async function planSync(
 ): Promise<Plan> {
   const source = adapters.find((a) => a.id === fromId);
   if (!source) throw new Error(`unknown source agent: '${fromId}'`);
-  const item = (await source.readInventory()).find((i) => i.name === name);
-  if (!item) throw new Error(`"${name}" is not installed on '${fromId}'`);
+  const item = (await source.readInventory()).find(
+    (i) => i.kind === 'mcp-server' && i.name === name,
+  );
+  if (!item || item.kind !== 'mcp-server') {
+    throw new Error(`MCP server "${name}" is not installed on '${fromId}'`);
+  }
   return planInstall(
     adapters,
     item.spec,
@@ -158,10 +164,210 @@ export async function planSync(
   );
 }
 
-/** A validator that dispatches to each change's agent writer. */
+// ---- Skills (directory-shaped capabilities) ----
+
+type SkillWriterAdapter = AgentAdapter & SkillWriter;
+
+export function isSkillWriter(a: AgentAdapter): a is SkillWriterAdapter {
+  const w = a as Partial<SkillWriter>;
+  return (
+    a.supportsWrite === true &&
+    typeof w.renderInstallSkill === 'function' &&
+    typeof w.renderRemoveSkill === 'function'
+  );
+}
+
+export function skillWriterAdapters(adapters: AgentAdapter[]): SkillWriterAdapter[] {
+  return adapters.filter(isSkillWriter);
+}
+
+/** Plan installing a skill (copy its dir) into each target agent. */
+export async function planInstallSkill(
+  adapters: AgentAdapter[],
+  source: SkillSource,
+  name: string,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const changes: PlannedChange[] = [];
+  const skips: PlanSkip[] = [];
+  const sourceHash = await hashDir(source.dir);
+  for (const a of skillWriterAdapters(adapters)) {
+    if (!targetIds.includes(a.id)) continue;
+    if (SELF_PROTECTED.has(name)) {
+      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      continue;
+    }
+    try {
+      const r = await a.renderInstallSkill(source, { kind: 'skill', name, scope: 'user' });
+      if (r.baseHash !== undefined && r.baseHash === sourceHash) {
+        skips.push({ agent: a.id, kind: 'noop', reason: 'already up to date' });
+        continue;
+      }
+      changes.push(toPlannedChange(a.id, 'install', name, 'user', r));
+    } catch (e) {
+      skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
+    }
+  }
+  return { changes, skips };
+}
+
+/** Plan removing a skill from each target agent. */
+export async function planRemoveSkill(
+  adapters: AgentAdapter[],
+  name: string,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const changes: PlannedChange[] = [];
+  const skips: PlanSkip[] = [];
+  for (const a of skillWriterAdapters(adapters)) {
+    if (!targetIds.includes(a.id)) continue;
+    if (SELF_PROTECTED.has(name)) {
+      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      continue;
+    }
+    try {
+      const r = await a.renderRemoveSkill({ kind: 'skill', name, scope: 'user' });
+      changes.push(toPlannedChange(a.id, 'remove', name, 'user', r));
+    } catch (e) {
+      const reason = msg(e);
+      skips.push({ agent: a.id, kind: /not installed/.test(reason) ? 'noop' : 'error', reason });
+    }
+  }
+  return { changes, skips };
+}
+
+/** Plan copying a skill from one agent's installed dir to the others. */
+export async function planSyncSkill(
+  adapters: AgentAdapter[],
+  name: string,
+  fromId: AgentId,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const source = adapters.find((a) => a.id === fromId);
+  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
+  const item = (await source.readInventory()).find((i) => i.kind === 'skill' && i.name === name);
+  if (!item || item.kind !== 'skill') {
+    throw new Error(`skill "${name}" is not installed on '${fromId}'`);
+  }
+  const src: SkillSource = { name, dir: item.path, meta: item.meta };
+  return planInstallSkill(adapters, src, name, targetIds.filter((t) => t !== fromId));
+}
+
+// ---- Rules / instructions (always-on, managed blocks in markdown files) ----
+
+type RuleWriterAdapter = AgentAdapter & RuleWriter;
+
+export function isRuleWriter(a: AgentAdapter): a is RuleWriterAdapter {
+  const w = a as Partial<RuleWriter>;
+  return (
+    a.supportsWrite === true &&
+    typeof w.renderInstallRule === 'function' &&
+    typeof w.renderRemoveRule === 'function'
+  );
+}
+
+export function ruleWriterAdapters(adapters: AgentAdapter[]): RuleWriterAdapter[] {
+  return adapters.filter(isRuleWriter);
+}
+
+/** Plan installing a rule (managed instruction block) into each target agent. */
+export async function planInstallRule(
+  adapters: AgentAdapter[],
+  name: string,
+  body: string,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const changes: PlannedChange[] = [];
+  const skips: PlanSkip[] = [];
+  for (const a of ruleWriterAdapters(adapters)) {
+    if (!targetIds.includes(a.id)) continue;
+    if (SELF_PROTECTED.has(name)) {
+      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      continue;
+    }
+    try {
+      const r = await a.renderInstallRule(body, { kind: 'rule', name, scope: 'user' });
+      if (await isNoop(r.file, r.newContent)) {
+        skips.push({ agent: a.id, kind: 'noop', reason: 'already up to date' });
+        continue;
+      }
+      // impact analysis (best-effort): warn if this rule opposes an always-on
+      // rule already there. MUST NOT block the install — a malformed MCP config
+      // would make readInventory throw, and that's unrelated to writing a rule.
+      try {
+        const existing = (await a.readInventory()).filter(
+          (i): i is RuleCapability => i.kind === 'rule',
+        );
+        const opp = opposingRules(existing, body, name);
+        if (opp.length) {
+          r.warnings = [
+            ...(r.warnings ?? []),
+            ...opp.map(
+              (o) => `possible ${o.axis} conflict with existing rule "${o.name}" (heuristic) — ${RESOLUTION_HINT}`,
+            ),
+          ];
+        }
+      } catch {
+        /* impact analysis is best-effort; never block the install */
+      }
+      changes.push(toPlannedChange(a.id, 'install', name, 'user', r));
+    } catch (e) {
+      skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
+    }
+  }
+  return { changes, skips };
+}
+
+/** Plan removing a rule block from each target agent. */
+export async function planRemoveRule(
+  adapters: AgentAdapter[],
+  name: string,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const changes: PlannedChange[] = [];
+  const skips: PlanSkip[] = [];
+  for (const a of ruleWriterAdapters(adapters)) {
+    if (!targetIds.includes(a.id)) continue;
+    if (SELF_PROTECTED.has(name)) {
+      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      continue;
+    }
+    try {
+      const r = await a.renderRemoveRule({ kind: 'rule', name, scope: 'user' });
+      if (await isNoop(r.file, r.newContent)) {
+        skips.push({ agent: a.id, kind: 'noop', reason: 'not installed' });
+        continue;
+      }
+      changes.push(toPlannedChange(a.id, 'remove', name, 'user', r));
+    } catch (e) {
+      skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
+    }
+  }
+  return { changes, skips };
+}
+
+/** Plan copying a rule's body from one agent to the others. */
+export async function planSyncRule(
+  adapters: AgentAdapter[],
+  name: string,
+  fromId: AgentId,
+  targetIds: AgentId[],
+): Promise<Plan> {
+  const source = adapters.find((a) => a.id === fromId);
+  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
+  const item = (await source.readInventory()).find((i) => i.kind === 'rule' && i.name === name);
+  if (!item || item.kind !== 'rule') {
+    throw new Error(`rule "${name}" is not installed on '${fromId}'`);
+  }
+  return planInstallRule(adapters, name, item.body, targetIds.filter((t) => t !== fromId));
+}
+
+/** A validator that dispatches to each change's agent writer (kind-aware). */
 export function makeValidator(adapters: AgentAdapter[]): ChangeValidator {
   const writers = new Map(writerAdapters(adapters).map((a) => [a.id, a]));
   return (change, content) => {
+    // instruction files (rules) are markdown — no parse validation applies.
+    if (change.kind === 'rule') return;
     const w = writers.get(change.agent);
     if (w) w.validate(content);
     else JSON.parse(content); // safe fallback

@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentId, Scope } from './types.js';
 import type { RenderResult } from './adapter.js';
 import { sha256 } from './hash.js';
+import { copyDir, hashDir, removeDir } from './fsutil.js';
 
 export type WriteOp = 'install' | 'remove' | 'update';
 
@@ -54,8 +55,10 @@ interface AuditRecord {
   scope?: string;
   backup: string;
   existedBefore: boolean;
-  /** sha256 of what fleet wrote (lets rollback confirm the file is unchanged) */
+  /** sha256 of what fleet wrote (lets rollback confirm the target is unchanged) */
   wroteHash?: string;
+  /** true when the target is a directory (skill) rather than a file */
+  isDir?: boolean;
   rolledBackFrom?: string;
 }
 
@@ -179,68 +182,177 @@ async function applyEach(
   force: boolean,
 ): Promise<void> {
   for (const change of changes) {
-    {
-      const existedBefore = existsSync(change.file);
-      let backup = '';
-
-      if (existedBefore) {
-        const current = await readFile(change.file, 'utf8');
-        try {
-          validate(change, current);
-        } catch (err) {
-          throw new Error(
-            `fleet: refusing to write ${change.file}: existing file does not parse (${msg(err)})`,
-          );
-        }
-        if (!force && change.baseHash !== undefined && sha256(current) !== change.baseHash) {
-          throw new Error(
-            `fleet: ${change.file} changed since the plan was made; re-plan (or pass force)`,
-          );
-        }
-        backup = join(
-          backupsDir,
-          `${Date.now()}-${process.pid}-${randomUUID()}-${basename(change.file)}.bak`,
-        );
-        await copyFile(change.file, backup);
-        await fsyncPath(backup);
-      }
-
-      await writeFileAtomic(change.file, change.newContent);
-
-      try {
-        validate(change, await readFile(change.file, 'utf8'));
-      } catch (err) {
-        try {
-          if (existedBefore && backup) await copyFile(backup, change.file);
-          else await rm(change.file, { force: true });
-        } catch (restoreErr) {
-          throw new Error(
-            `fleet: validation failed for ${change.file} AND restore failed; ` +
-              `backup at ${backup || '(none)'}: ${msg(restoreErr)}`,
-          );
-        }
-        throw new Error(
-          `fleet: validation failed for ${change.file}; ` +
-            `${existedBefore ? 'restored backup' : 'removed created file'}: ${msg(err)}`,
-        );
-      }
-
-      const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
-      await appendAudit(home, {
-        id,
-        ts: Date.now(),
-        op: change.op,
-        agent: change.agent,
-        name: change.name,
-        file: change.file,
-        scope: change.scope,
-        backup,
-        existedBefore,
-        wroteHash: sha256(change.newContent),
-      });
-      results.push({ change, auditId: id, backup });
+    if (change.fsKind === 'dir') {
+      await applyDirChange(change, home, backupsDir, force, results);
+    } else {
+      await applyFileChange(change, validate, home, backupsDir, force, results);
     }
   }
+}
+
+async function applyFileChange(
+  change: PlannedChange,
+  validate: ChangeValidator,
+  home: string,
+  backupsDir: string,
+  force: boolean,
+  results: ApplyResult[],
+): Promise<void> {
+  const existedBefore = existsSync(change.file);
+  let backup = '';
+
+  if (existedBefore) {
+    const current = await readFile(change.file, 'utf8');
+    try {
+      validate(change, current);
+    } catch (err) {
+      throw new Error(
+        `fleet: refusing to write ${change.file}: existing file does not parse (${msg(err)})`,
+      );
+    }
+    if (!force && change.baseHash !== undefined && sha256(current) !== change.baseHash) {
+      throw new Error(
+        `fleet: ${change.file} changed since the plan was made; re-plan (or pass force)`,
+      );
+    }
+    backup = join(
+      backupsDir,
+      `${Date.now()}-${process.pid}-${randomUUID()}-${basename(change.file)}.bak`,
+    );
+    await copyFile(change.file, backup);
+    await fsyncPath(backup);
+  }
+
+  await writeFileAtomic(change.file, change.newContent);
+
+  try {
+    validate(change, await readFile(change.file, 'utf8'));
+  } catch (err) {
+    try {
+      if (existedBefore && backup) await copyFile(backup, change.file);
+      else await rm(change.file, { force: true });
+    } catch (restoreErr) {
+      throw new Error(
+        `fleet: validation failed for ${change.file} AND restore failed; ` +
+          `backup at ${backup || '(none)'}: ${msg(restoreErr)}`,
+      );
+    }
+    throw new Error(
+      `fleet: validation failed for ${change.file}; ` +
+        `${existedBefore ? 'restored backup' : 'removed created file'}: ${msg(err)}`,
+    );
+  }
+
+  const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  await appendAudit(home, {
+    id,
+    ts: Date.now(),
+    op: change.op,
+    agent: change.agent,
+    name: change.name,
+    file: change.file,
+    scope: change.scope,
+    backup,
+    existedBefore,
+    wroteHash: sha256(change.newContent),
+  });
+  results.push({ change, auditId: id, backup });
+}
+
+/**
+ * Apply a directory-shaped change (a skill): same backup → atomic swap →
+ * verify → rollback discipline as files. Install validates the STAGED copy
+ * before touching the target, so a bad source never replaces a good dir.
+ */
+async function applyDirChange(
+  change: PlannedChange,
+  home: string,
+  backupsDir: string,
+  force: boolean,
+  results: ApplyResult[],
+): Promise<void> {
+  const target = change.file;
+  const existedBefore = existsSync(target);
+  let backup = '';
+
+  if (existedBefore) {
+    if (!force && change.baseHash !== undefined && (await hashDir(target)) !== change.baseHash) {
+      throw new Error(
+        `fleet: ${target} changed since the plan was made; re-plan (or pass force)`,
+      );
+    }
+    backup = join(
+      backupsDir,
+      `${Date.now()}-${process.pid}-${randomUUID()}-${basename(target)}.dirbak`,
+    );
+    await copyDir(target, backup);
+    await fsyncPath(backup); // durable backup before we touch the target
+  }
+
+  if (change.dirOp === 'remove') {
+    if (!existedBefore) throw new Error(`fleet: nothing to remove at ${target}`);
+    await removeDir(target);
+  } else {
+    if (!change.sourceDir) {
+      throw new Error(`fleet: dir install for ${target} is missing sourceDir`);
+    }
+    // 1) stage a full copy beside the target; validate it BEFORE touching target.
+    const stage = `${target}.fleet-stage-${process.pid}-${randomUUID()}`;
+    try {
+      await copyDir(change.sourceDir, stage);
+    } catch (err) {
+      await removeDir(stage);
+      throw new Error(`fleet: failed staging skill copy for ${target}: ${msg(err)}`);
+    }
+    if (!existsSync(join(stage, 'SKILL.md'))) {
+      await removeDir(stage);
+      throw new Error(`fleet: skill source ${change.sourceDir} has no SKILL.md`);
+    }
+    // 2) swap via two atomic renames so the old tree stays live until the new
+    //    one is named (no window where the target is simply gone).
+    let oldTmp = '';
+    try {
+      if (existedBefore) {
+        oldTmp = `${target}.fleet-old-${process.pid}-${randomUUID()}`;
+        await rename(target, oldTmp);
+      }
+      await rename(stage, target);
+      await fsyncPath(dirname(target));
+      if (oldTmp) await removeDir(oldTmp);
+    } catch (err) {
+      try {
+        await removeDir(target);
+        await removeDir(stage);
+        if (oldTmp && existsSync(oldTmp)) await rename(oldTmp, target);
+        else if (existedBefore && backup) await copyDir(backup, target);
+      } catch (restoreErr) {
+        throw new Error(
+          `fleet: dir install failed for ${target} AND restore failed; ` +
+            `backup at ${backup || '(none)'}: ${msg(restoreErr)}`,
+        );
+      }
+      throw new Error(
+        `fleet: dir install failed for ${target}; ` +
+          `${existedBefore ? 'restored backup' : 'removed created dir'}: ${msg(err)}`,
+      );
+    }
+  }
+
+  const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  await appendAudit(home, {
+    id,
+    ts: Date.now(),
+    op: change.op,
+    agent: change.agent,
+    name: change.name,
+    file: target,
+    scope: change.scope,
+    backup,
+    existedBefore,
+    wroteHash: change.dirOp === 'remove' ? '' : await hashDir(target),
+    isDir: true,
+  });
+  results.push({ change, auditId: id, backup });
 }
 
 /** Read all audit records (oldest first), skipping any corrupt lines. */
@@ -291,16 +403,34 @@ export async function rollback(
       if (!target.backup || !existsSync(target.backup)) {
         throw new Error(`fleet: backup missing for ${target.id}`);
       }
-      await writeFileAtomic(target.file, await readFile(target.backup, 'utf8'));
+      if (target.isDir) {
+        try {
+          await removeDir(target.file);
+          await copyDir(target.backup, target.file);
+          await fsyncPath(target.file);
+        } catch (restoreErr) {
+          throw new Error(
+            `fleet: rollback restore failed for ${target.file}; ` +
+              `backup at ${target.backup}: ${msg(restoreErr)}`,
+          );
+        }
+      } else {
+        await writeFileAtomic(target.file, await readFile(target.backup, 'utf8'));
+      }
       action = 'restored';
     } else if (!existsSync(target.file)) {
       action = 'skipped';
-      reason = 'file already absent';
+      reason = `${target.isDir ? 'dir' : 'file'} already absent`;
     } else {
-      const current = await readFile(target.file, 'utf8');
-      if (target.wroteHash && sha256(current) !== target.wroteHash) {
+      const currentHash = target.isDir
+        ? await hashDir(target.file)
+        : sha256(await readFile(target.file, 'utf8'));
+      if (target.wroteHash && currentHash !== target.wroteHash) {
         action = 'skipped';
-        reason = 'file diverged since fleet created it; not removing';
+        reason = `${target.isDir ? 'dir' : 'file'} diverged since fleet created it; not removing`;
+      } else if (target.isDir) {
+        await removeDir(target.file);
+        action = 'removed';
       } else {
         await rm(target.file, { force: true });
         action = 'removed';

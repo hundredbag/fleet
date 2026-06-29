@@ -37,7 +37,7 @@ test(
   withTempDir(async (dir) => {
     const toml = join(dir, 'config.toml');
     writeFileSync(toml, SEED_TOML);
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx', args: ['-y', 'bar'] },
       { kind: 'mcp-server', name: 'bar', scope: 'user' },
@@ -61,7 +61,7 @@ test(
   withTempDir(async (dir) => {
     const toml = join(dir, 'config.toml');
     writeFileSync(toml, SEED_TOML);
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'foo-NEW' },
       { kind: 'mcp-server', name: 'foo', scope: 'user' },
@@ -78,7 +78,7 @@ test(
   withTempDir(async (dir) => {
     const toml = join(dir, 'config.toml');
     writeFileSync(toml, SEED_TOML);
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderRemove({ kind: 'mcp-server', name: 'foo', scope: 'user' });
     const parsed = parseToml(r.newContent) as any;
     assert.equal(parsed.mcp_servers?.foo, undefined);
@@ -92,7 +92,7 @@ test(
   withTempDir(async (dir) => {
     const toml = join(dir, 'config.toml');
     writeFileSync(toml, '# c\n');
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderInstall(
       {
         transport: 'http',
@@ -127,7 +127,7 @@ test(
     const toml = join(dir, 'config.toml');
     writeFileSync(toml, '# c\nmodel = "gpt-5.5"\n');
     const home = join(dir, 'fleet-home');
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx', args: ['-y', 'srv'] },
       { kind: 'mcp-server', name: 'srv', scope: 'user' },
@@ -136,7 +136,7 @@ test(
       fleetHome: home,
     });
     const items = await a.readInventory();
-    assert.equal(items.find((i) => i.name === 'srv')?.spec.transport, 'stdio');
+    assert.equal((items.find((i) => i.name === 'srv') as any)?.spec.transport, 'stdio');
     assert.match(readFileSync(toml, 'utf8'), /# c/); // comment survived a real write
   }),
 );
@@ -213,7 +213,7 @@ test(
         '',
       ].join('\n'),
     );
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderRemove({ kind: 'mcp-server', name: 'foo', scope: 'user' });
     const parsed = parseToml(r.newContent) as any;
     assert.equal(parsed.mcp_servers?.foo, undefined);
@@ -231,7 +231,7 @@ test(
       toml,
       ['[mcp_servers.foo]', 'command = "old"', 'enabled = false', 'startup_timeout_sec = 30', ''].join('\n'),
     );
-    const a = new CodexAdapter(toml);
+    const a = new CodexAdapter(toml, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'new' },
       { kind: 'mcp-server', name: 'foo', scope: 'user' },

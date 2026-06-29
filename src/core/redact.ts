@@ -1,4 +1,4 @@
-import type { Inventory } from './types.js';
+import type { Inventory, McpServerCapability, RuleCapability, SkillCapability } from './types.js';
 import type { ExecuteResult } from './orchestrator.js';
 
 /**
@@ -28,16 +28,33 @@ export function redactUrl(url: string): string {
 
 /** Inventory summary with NO secrets (env/headers/raw dropped; URL creds redacted). */
 export function summarizeInventory(inv: Inventory) {
-  return {
-    agents: inv.agents.map((a) => ({ id: a.id, present: a.present, note: a.note })),
-    servers: inv.items.map((i) => ({
+  const servers = inv.items
+    .filter((i): i is McpServerCapability => i.kind === 'mcp-server')
+    .map((i) => ({
       name: i.name,
       agent: i.agent,
       scope: i.scope,
       enabled: i.enabled,
       transport: i.spec.transport,
       target: i.spec.transport === 'stdio' ? i.spec.command : redactUrl(i.spec.url),
-    })),
+    }));
+  const skills = inv.items
+    .filter((i): i is SkillCapability => i.kind === 'skill')
+    .map((i) => ({
+      name: i.name,
+      agent: i.agent,
+      scope: i.scope,
+      description: i.meta?.description,
+      version: i.meta?.version,
+    }));
+  const rules = inv.items
+    .filter((i): i is RuleCapability => i.kind === 'rule')
+    .map((i) => ({ name: i.name, agent: i.agent, scope: i.scope }));
+  return {
+    agents: inv.agents.map((a) => ({ id: a.id, present: a.present, note: a.note })),
+    servers,
+    skills,
+    rules,
   };
 }
 

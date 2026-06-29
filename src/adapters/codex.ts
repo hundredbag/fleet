@@ -8,6 +8,9 @@ import type {
   AgentWriter,
   CapabilityRef,
   RenderResult,
+  RuleWriter,
+  SkillSource,
+  SkillWriter,
 } from '../core/adapter.js';
 import type {
   DetectedAgent,
@@ -16,8 +19,12 @@ import type {
 } from '../core/types.js';
 import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
 import { sha256 } from '../core/hash.js';
+import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
+import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
 
 const DEFAULT_CODEX_TOML = join(homedir(), '.codex', 'config.toml');
+const DEFAULT_CODEX_SKILLS = join(homedir(), '.codex', 'skills');
+const DEFAULT_CODEX_RULES = join(homedir(), '.codex', 'AGENTS.md');
 
 /**
  * Codex declares MCP servers under `[mcp_servers.<name>]` in config.toml.
@@ -144,44 +151,74 @@ function findTableBlock(
   return start === -1 ? null : { start, end: trimTrailing(lines, start, lines.length) };
 }
 
-export class CodexAdapter implements AgentAdapter, AgentWriter {
+export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, RuleWriter {
   readonly id = 'codex';
   readonly displayName = 'OpenAI Codex';
   readonly supportsWrite = true;
 
-  constructor(private readonly configPath: string = DEFAULT_CODEX_TOML) {}
+  constructor(
+    private readonly configPath: string = DEFAULT_CODEX_TOML,
+    private readonly skillsDir: string = DEFAULT_CODEX_SKILLS,
+    private readonly rulesPath: string = DEFAULT_CODEX_RULES,
+  ) {}
 
   async detect(): Promise<DetectedAgent> {
     return {
       id: this.id,
       displayName: this.displayName,
-      present: existsSync(this.configPath),
-      configPaths: [this.configPath],
+      present:
+        existsSync(this.configPath) || existsSync(this.skillsDir) || existsSync(this.rulesPath),
+      configPaths: [this.configPath, this.skillsDir, this.rulesPath],
     };
   }
 
   async readInventory(): Promise<InstalledCapability[]> {
-    if (!existsSync(this.configPath)) return [];
-    let data: { mcp_servers?: unknown };
-    try {
-      data = parseToml(await readFile(this.configPath, 'utf8')) as { mcp_servers?: unknown };
-    } catch {
-      throw new Error(`codex: ${this.configPath} is not valid TOML`);
+    const items: InstalledCapability[] = [];
+    if (existsSync(this.configPath)) {
+      let data: { mcp_servers?: unknown };
+      try {
+        data = parseToml(await readFile(this.configPath, 'utf8')) as { mcp_servers?: unknown };
+      } catch {
+        throw new Error(`codex: ${this.configPath} is not valid TOML`);
+      }
+      const servers = isPlainObject(data.mcp_servers) ? data.mcp_servers : {};
+      for (const [name, raw] of Object.entries(servers)) {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        items.push({
+          kind: 'mcp-server',
+          name,
+          agent: this.id,
+          scope: 'user',
+          enabled: r.enabled !== false,
+          spec: parseCodexEntry(raw),
+          source: { file: this.configPath },
+          raw,
+        });
+      }
     }
-    const servers = isPlainObject(data.mcp_servers) ? data.mcp_servers : {};
-    return Object.entries(servers).map(([name, raw]) => {
-      const r = (raw ?? {}) as Record<string, unknown>;
-      return {
-        kind: 'mcp-server' as const,
-        name,
-        agent: this.id,
-        scope: 'user' as const,
-        enabled: r.enabled !== false,
-        spec: parseCodexEntry(raw),
-        source: { file: this.configPath },
-        raw,
-      };
-    });
+    items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+    items.push(...(await readRulesInventory(this.id, this.rulesPath)));
+    return items;
+  }
+
+  // --- SkillWriter (directory-shaped) ---
+
+  renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+    return renderSkillInstall(this.skillsDir, source, ref);
+  }
+
+  renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+    return renderSkillRemove(this.skillsDir, ref);
+  }
+
+  // --- RuleWriter (managed block in AGENTS.md) ---
+
+  renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+    return renderRuleInstall(this.rulesPath, body, ref);
+  }
+
+  renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+    return renderRuleRemove(this.rulesPath, ref);
   }
 
   // --- AgentWriter (TOML, comment-preserving) ---

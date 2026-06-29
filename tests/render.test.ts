@@ -14,7 +14,8 @@ test('render: empty state shows agents and the no-servers hint', () => {
   const s = renderInventory(inv);
   assert.match(s, /Claude Code/);
   assert.match(s, /not configured on this machine/);
-  assert.match(s, /none configured/);
+  assert.match(s, /MCP servers: none/);
+  assert.match(s, /Skills: none/);
 });
 
 test('render: matrix marks scope, multi-agent, and disabled', () => {

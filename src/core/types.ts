@@ -66,11 +66,41 @@ export interface McpServerCapability extends BaseCapability {
   spec: McpServerSpec;
 }
 
+/** A skill (a directory containing SKILL.md) installed on one agent. */
+export interface SkillCapability extends BaseCapability {
+  kind: 'skill';
+  /** the skill's directory on disk */
+  path: string;
+  /** parsed from SKILL.md frontmatter */
+  meta?: { description?: string; version?: string };
+}
+
+/**
+ * A behavioral rule / instruction (a fleet-managed block inside an always-on
+ * instruction file: Claude CLAUDE.md, Codex/Hermes AGENTS.md).
+ */
+export interface RuleCapability extends BaseCapability {
+  kind: 'rule';
+  /** the managed block body (the instruction text fleet manages) */
+  body: string;
+}
+
 /**
  * A capability instance found installed on one agent. Discriminated on `kind`.
- * Future kinds (SkillCapability, RuleCapability, …) join this union.
  */
-export type InstalledCapability = McpServerCapability;
+export type InstalledCapability = McpServerCapability | SkillCapability | RuleCapability;
+
+/**
+ * Whether a capability is ALWAYS-ON (in context every turn — where opposing
+ * intent genuinely conflicts) or GATED (invoked/loaded only when relevant —
+ * rarely interferes). Drives the conflict analysis (Part C).
+ */
+export type Surface = 'gated' | 'always-on';
+
+export function surfaceOf(kind: PrimitiveKind): Surface {
+  // mcp tools + skills are gated; rules/instructions are always-on.
+  return kind === 'rule' ? 'always-on' : 'gated';
+}
 
 /** An agent runtime detected (or not) on this machine. */
 export interface DetectedAgent {

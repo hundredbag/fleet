@@ -1,11 +1,11 @@
-import type { Inventory } from '../core/types.js';
+import type { DetectedAgent, Inventory, InstalledCapability } from '../core/types.js';
 
 const SCOPE_TAG: Record<string, string> = { user: 'U', project: 'P', local: 'L' };
 
-/** Render the unified inventory as a human-friendly capability × agent matrix. */
+/** Render the unified inventory as human-friendly capability × agent matrices. */
 export function renderInventory(inv: Inventory): string {
   const out: string[] = [];
-  out.push('fleet — unified agent capability inventory (v0 · MCP servers)');
+  out.push('fleet — unified agent capability inventory');
   out.push('');
 
   out.push('Detected agents:');
@@ -16,28 +16,38 @@ export function renderInventory(inv: Inventory): string {
   }
   out.push('');
 
-  const mcp = inv.items.filter((i) => i.kind === 'mcp-server');
   const present = inv.agents.filter((a) => a.present);
-
   if (present.length === 0) {
     out.push('No managed agents detected on this machine.');
     return out.join('\n');
   }
 
-  if (mcp.length === 0) {
-    out.push('MCP servers: none configured on any detected agent yet.');
-    out.push('');
-    out.push('  The read path works — this empty state is exactly where');
-    out.push('  one-click install / cross-agent sync will add value.');
-    return out.join('\n');
-  }
+  out.push(renderSection('MCP servers', inv.items.filter((i) => i.kind === 'mcp-server'), present));
+  out.push('');
+  out.push(renderSection('Skills', inv.items.filter((i) => i.kind === 'skill'), present));
+  out.push('');
+  out.push(renderSection('Rules', inv.items.filter((i) => i.kind === 'rule'), present));
+  out.push('');
+  out.push(
+    '  legend: ✓ installed · ✗ disabled (U=user P=project L=local) · – not installed',
+  );
+  return out.join('\n');
+}
 
-  const names = [...new Set(mcp.map((m) => m.name))].sort();
+function renderSection(
+  label: string,
+  items: InstalledCapability[],
+  present: DetectedAgent[],
+): string {
+  if (items.length === 0) {
+    return `${label}: none on any detected agent yet.`;
+  }
+  const names = [...new Set(items.map((m) => m.name))].sort();
   const cols = present.map((a) => a.id);
-  const header = ['capability (MCP)', ...present.map((a) => a.displayName)];
+  const header = [`capability (${label})`, ...present.map((a) => a.displayName)];
 
   const cell = (name: string, agentId: string): string => {
-    const found = mcp.filter((m) => m.name === name && m.agent === agentId);
+    const found = items.filter((m) => m.name === name && m.agent === agentId);
     if (found.length === 0) return '–';
     const scopes = [...new Set(found.map((f) => SCOPE_TAG[f.scope] ?? '?'))].join('');
     const mark = found.every((f) => !f.enabled) ? '✗' : '✓';
@@ -45,12 +55,7 @@ export function renderInventory(inv: Inventory): string {
   };
 
   const rows = names.map((n) => [n, ...cols.map((c) => cell(n, c))]);
-  out.push(renderTable(header, rows));
-  out.push('');
-  out.push(
-    '  legend: ✓ installed · ✗ disabled (U=user P=project L=local) · – not installed',
-  );
-  return out.join('\n');
+  return renderTable(header, rows);
 }
 
 function renderTable(header: string[], rows: string[][]): string {

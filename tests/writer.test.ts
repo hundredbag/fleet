@@ -45,7 +45,7 @@ test(
     const claudeJson = join(dir, '.claude.json');
     seedClaude(claudeJson);
     const home = join(dir, 'fleet-home');
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
 
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx', args: ['-y', 'new'] },
@@ -77,7 +77,7 @@ test(
     const claudeJson = join(dir, '.claude.json');
     seedClaude(claudeJson);
     const home = join(dir, 'fleet-home');
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'http', url: 'https://x.test/mcp' },
       { kind: 'mcp-server', name: 'remote', scope: 'user' },
@@ -86,7 +86,7 @@ test(
       fleetHome: home,
     });
     const items = await a.readInventory();
-    const remote = items.find((i) => i.name === 'remote');
+    const remote = items.find((i) => i.name === 'remote') as any;
     assert.equal(remote?.spec.transport, 'http');
   }),
 );
@@ -100,7 +100,7 @@ test(
       JSON.stringify({ mcpServers: { existing: { command: 'keep' }, gone: { command: 'x' } } }, null, 2),
     );
     const home = join(dir, 'fleet-home');
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
     const r = await a.renderRemove({ kind: 'mcp-server', name: 'gone', scope: 'user' });
     await applyChanges([toPlannedChange('claude-code', 'remove', 'gone', 'user', r)], jsonValidate, {
       fleetHome: home,
@@ -136,7 +136,7 @@ test(
     const claudeJson = join(dir, '.claude.json');
     seedClaude(claudeJson);
     const home = join(dir, 'fleet-home');
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx' },
       { kind: 'mcp-server', name: 'late', scope: 'user' },
@@ -201,7 +201,7 @@ test(
     seedClaude(claudeJson);
     const original = readFileSync(claudeJson, 'utf8');
     const home = join(dir, 'fleet-home');
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx' },
       { kind: 'mcp-server', name: 'tmp', scope: 'user' },
@@ -267,7 +267,7 @@ test(
     const home = join(dir, 'fleet-home');
     const claudeJson = join(dir, '.claude.json');
     seedClaude(claudeJson);
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
     const r = await a.renderInstall(
       { transport: 'stdio', command: 'npx' },
       { kind: 'mcp-server', name: 'ok', scope: 'user' },
@@ -287,7 +287,7 @@ test(
   withTempDir(async (dir) => {
     const claudeJson = join(dir, '.claude.json');
     seedClaude(claudeJson);
-    const a = new ClaudeCodeAdapter(claudeJson);
+    const a = new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'));
 
     const remote = await a.renderInstall(
       { transport: 'http', url: 'https://x.test', bearerTokenEnvVar: 'TOK' },
