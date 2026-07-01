@@ -1,6 +1,6 @@
 import type { Inventory } from '../core/types.js';
 import type { FeedItem, FeedSource } from './source.js';
-import { extractCoordinate } from './coords.js';
+import { extractCoordinate, coordKey } from './coords.js';
 
 /**
  * Client-side discovery. `discover` merges public feed items from sources; the
@@ -14,8 +14,6 @@ export interface DiscoverResult {
    * from "couldn't reach the registry" */
   failures: { source: string; error: string }[];
 }
-
-const coordKey = (ecosystem: string, id: string): string => `${ecosystem}:${id.toLowerCase()}`;
 
 /** Merge + de-dupe (ecosystem-aware) feed items across sources. */
 export async function discover(sources: FeedSource[], opts?: { since?: string }): Promise<DiscoverResult> {

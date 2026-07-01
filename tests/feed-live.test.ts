@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { discover } from '../src/feed/feed.js';
+import { discover, updatesForInventory } from '../src/feed/feed.js';
 import { recommend, defaultScorer } from '../src/feed/recommend.js';
 import { McpRegistrySource } from '../src/feed/sources/mcp-registry.js';
 import { PulseMcpSource } from '../src/feed/sources/pulsemcp.js';
@@ -177,6 +177,43 @@ test('McpRegistrySource: maps the real {server,_meta} shape + nextCursor + skips
   assert.equal(inf?.identifier, undefined); // remote-only → no install coordinate
   assert.equal(inf?.url, 'https://x/mcp');
   assert.ok(!items.some((i) => i.name === 'old/thing'));
+});
+
+test('McpRegistrySource: emits one FeedItem per package (multi-package server)', async () => {
+  const META = 'io.modelcontextprotocol.registry/official';
+  const p = {
+    servers: [
+      {
+        server: {
+          name: 'x/y',
+          title: 'y',
+          version: '2.0.0',
+          packages: [
+            { registryType: 'npm', identifier: '@x/y', version: '2.0.0' },
+            { registryType: 'pypi', identifier: 'x-y', version: '2.0.1' },
+          ],
+        },
+        _meta: { [META]: { isLatest: true } },
+      },
+    ],
+    metadata: {},
+  };
+  const source = new McpRegistrySource({ baseUrl: 'http://t', fetchImpl: mkFetch([p]) });
+  const items = await source.list();
+  assert.equal(items.length, 2);
+  assert.equal(items.find((i) => i.ecosystem === 'npm')?.version, '2.0.0');
+  assert.equal(items.find((i) => i.ecosystem === 'pypi')?.identifier, 'x-y');
+  assert.equal(items.find((i) => i.ecosystem === 'pypi')?.version, '2.0.1'); // package's own version
+});
+
+test('updatesForInventory: PyPI names normalize (_ ↔ -)', () => {
+  const i = inv([mcp('sp', 'codex', { transport: 'stdio', command: 'uvx', args: ['some_package@1.0.0'] })]);
+  const items: FeedItem[] = [
+    { name: 'sp', source: 'r', identifier: 'some-package', ecosystem: 'pypi', version: '2.0.0' },
+  ];
+  const { updates } = updatesForInventory(i, items);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.available, '2.0.0');
 });
 
 test('McpRegistrySource: non-OK response throws (discover would catch it)', async () => {

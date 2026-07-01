@@ -25,22 +25,34 @@ export function mapEcosystem(r?: string): 'npm' | 'pypi' | 'other' {
   return 'other';
 }
 
-/** Map one registry list entry ({ server, _meta }) to a FeedItem. */
-function mapEntry(entry: any): FeedItem {
+/**
+ * Map one registry list entry ({ server, _meta }) to FeedItem(s) — ONE PER
+ * PACKAGE, so a server shipping both npm + pypi is matchable either way, and the
+ * reported version is the package's own (what update-detection compares). A
+ * remote-only server yields a single coordinate-less item.
+ */
+function mapEntries(entry: any): FeedItem[] {
   const s = entry?.server ?? entry; // tolerate flat or wrapped
   const meta = entry?._meta?.[OFFICIAL_META] ?? {};
-  const pkg = Array.isArray(s?.packages) ? s.packages[0] : undefined;
-  const remote = Array.isArray(s?.remotes) ? s.remotes[0] : undefined;
-  return {
-    name: String(s?.title ?? s?.name ?? pkg?.identifier ?? 'unknown'),
-    source: 'mcp-registry',
-    identifier: pkg?.identifier,
-    ecosystem: pkg ? mapEcosystem(pkg.registryType ?? pkg.registry_type) : undefined,
-    version: s?.version ?? pkg?.version,
+  const url = s?.repository?.url ?? s?.websiteUrl;
+  const base = {
+    source: 'mcp-registry' as const,
+    name: String(s?.title ?? s?.name ?? 'unknown'),
     description: s?.description,
     updatedAt: meta.updatedAt ?? meta.publishedAt,
-    url: s?.repository?.url ?? remote?.url ?? s?.websiteUrl,
   };
+  const packages = Array.isArray(s?.packages) ? s.packages : [];
+  if (packages.length) {
+    return packages.map((pkg: any) => ({
+      ...base,
+      identifier: pkg?.identifier,
+      ecosystem: mapEcosystem(pkg?.registryType ?? pkg?.registry_type),
+      version: pkg?.version ?? s?.version, // the coordinate's own version
+      url,
+    }));
+  }
+  const remote = Array.isArray(s?.remotes) ? s.remotes[0] : undefined;
+  return [{ ...base, version: s?.version, url: url ?? remote?.url }];
 }
 
 /** True unless the registry explicitly marks this entry as a superseded version. */
@@ -66,7 +78,7 @@ export class McpRegistrySource implements FeedSource {
       if (!res.ok) throw new Error(`mcp-registry: HTTP ${res.status}`);
       const data: any = await res.json();
       for (const entry of data?.servers ?? []) {
-        if (isLatest(entry)) items.push(mapEntry(entry)); // skip superseded versions
+        if (isLatest(entry)) items.push(...mapEntries(entry)); // skip superseded versions
       }
       cursor = data?.metadata?.nextCursor;
       if (!cursor) break;

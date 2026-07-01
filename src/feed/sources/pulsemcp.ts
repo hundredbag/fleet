@@ -10,9 +10,17 @@ export interface PulseMcpOpts extends HttpSourceOpts {
   apiKey?: string;
 }
 
+function num(...vals: unknown[]): number | undefined {
+  for (const v of vals) if (typeof v === 'number') return v;
+  return undefined;
+}
+
+// NOTE: PulseMCP's response field names are provisional (verified: 401 without a
+// key; body shape not yet confirmed against a live key). We accept several likely
+// spellings so popularity survives naming differences; refine once verified.
 function mapServer(s: any): FeedItem {
-  const stars = typeof s?.stars === 'number' ? s.stars : undefined;
-  const downloads = typeof s?.download_count === 'number' ? s.download_count : undefined;
+  const stars = num(s?.github_stars, s?.stars, s?.star_count);
+  const downloads = num(s?.package_download_count, s?.download_count, s?.downloads);
   return {
     name: String(s?.name ?? 'unknown'),
     source: 'pulsemcp',

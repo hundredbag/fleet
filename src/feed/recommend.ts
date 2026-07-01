@@ -1,6 +1,6 @@
 import type { Inventory } from '../core/types.js';
 import type { FeedItem } from './source.js';
-import { extractCoordinate } from './coords.js';
+import { extractCoordinate, coordKey } from './coords.js';
 
 /**
  * Recommendation ranking (the "B" plan): not-installed × (novelty + popularity +
@@ -108,8 +108,6 @@ function scoreOne(item: FeedItem, ctx: ScoreContext): Scored {
 export function defaultScorer(items: FeedItem[], ctx: ScoreContext): Scored[] {
   return items.map((it) => scoreOne(it, ctx));
 }
-
-const coordKey = (eco: string, id: string): string => `${eco}:${id.toLowerCase()}`;
 
 /** Rank not-yet-installed feed items for THIS inventory. */
 export async function recommend(

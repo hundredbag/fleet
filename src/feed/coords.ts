@@ -13,6 +13,16 @@ export interface Coordinate {
   confidence: 'high' | 'low';
 }
 
+/**
+ * Canonical key for matching a coordinate across sources + inventory. PyPI names
+ * are PEP 503-normalized (runs of `._-` collapse to `-`) so `some_package` and
+ * `some-package` match; npm keeps its scope. Case-insensitive.
+ */
+export function coordKey(ecosystem: string, id: string): string {
+  const lo = id.toLowerCase();
+  return `${ecosystem}:${ecosystem === 'pypi' ? lo.replace(/[-_.]+/g, '-') : lo}`;
+}
+
 // flags that consume the following arg (so its value isn't mistaken for a package)
 const VALUE_FLAGS = new Set([
   '-p',
