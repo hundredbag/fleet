@@ -22,17 +22,32 @@ export function tokenMatches(provided: string | undefined, expected: string): bo
   return timingSafeEqual(a, b);
 }
 
-/** Host header must be loopback on the port we're actually listening on (anti DNS-rebinding). */
-export function checkHost(host: string | undefined, port: number): boolean {
-  return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+/**
+ * Host header must be loopback on the port we're actually listening on, OR an
+ * explicitly-allowed host (e.g. a Tailscale MagicDNS name / 100.x IP). Exact
+ * match only — this is the anti-DNS-rebinding pin, so no wildcards.
+ */
+/** Normalize a host for comparison: lowercase + strip a single trailing dot. */
+function norm(h: string): string {
+  return h.toLowerCase().replace(/\.$/, '');
+}
+function inAllow(host: string, allowHosts: string[]): boolean {
+  const h = norm(host);
+  return allowHosts.some((a) => norm(a) === h);
 }
 
-/** If an Origin is present (cross-site fetch), it must be our own loopback origin. */
-export function checkOrigin(origin: string | undefined, port: number): boolean {
+export function checkHost(host: string | undefined, port: number, allowHosts: string[] = []): boolean {
+  if (host === `127.0.0.1:${port}` || host === `localhost:${port}`) return true;
+  return !!host && inAllow(host, allowHosts);
+}
+
+/** If an Origin is present (cross-site fetch), it must be our loopback origin or an allowed host. */
+export function checkOrigin(origin: string | undefined, port: number, allowHosts: string[] = []): boolean {
   if (!origin) return true; // top-level GET navigations send no Origin
   try {
     const u = new URL(origin);
-    return (u.hostname === '127.0.0.1' || u.hostname === 'localhost') && u.port === String(port);
+    if ((u.hostname === '127.0.0.1' || u.hostname === 'localhost') && u.port === String(port)) return true;
+    return inAllow(u.host, allowHosts);
   } catch {
     return false;
   }

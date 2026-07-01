@@ -55,6 +55,22 @@ async function startTest(token: string): Promise<{ server: Server; port: number 
 }
 const close = (s: Server) => new Promise<void>((r) => s.close(() => r()));
 
+function httpGet(port: number, path: string, headers: Record<string, string>): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'GET', headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        let json: unknown;
+        try { json = JSON.parse(data); } catch { json = data; }
+        resolve({ status: res.statusCode ?? 0, json });
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 test('security: host / origin / token checks (unit)', () => {
   assert.equal(checkHost('127.0.0.1:7777', 7777), true);
   assert.equal(checkHost('localhost:7777', 7777), true);
@@ -63,6 +79,15 @@ test('security: host / origin / token checks (unit)', () => {
   assert.equal(checkOrigin(undefined, 7777), true); // top-level navigation
   assert.equal(checkOrigin('http://127.0.0.1:7777', 7777), true);
   assert.equal(checkOrigin('http://evil.com', 7777), false);
+  // allow-host (e.g. Tailscale MagicDNS): exact match only
+  assert.equal(checkHost('fleet.tail.ts.net', 7777, ['fleet.tail.ts.net']), true);
+  assert.equal(checkHost('fleet.tail.ts.net', 7777, []), false);
+  assert.equal(checkHost('evil.com', 7777, ['fleet.tail.ts.net']), false);
+  assert.equal(checkOrigin('https://fleet.tail.ts.net', 7777, ['fleet.tail.ts.net']), true);
+  assert.equal(checkOrigin('https://evil.com', 7777, ['fleet.tail.ts.net']), false);
+  // case- and trailing-dot-insensitive (fails open only to the SAME name, never a bypass)
+  assert.equal(checkHost('Fleet.Tail.TS.NET', 7777, ['fleet.tail.ts.net']), true);
+  assert.equal(checkHost('fleet.tail.ts.net.', 7777, ['fleet.tail.ts.net']), true);
   assert.equal(tokenMatches('a', 'a'), true);
   assert.equal(tokenMatches('a', 'b'), false);
   assert.equal(tokenMatches(undefined, 'a'), false);
@@ -109,6 +134,25 @@ test('web: unknown path 404s', async () => {
   const { server, port } = await startTest('t');
   try {
     assert.equal((await fetch(`http://127.0.0.1:${port}/nope?token=t`)).status, 404);
+  } finally {
+    await close(server);
+  }
+});
+
+test('web: allow-host lets a Tailscale host through, still token-gated + anti-rebinding', async () => {
+  const { server } = createFleetServer([fakeAdapter], { token: 't', sources: fakeSources, allowHosts: ['fleet.tail.ts.net'] });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    // allowed Host + token → 200
+    let r = await httpGet(port, '/api/inventory', { host: 'fleet.tail.ts.net', authorization: 'Bearer t' });
+    assert.equal(r.status, 200);
+    // allowed Host but no token → 401 (token is still the gate)
+    r = await httpGet(port, '/api/inventory', { host: 'fleet.tail.ts.net' });
+    assert.equal(r.status, 401);
+    // a non-allowed Host → 403 (anti DNS-rebinding pin holds)
+    r = await httpGet(port, '/api/inventory', { host: 'evil.example.com', authorization: 'Bearer t' });
+    assert.equal(r.status, 403);
   } finally {
     await close(server);
   }

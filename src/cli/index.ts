@@ -49,7 +49,12 @@ Usage:
   fleet rule remove <name> --from <ids|all> [--commit]
                                            Manage rules (instruction blocks in CLAUDE.md/AGENTS.md)
 
-  fleet serve [--port <n>]                 Open the local web dashboard (127.0.0.1, token-gated)
+  fleet serve [--port <n>] [--host <addr>] [--allow-host <h>[,<h>]]
+                                           Web dashboard (default 127.0.0.1, token-gated).
+                                           Tailscale (safest): keep loopback + 'tailscale serve', and
+                                             --allow-host <machine>.<tailnet>.ts.net
+                                           Direct bind: --host <tailscale-ip> (auto-allows <ip>:<port>).
+                                           Never bind 0.0.0.0; never expose via 'tailscale funnel'.
   fleet whats-new                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
@@ -275,7 +280,19 @@ async function main(argv: string[]): Promise<number> {
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
         throw new Error(`serve: invalid --port '${str(p.flags.port)}'`);
       }
-      startFleetServer(adapters, { port });
+      const host = str(p.flags.host) ?? '127.0.0.1';
+      if ((host === '0.0.0.0' || host === '::' || host === '') && p.flags['insecure-bind-all'] !== true) {
+        throw new Error(
+          `serve: refusing to bind '${host}' (all interfaces) — this exposes a write-capable daemon to your LAN/network.\n` +
+            "  Keep the default loopback bind and use 'tailscale serve', or bind a specific IP (--host <tailscale-ip>).\n" +
+            '  Pass --insecure-bind-all only if you truly mean to expose every interface.',
+        );
+      }
+      const allowHosts = (str(p.flags['allow-host']) ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      startFleetServer(adapters, { port, host, allowHosts });
       return 0; // the listening server keeps the process alive
     }
     case 'conflicts': {

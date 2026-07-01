@@ -19,6 +19,8 @@ export interface ServeOpts {
   sources?: FeedSource[];
   /** fleet state dir (backups/audit); defaults to ~/.fleet */
   fleetHome?: string;
+  /** extra Host/Origin values to accept (e.g. a Tailscale MagicDNS name). Exact match. */
+  allowHosts?: string[];
 }
 
 interface HttpError extends Error {
@@ -88,12 +90,13 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Use the actual bound port for checks so ephemeral (:0) test binds work too.
     const port = req.socket.localPort ?? 0;
-    if (!checkHost(req.headers.host, port)) return sendJson(res, 403, { error: 'bad host' });
+    const allow = opts.allowHosts ?? [];
+    if (!checkHost(req.headers.host, port, allow)) return sendJson(res, 403, { error: 'bad host' });
 
     const path = new URL(req.url ?? '/', `http://127.0.0.1:${port}`).pathname;
 
     if (req.method === 'GET') {
-      if (!checkOrigin(req.headers.origin, port)) return sendJson(res, 403, { error: 'bad origin' });
+      if (!checkOrigin(req.headers.origin, port, allow)) return sendJson(res, 403, { error: 'bad origin' });
       if (!tokenMatches(tokenFromReq(req, port), token)) return sendJson(res, 401, { error: 'unauthorized' });
       return handleGet(res, path);
     }
@@ -102,7 +105,7 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
       // Stricter CSRF gate for state-changing requests:
       // Origin MUST be present and match; token MUST be in the header (not URL);
       // body MUST be application/json (browsers can't send that cross-site without a preflight).
-      if (!req.headers.origin || !checkOrigin(req.headers.origin, port)) {
+      if (!req.headers.origin || !checkOrigin(req.headers.origin, port, allow)) {
         return sendJson(res, 403, { error: 'bad origin' });
       }
       if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) {
@@ -169,7 +172,11 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
 export function startFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}) {
   const port = opts.port ?? 7777;
   const host = opts.host ?? '127.0.0.1';
-  const { server, token } = createFleetServer(adapters, opts);
+  const loopback = host === '127.0.0.1' || host === 'localhost';
+  // A direct non-loopback bind must accept its own host:port, or every request 403s.
+  const allowHosts = [...(opts.allowHosts ?? [])];
+  if (!loopback) allowHosts.push(`${host}:${port}`);
+  const { server, token } = createFleetServer(adapters, { ...opts, allowHosts });
   server.on('error', (e: NodeJS.ErrnoException) => {
     process.stderr.write(
       e.code === 'EADDRINUSE'
@@ -181,8 +188,19 @@ export function startFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {})
   server.listen(port, host, () => {
     const addr = server.address();
     const shown = typeof addr === 'object' && addr ? addr.port : port;
-    process.stdout.write(`fleet dashboard → http://127.0.0.1:${shown}/?token=${token}\n`);
-    process.stdout.write('(read-only; loopback + token-gated; Ctrl-C to stop)\n');
+    if (!loopback) {
+      process.stderr.write(
+        `⚠ binding to ${host} — reachable beyond this machine. The session token (in the URL) is the ONLY gate:\n` +
+          `  keep it private, keep this tailnet-only, and NEVER expose it via 'tailscale funnel'.\n`,
+      );
+    }
+    const base = loopback ? `http://127.0.0.1:${shown}` : `http://${host}:${shown}`;
+    process.stdout.write(`fleet dashboard → ${base}/?token=${token}\n`);
+    for (const h of opts.allowHosts ?? []) {
+      const scheme = /\.ts\.net$/i.test(h) ? 'https' : 'http'; // MagicDNS names answer on HTTPS via 'tailscale serve'
+      process.stdout.write(`  also: ${scheme}://${h}/?token=${token}\n`);
+    }
+    process.stdout.write('(token-gated; the URL is a secret — use only on a single-user tailnet; Ctrl-C to stop)\n');
   });
   return server;
 }
