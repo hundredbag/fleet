@@ -2,9 +2,11 @@ import type { FeedItem, FeedSource } from '../source.js';
 
 /**
  * The official MCP Registry as a FeedSource (novelty + version + identifier).
- * `fetchImpl`/`baseUrl` are injectable for deterministic tests. Mapping is
- * defensive — the registry's `server.json` shape is still evolving (verify live
- * before relying on exact fields).
+ * Shape verified live (schema 2025-12-11): the list is
+ *   { servers: [{ server: {...}, _meta: { "io.modelcontextprotocol.registry/official": {...} } }],
+ *     metadata: { nextCursor, count } }
+ * where the package coordinate is server.packages[].{registryType, identifier, version}
+ * and freshness is _meta[...].updatedAt. `fetchImpl`/`baseUrl` are injectable for tests.
  */
 export interface HttpSourceOpts {
   baseUrl?: string;
@@ -14,6 +16,8 @@ export interface HttpSourceOpts {
   timeoutMs?: number;
 }
 
+const OFFICIAL_META = 'io.modelcontextprotocol.registry/official';
+
 export function mapEcosystem(r?: string): 'npm' | 'pypi' | 'other' {
   const x = (r ?? '').toLowerCase();
   if (x.includes('npm')) return 'npm';
@@ -21,18 +25,27 @@ export function mapEcosystem(r?: string): 'npm' | 'pypi' | 'other' {
   return 'other';
 }
 
-function mapServer(s: any): FeedItem {
+/** Map one registry list entry ({ server, _meta }) to a FeedItem. */
+function mapEntry(entry: any): FeedItem {
+  const s = entry?.server ?? entry; // tolerate flat or wrapped
+  const meta = entry?._meta?.[OFFICIAL_META] ?? {};
   const pkg = Array.isArray(s?.packages) ? s.packages[0] : undefined;
+  const remote = Array.isArray(s?.remotes) ? s.remotes[0] : undefined;
   return {
-    name: String(s?.name ?? pkg?.name ?? pkg?.identifier ?? 'unknown'),
+    name: String(s?.title ?? s?.name ?? pkg?.identifier ?? 'unknown'),
     source: 'mcp-registry',
-    identifier: pkg?.name ?? pkg?.identifier,
-    ecosystem: pkg ? mapEcosystem(pkg.registry_name ?? pkg.registry_type ?? pkg.registry) : undefined,
-    version: s?.version ?? s?.version_detail?.version ?? pkg?.version,
+    identifier: pkg?.identifier,
+    ecosystem: pkg ? mapEcosystem(pkg.registryType ?? pkg.registry_type) : undefined,
+    version: s?.version ?? pkg?.version,
     description: s?.description,
-    updatedAt: s?.updated_at ?? s?._meta?.updated_at ?? s?.updatedAt,
-    url: s?.repository?.url ?? s?.website_url ?? s?.homepage,
+    updatedAt: meta.updatedAt ?? meta.publishedAt,
+    url: s?.repository?.url ?? remote?.url ?? s?.websiteUrl,
   };
+}
+
+/** True unless the registry explicitly marks this entry as a superseded version. */
+function isLatest(entry: any): boolean {
+  return entry?._meta?.[OFFICIAL_META]?.isLatest !== false;
 }
 
 export class McpRegistrySource implements FeedSource {
@@ -52,8 +65,10 @@ export class McpRegistrySource implements FeedSource {
       const res = await doFetch(url.toString(), { signal: AbortSignal.timeout(this.opts.timeoutMs ?? 8000) });
       if (!res.ok) throw new Error(`mcp-registry: HTTP ${res.status}`);
       const data: any = await res.json();
-      for (const s of data?.servers ?? []) items.push(mapServer(s));
-      cursor = data?.metadata?.next_cursor;
+      for (const entry of data?.servers ?? []) {
+        if (isLatest(entry)) items.push(mapEntry(entry)); // skip superseded versions
+      }
+      cursor = data?.metadata?.nextCursor;
       if (!cursor) break;
     }
     return items;

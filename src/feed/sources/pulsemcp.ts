@@ -3,9 +3,13 @@ import { mapEcosystem, type HttpSourceOpts } from './mcp-registry.js';
 
 /**
  * PulseMCP as a FeedSource — enriches items with POPULARITY (stars/downloads).
- * Defensive mapping; verify the live shape before relying on it. Injectable
- * fetch/baseUrl for tests.
+ * PulseMCP requires an API key (X-API-Key); without one it's not used (see
+ * defaultSources). Defensive mapping; injectable fetch/baseUrl for tests.
  */
+export interface PulseMcpOpts extends HttpSourceOpts {
+  apiKey?: string;
+}
+
 function mapServer(s: any): FeedItem {
   const stars = typeof s?.stars === 'number' ? s.stars : undefined;
   const downloads = typeof s?.download_count === 'number' ? s.download_count : undefined;
@@ -22,12 +26,14 @@ function mapServer(s: any): FeedItem {
 
 export class PulseMcpSource implements FeedSource {
   readonly id = 'pulsemcp';
-  constructor(private readonly opts: HttpSourceOpts = {}) {}
+  constructor(private readonly opts: PulseMcpOpts = {}) {}
 
   async list(): Promise<FeedItem[]> {
+    if (!this.opts.apiKey) throw new Error('pulsemcp: API key required (set PULSEMCP_API_KEY)');
     const base = this.opts.baseUrl ?? 'https://api.pulsemcp.com';
     const doFetch = this.opts.fetchImpl ?? fetch;
     const res = await doFetch(new URL('/v0.1/servers', base).toString(), {
+      headers: { 'X-API-Key': this.opts.apiKey },
       signal: AbortSignal.timeout(this.opts.timeoutMs ?? 8000),
     });
     if (!res.ok) throw new Error(`pulsemcp: HTTP ${res.status}`);

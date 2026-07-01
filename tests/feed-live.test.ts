@@ -124,30 +124,59 @@ test('defaultScorer: no signals → score 0 (below the recommend floor)', () => 
   assert.equal(s?.score, 0);
 });
 
-test('McpRegistrySource: maps servers + follows cursor pagination (fake fetch)', async () => {
+test('McpRegistrySource: maps the real {server,_meta} shape + nextCursor + skips non-latest', async () => {
+  const META = 'io.modelcontextprotocol.registry/official';
   const p1 = {
     servers: [
       {
-        name: 'gh',
-        description: 'github',
-        updated_at: '2026-06-25T00:00:00Z',
-        packages: [{ registry_name: 'npm', name: '@x/gh', version: '2.0.0' }],
+        server: {
+          name: 'ai.adeu/adeu',
+          title: 'adeu',
+          description: 'a tool',
+          version: '1.5.2',
+          packages: [{ registryType: 'pypi', identifier: 'adeu', version: '1.5.2' }],
+          repository: { url: 'https://github.com/x/adeu' },
+        },
+        _meta: { [META]: { updatedAt: '2026-05-01T00:00:00Z', isLatest: true } },
       },
     ],
-    metadata: { next_cursor: 'c1' },
+    metadata: { nextCursor: 'c1' },
   };
   const p2 = {
-    servers: [{ name: 'py', packages: [{ registry_name: 'pypi', name: 'pytool', version: '1.0' }] }],
+    servers: [
+      // remote-only server (no package → no coordinate) + a superseded version that must be skipped
+      {
+        server: {
+          name: 'ac/mcp',
+          title: 'inf',
+          remotes: [{ type: 'streamable-http', url: 'https://x/mcp' }],
+        },
+        _meta: { [META]: { updatedAt: '2026-04-01T00:00:00Z', isLatest: true } },
+      },
+      {
+        server: {
+          name: 'old/thing',
+          version: '0.9.0',
+          packages: [{ registryType: 'npm', identifier: '@old/thing', version: '0.9.0' }],
+        },
+        _meta: { [META]: { isLatest: false } },
+      },
+    ],
     metadata: {},
   };
   const source = new McpRegistrySource({ baseUrl: 'http://test', fetchImpl: mkFetch([p1, p2]) });
   const items = await source.list();
-  assert.equal(items.length, 2);
-  const gh = items.find((i) => i.name === 'gh');
-  assert.equal(gh?.identifier, '@x/gh');
-  assert.equal(gh?.ecosystem, 'npm');
-  assert.equal(gh?.version, '2.0.0');
-  assert.equal(items.find((i) => i.name === 'py')?.ecosystem, 'pypi');
+  assert.equal(items.length, 2); // adeu + inf; old/thing skipped (isLatest:false)
+  const adeu = items.find((i) => i.name === 'adeu');
+  assert.equal(adeu?.identifier, 'adeu');
+  assert.equal(adeu?.ecosystem, 'pypi');
+  assert.equal(adeu?.version, '1.5.2');
+  assert.equal(adeu?.updatedAt, '2026-05-01T00:00:00Z');
+  assert.equal(adeu?.url, 'https://github.com/x/adeu');
+  const inf = items.find((i) => i.name === 'inf');
+  assert.equal(inf?.identifier, undefined); // remote-only → no install coordinate
+  assert.equal(inf?.url, 'https://x/mcp');
+  assert.ok(!items.some((i) => i.name === 'old/thing'));
 });
 
 test('McpRegistrySource: non-OK response throws (discover would catch it)', async () => {
@@ -155,8 +184,10 @@ test('McpRegistrySource: non-OK response throws (discover would catch it)', asyn
   await assert.rejects(source.list(), /503/);
 });
 
-test('PulseMcpSource: maps popularity (fake fetch)', async () => {
+test('PulseMcpSource: requires an API key, then maps popularity', async () => {
+  await assert.rejects(new PulseMcpSource({ baseUrl: 'http://test' }).list(), /API key/);
   const source = new PulseMcpSource({
+    apiKey: 'k',
     baseUrl: 'http://test',
     fetchImpl: mkFetch([
       { servers: [{ name: 'gh', package_name: '@x/gh', package_registry: 'npm', stars: 120 }] },
