@@ -30,7 +30,17 @@ export const DEFAULT_CONFIG: FleetConfig = {
 };
 
 export function fleetHomeDir(fleetHome?: string): string {
-  return fleetHome ?? process.env.FLEET_HOME ?? join(homedir(), '.fleet');
+  // `||` (not `??`) so an empty string falls through instead of resolving cwd-relative.
+  return fleetHome || process.env.FLEET_HOME || join(homedir(), '.fleet');
+}
+
+function isUrl(s: string): boolean {
+  try {
+    new URL(s);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function configPath(fleetHome?: string): string {
@@ -50,11 +60,13 @@ export function normalizeConfig(parsed: unknown): FleetConfig {
   }
   const allow = strArray(p.allowHosts);
   if (allow) c.allowHosts = allow;
+  // For reserved list fields, an all-invalid value keeps the null default
+  // ("all detected") rather than flipping to [] ("none").
   const agents = strArray(p.agents);
-  if (agents) c.agents = agents;
-  if (typeof p.hubUrl === 'string' && p.hubUrl) c.hubUrl = p.hubUrl;
+  if (agents && agents.length) c.agents = agents;
+  if (typeof p.hubUrl === 'string' && p.hubUrl && isUrl(p.hubUrl)) c.hubUrl = p.hubUrl;
   const sources = strArray(p.feedSources);
-  if (sources) c.feedSources = sources;
+  if (sources && sources.length) c.feedSources = sources;
   return c;
 }
 

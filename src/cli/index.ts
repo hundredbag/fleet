@@ -25,6 +25,7 @@ import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
+import { redactUrl } from '../core/redact.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -305,8 +306,9 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'config': {
       const cfg = loadConfig();
+      const shown = { ...cfg, hubUrl: cfg.hubUrl ? redactUrl(cfg.hubUrl) : null };
       process.stdout.write(`config: ${configPath()}\n`);
-      process.stdout.write(JSON.stringify(cfg, null, 2) + '\n');
+      process.stdout.write(JSON.stringify(shown, null, 2) + '\n');
       return 0;
     }
     case 'conflicts': {
