@@ -20,6 +20,8 @@ export interface FeedItem {
   /** RFC3339 */
   updatedAt?: string;
   popularity?: number;
+  /** registry lifecycle status (e.g. 'active', 'deprecated') — feeds trust */
+  status?: string;
   /** placeholder for the M6 trust/quality layer */
   security?: unknown;
 }

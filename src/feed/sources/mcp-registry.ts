@@ -40,6 +40,7 @@ function mapEntries(entry: any): FeedItem[] {
     name: String(s?.title ?? s?.name ?? 'unknown'),
     description: s?.description,
     updatedAt: meta.updatedAt ?? meta.publishedAt,
+    status: typeof meta.status === 'string' ? meta.status : undefined,
   };
   const packages = Array.isArray(s?.packages) ? s.packages : [];
   if (packages.length) {

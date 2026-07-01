@@ -23,6 +23,7 @@ import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
+import { assessTrust } from '../feed/trust.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
 import { redactUrl } from '../core/redact.js';
@@ -274,7 +275,9 @@ async function main(argv: string[]): Promise<number> {
       if (recs.length === 0) process.stdout.write('  (none)\n');
       for (const r of recs) {
         const id = r.item.identifier ? ` (${r.item.identifier})` : '';
-        process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}\n`);
+        const t = assessTrust(r.item);
+        const caution = t.level === 'caution' ? `  ⚠ ${t.reasons.join(', ')}` : '';
+        process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}${caution}\n`);
       }
       if (failures.length > 0) {
         process.stdout.write(
