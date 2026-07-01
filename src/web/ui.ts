@@ -35,6 +35,12 @@ export function renderPage(): string {
   .warn { color:#f59e0b; }
   .foot { color:#5c6674; font-size:12px; padding:0 20px 24px; }
   #err { color:#f87171; }
+  #err.flash { color:#4ade80; }
+  button.act { padding:2px 9px; font-size:12px; margin-left:8px; }
+  td.cell.on { cursor:default; }
+  .preview { background:#12202e; border:1px solid #24435c; border-radius:8px; padding:12px 14px; margin:0; }
+  .preview .ptitle { color:#cfe0ee; margin-bottom:6px; font-weight:600; }
+  .pactions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -43,10 +49,12 @@ export function renderPage(): string {
   <span class="muted">unified cross-agent capability manager · read-only dashboard</span>
   <span style="flex:1"></span>
   <span id="err"></span>
+  <button id="rollback">Rollback last</button>
   <button id="refresh">Refresh</button>
 </header>
 <main>
-  <section><h2>Inventory — what's installed where</h2><div id="inventory"></div></section>
+  <div id="preview" class="preview" style="display:none"></div>
+  <section><h2>Inventory — what's installed where (click a ✓ to remove)</h2><div id="inventory"></div></section>
   <section><h2>Updates available</h2><div id="updates"></div></section>
   <section><h2>New / recommended (heuristic)</h2><div id="recommended"></div></section>
   <section><h2>Possible conflicts (heuristic)</h2><div id="conflicts"></div></section>
@@ -65,9 +73,65 @@ async function get(path){
 }
 function el(tag, cls, txt){ const e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
 
+let agents = [];
+function setErr(e){ const x=document.getElementById('err'); x.className=''; x.textContent = e ? (e.message ? e.message : String(e)) : ''; }
+function flash(msg){ const x=document.getElementById('err'); x.textContent=msg; x.className='flash'; setTimeout(function(){ if(x.className==='flash'){ x.textContent=''; x.className=''; } }, 2600); }
+async function postJson(path, body){
+  const r = await fetch(path, { method:'POST', headers:{ 'authorization':'Bearer '+token, 'content-type':'application/json' }, body: JSON.stringify(body) });
+  const data = await r.json().catch(function(){ return {}; });
+  if(!r.ok) throw new Error((data && data.error) ? data.error : (path+': HTTP '+r.status));
+  return data;
+}
+function clearPreview(){ const bar=document.getElementById('preview'); bar.style.display='none'; bar.innerHTML=''; }
+let pendingPlanId = null;
+function showPreview(res, onConfirm){
+  const preview = res.preview || res;
+  const bar = document.getElementById('preview'); bar.innerHTML=''; bar.style.display='block';
+  const changes = preview.changes || [];
+  bar.appendChild(el('div','ptitle', changes.length ? ('Preview — '+changes.length+' change(s):') : ('Nothing to apply ('+preview.status+')')));
+  if(res.runs){ bar.appendChild(el('div','row','runs: '+res.runs)); }
+  changes.forEach(function(c){
+    bar.appendChild(el('div','row', (c.op==='remove'?'− ':'+ ')+'['+c.agent+'] '+c.op+' "'+c.name+'"'));
+    (c.warnings||[]).forEach(function(w){ bar.appendChild(el('div','warn','    ⚠ '+w)); });
+  });
+  (preview.skips||[]).forEach(function(s){ bar.appendChild(el('div','muted','· ['+s.agent+'] skipped: '+s.reason)); });
+  const act = el('div','pactions');
+  if(changes.length){ const ok=el('button',null,'Confirm & apply'); ok.addEventListener('click', onConfirm); act.appendChild(ok); }
+  const cancel=el('button',null,'Cancel'); cancel.addEventListener('click', clearPreview); act.appendChild(cancel);
+  bar.appendChild(act);
+}
+async function doPlan(req){
+  setErr('');
+  try {
+    const res = await postJson('/api/plan', req);
+    pendingPlanId = res.planId;
+    showPreview(res, async function(){
+      try {
+        const applied = await postJson('/api/apply', { planId: pendingPlanId });
+        pendingPlanId=null; clearPreview(); await refresh();
+        flash(applied.status==='applied' ? 'Applied ✓' : ('Done: '+applied.status));
+      } catch(e){ setErr(e); }
+    });
+  } catch(e){ setErr(e); }
+}
+function pickAgentsThen(cb){
+  const bar = document.getElementById('preview'); bar.innerHTML=''; bar.style.display='block';
+  bar.appendChild(el('div','ptitle','Install to which agent(s)?'));
+  const act = el('div','pactions');
+  const allb = el('button',null,'All agents'); allb.addEventListener('click', function(){ cb('all'); }); act.appendChild(allb);
+  agents.forEach(function(a){ const b=el('button',null,a); b.addEventListener('click', function(){ cb([a]); }); act.appendChild(b); });
+  const cancel=el('button',null,'Cancel'); cancel.addEventListener('click', clearPreview); act.appendChild(cancel);
+  bar.appendChild(act);
+}
+async function doRollback(){
+  setErr('');
+  try { const r = await postJson('/api/rollback', {}); await refresh(); flash('Rolled back: ' + (r.action || 'done')); }
+  catch(e){ setErr(e); }
+}
+
 async function loadInventory(){
   const inv = await get('/api/inventory');
-  const agents = inv.agents.map(function(a){ return a.id; });
+  agents = inv.agents.map(function(a){ return a.id; });
   const rows = {};
   function add(kind, item){ const k=kind+'|'+item.name; if(!rows[k])rows[k]={kind:kind,name:item.name,agents:{}}; rows[k].agents[item.agent]=true; }
   inv.servers.forEach(function(s){ add('mcp', s); });
@@ -84,7 +148,13 @@ async function loadInventory(){
     const tr = el('tr');
     tr.appendChild(el('td','kind',row.kind));
     tr.appendChild(el('td','name',row.name));
-    agents.forEach(function(a){ const td=el('td','cell', row.agents[a]?'✓':'·'); if(row.agents[a]) td.classList.add('on'); tr.appendChild(td); });
+    agents.forEach(function(a){
+      const td=el('td','cell', row.agents[a]?'✓':'·');
+      if(row.agents[a]){ td.classList.add('on');
+        if(row.kind==='mcp'){ td.title='click to remove'; td.style.cursor='pointer'; td.addEventListener('click', function(){ doPlan({ action:'remove', name:row.name, from:[a] }); }); }
+      }
+      tr.appendChild(td);
+    });
     table.appendChild(tr);
   });
   box.appendChild(table);
@@ -94,7 +164,14 @@ async function loadFeed(){
   const feed = await get('/api/feed');
   const up = document.getElementById('updates'); up.innerHTML='';
   if(!feed.updates.length) up.appendChild(el('p','muted','(none)'));
-  feed.updates.forEach(function(u){ up.appendChild(el('div','row','↑ ['+u.agent+'] '+u.name+': '+u.installed+' → '+u.available)); });
+  feed.updates.forEach(function(u){
+    const d = el('div','row');
+    d.appendChild(el('span',null,'↑ ['+u.agent+'] '+u.name+': '+u.installed+' → '+u.available));
+    if(u.identifier && (u.ecosystem==='npm' || u.ecosystem==='pypi')){
+      const b=el('button','act','Update'); b.addEventListener('click', function(){ doPlan({ action:'update', name:u.name, to:[u.agent], coordinate:{ version:u.available } }); }); d.appendChild(b);
+    }
+    up.appendChild(d);
+  });
   const rec = document.getElementById('recommended'); rec.innerHTML='';
   if(!feed.recommendations.length) rec.appendChild(el('p','muted','(none)'));
   feed.recommendations.forEach(function(r){
@@ -102,6 +179,9 @@ async function loadFeed(){
     d.appendChild(el('span','star','★ '));
     d.appendChild(el('span','name', r.name + (r.identifier ? (' ('+r.identifier+')') : '')));
     d.appendChild(el('span','why', ' — ' + (r.reasons||[]).join('; ')));
+    if(r.identifier && (r.ecosystem==='npm' || r.ecosystem==='pypi')){
+      const b = el('button','act','Install'); b.addEventListener('click', function(){ pickAgentsThen(function(to){ doPlan({ action:'install', name:r.name, to:to, coordinate:{ ecosystem:r.ecosystem, identifier:r.identifier } }); }); }); d.appendChild(b);
+    }
     rec.appendChild(d);
   });
   if(feed.failures && feed.failures.length){ rec.appendChild(el('p','warn', "⚠ couldn't reach: " + feed.failures.map(function(f){ return f.source; }).join(', '))); }
@@ -119,6 +199,7 @@ async function refresh(){
   catch(e){ document.getElementById('err').textContent = (e && e.message) ? e.message : String(e); }
 }
 document.getElementById('refresh').addEventListener('click', refresh);
+document.getElementById('rollback').addEventListener('click', doRollback);
 refresh();
 </script>
 </body>

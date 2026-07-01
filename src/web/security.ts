@@ -38,10 +38,16 @@ export function checkOrigin(origin: string | undefined, port: number): boolean {
   }
 }
 
-/** Token from Authorization: Bearer, else the ?token= query param (initial page load). */
-export function tokenFromReq(req: IncomingMessage, port: number): string | undefined {
+/** Token from the Authorization: Bearer header ONLY (required for mutations). */
+export function tokenFromHeader(req: IncomingMessage): string | undefined {
   const auth = req.headers['authorization'];
-  if (typeof auth === 'string' && auth.startsWith('Bearer ')) return auth.slice(7);
+  return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/** Token from Authorization: Bearer, else the ?token= query param (GET / initial page load). */
+export function tokenFromReq(req: IncomingMessage, port: number): string | undefined {
+  const h = tokenFromHeader(req);
+  if (h) return h;
   try {
     return new URL(req.url ?? '/', `http://127.0.0.1:${port}`).searchParams.get('token') ?? undefined;
   } catch {

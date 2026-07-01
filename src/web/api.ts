@@ -31,6 +31,7 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
   const recommendations = (await recommend(inv, items, { limit: 20 })).map((r) => ({
     name: r.item.name,
     identifier: r.item.identifier,
+    ecosystem: r.item.ecosystem,
     source: r.item.source,
     description: r.item.description,
     url: r.item.url,

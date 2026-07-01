@@ -1,13 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentAdapter } from '../core/adapter.js';
 import type { FeedSource } from '../feed/source.js';
-import { makeToken, tokenMatches, checkHost, checkOrigin, tokenFromReq } from './security.js';
+import { makeToken, tokenMatches, checkHost, checkOrigin, tokenFromReq, tokenFromHeader } from './security.js';
 import { apiInventory, apiFeed, apiConflicts } from './api.js';
+import { ActionService } from './actions.js';
 import { renderPage } from './ui.js';
 
 /**
- * The local web dashboard daemon — a thin, co-equal face over core. Read-only
- * (Part 2); loopback-bound and token-gated so Part 3's writes inherit the guard.
+ * The local web dashboard daemon — a thin, co-equal face over core. GET is
+ * read-only; POST (mutations) is preview→confirm and CSRF-hardened (header-only
+ * token, Origin required + matched, application/json only). Loopback-bound.
  */
 export interface ServeOpts {
   port?: number;
@@ -15,6 +17,50 @@ export interface ServeOpts {
   token?: string;
   /** injectable feed sources (tests); defaults to the live sources */
   sources?: FeedSource[];
+  /** fleet state dir (backups/audit); defaults to ~/.fleet */
+  fleetHome?: string;
+}
+
+interface HttpError extends Error {
+  statusCode?: number;
+}
+function httpError(message: string, statusCode: number): HttpError {
+  const e: HttpError = new Error(message);
+  e.statusCode = statusCode;
+  return e;
+}
+
+/** Read a JSON request body with a hard size cap. Rejects with a statusCode so
+ * the caller can answer (413/400) — does NOT destroy the socket. */
+function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let done = false;
+    const chunks: Buffer[] = [];
+    const fail = (msg: string, code: number) => {
+      if (done) return;
+      done = true;
+      reject(httpError(msg, code));
+    };
+    req.on('data', (c: Buffer) => {
+      if (done) return;
+      size += c.length;
+      if (size > limit) return fail('request body too large', 413);
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (done) return;
+      done = true;
+      const s = Buffer.concat(chunks).toString('utf8').trim();
+      if (!s) return resolve({});
+      try {
+        resolve(JSON.parse(s));
+      } catch {
+        reject(httpError('invalid JSON body', 400));
+      }
+    });
+    req.on('error', (e) => fail(e.message, 400));
+  });
 }
 
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
@@ -32,6 +78,7 @@ const CSP =
 
 export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}) {
   const token = opts.token ?? makeToken();
+  const actions = new ActionService(adapters, opts.fleetHome);
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch((e) => {
       sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
@@ -42,12 +89,40 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
     // Use the actual bound port for checks so ephemeral (:0) test binds work too.
     const port = req.socket.localPort ?? 0;
     if (!checkHost(req.headers.host, port)) return sendJson(res, 403, { error: 'bad host' });
-    if (!checkOrigin(req.headers.origin, port)) return sendJson(res, 403, { error: 'bad origin' });
-    if (!tokenMatches(tokenFromReq(req, port), token)) return sendJson(res, 401, { error: 'unauthorized' });
 
     const path = new URL(req.url ?? '/', `http://127.0.0.1:${port}`).pathname;
-    if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' });
 
+    if (req.method === 'GET') {
+      if (!checkOrigin(req.headers.origin, port)) return sendJson(res, 403, { error: 'bad origin' });
+      if (!tokenMatches(tokenFromReq(req, port), token)) return sendJson(res, 401, { error: 'unauthorized' });
+      return handleGet(res, path);
+    }
+
+    if (req.method === 'POST') {
+      // Stricter CSRF gate for state-changing requests:
+      // Origin MUST be present and match; token MUST be in the header (not URL);
+      // body MUST be application/json (browsers can't send that cross-site without a preflight).
+      if (!req.headers.origin || !checkOrigin(req.headers.origin, port)) {
+        return sendJson(res, 403, { error: 'bad origin' });
+      }
+      if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) {
+        return sendJson(res, 415, { error: 'content-type must be application/json' });
+      }
+      if (!tokenMatches(tokenFromHeader(req), token)) return sendJson(res, 401, { error: 'unauthorized' });
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch (e) {
+        const code = (e as HttpError)?.statusCode ?? 400;
+        return sendJson(res, code, { error: e instanceof Error ? e.message : 'bad body' });
+      }
+      return handlePost(res, path, body);
+    }
+
+    return sendJson(res, 405, { error: 'method not allowed' });
+  }
+
+  function handleGet(res: ServerResponse, path: string): Promise<void> | void {
     switch (path) {
       case '/':
         res.writeHead(200, {
@@ -59,13 +134,31 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
         res.end(renderPage());
         return;
       case '/api/inventory':
-        return sendJson(res, 200, await apiInventory(adapters));
+        return apiInventory(adapters).then((r) => sendJson(res, 200, r));
       case '/api/feed':
-        return sendJson(res, 200, await apiFeed(adapters, opts.sources));
+        return apiFeed(adapters, opts.sources).then((r) => sendJson(res, 200, r));
       case '/api/conflicts':
-        return sendJson(res, 200, await apiConflicts(adapters));
+        return apiConflicts(adapters).then((r) => sendJson(res, 200, r));
       default:
         return sendJson(res, 404, { error: 'not found' });
+    }
+  }
+
+  async function handlePost(res: ServerResponse, path: string, body: unknown): Promise<void> {
+    const b = (body ?? {}) as Record<string, unknown>;
+    try {
+      switch (path) {
+        case '/api/plan':
+          return sendJson(res, 200, await actions.plan(b));
+        case '/api/apply':
+          return sendJson(res, 200, await actions.apply(b));
+        case '/api/rollback':
+          return sendJson(res, 200, await actions.rollback());
+        default:
+          return sendJson(res, 404, { error: 'not found' });
+      }
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

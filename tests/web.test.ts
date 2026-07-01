@@ -1,11 +1,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import { request, type Server } from 'node:http';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createFleetServer } from '../src/web/server.js';
 import { checkHost, checkOrigin, tokenMatches } from '../src/web/security.js';
+import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import type { AgentAdapter } from '../src/core/adapter.js';
 import type { FeedSource } from '../src/feed/source.js';
+
+// POST helper with full header control (node fetch may strip forbidden headers like Origin).
+function post(port: number, path: string, headers: Record<string, string>, body: string): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'POST', headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        let json: unknown;
+        try { json = JSON.parse(data); } catch { json = data; }
+        resolve({ status: res.statusCode ?? 0, json });
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
 
 const fakeAdapter: AgentAdapter = {
   id: 'claude-code',
@@ -90,5 +111,94 @@ test('web: unknown path 404s', async () => {
     assert.equal((await fetch(`http://127.0.0.1:${port}/nope?token=t`)).status, 404);
   } finally {
     await close(server);
+  }
+});
+
+test('web: POST is CSRF-hardened (Origin required, JSON only, header token only)', async () => {
+  const { server, port } = await startTest('t');
+  const origin = `http://127.0.0.1:${port}`;
+  try {
+    // no Origin → 403
+    let r = await post(port, '/api/plan', { 'content-type': 'application/json', authorization: 'Bearer t' }, '{}');
+    assert.equal(r.status, 403);
+    // non-JSON content-type → 415
+    r = await post(port, '/api/plan', { origin, 'content-type': 'text/plain', authorization: 'Bearer t' }, '{}');
+    assert.equal(r.status, 415);
+    // token not in the header (query only) → 401
+    r = await post(port, '/api/plan?token=t', { origin, 'content-type': 'application/json' }, '{}');
+    assert.equal(r.status, 401);
+  } finally {
+    await close(server);
+  }
+});
+
+test('web: plan → apply installs to a real agent config; planId is single-use', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-'));
+  const claudeJson = join(dir, '.claude.json');
+  writeFileSync(claudeJson, '{}');
+  const adapter = new ClaudeCodeAdapter(claudeJson, join(dir, 'sk'), join(dir, 'CLAUDE.md'));
+  const { server } = createFleetServer([adapter], { token: 't', fleetHome: join(dir, 'home') });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const h = { origin: `http://127.0.0.1:${port}`, 'content-type': 'application/json', authorization: 'Bearer t' };
+  try {
+    const planned = await post(port, '/api/plan', h, JSON.stringify({ action: 'install', name: 'demo', to: ['claude-code'], coordinate: { ecosystem: 'npm', identifier: '@x/demo' } }));
+    assert.equal(planned.status, 200);
+    assert.ok(planned.json.planId);
+    assert.equal(planned.json.preview.changes.length, 1);
+    // not yet written (dry-run preview only)
+    assert.doesNotMatch(readFileSync(claudeJson, 'utf8'), /@x\/demo/);
+
+    const applied = await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
+    assert.equal(applied.json.status, 'applied');
+    assert.match(readFileSync(claudeJson, 'utf8'), /@x\/demo/);
+
+    // same planId can't be replayed
+    const replay = await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
+    assert.equal(replay.status, 400);
+
+    // preview reveals the actual command that will run
+    assert.equal(planned.json.runs, 'npx -y @x/demo');
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web: refuses unsafe package coordinates (no flag/git/url/file injection)', async () => {
+  const { server, port } = await startTest('t');
+  const h = { origin: `http://127.0.0.1:${port}`, 'content-type': 'application/json', authorization: 'Bearer t' };
+  const bad = ['github:attacker/x', 'file:/etc/passwd', 'https://evil/x.tgz', '-e', 'pkg with space', '@scope/x; rm -rf'];
+  try {
+    for (const identifier of bad) {
+      const r = await post(port, '/api/plan', h, JSON.stringify({ action: 'install', name: 'x', to: ['claude-code'], coordinate: { ecosystem: 'npm', identifier } }));
+      assert.equal(r.status, 400, `expected 400 for '${identifier}'`);
+      assert.match(String(r.json.error), /unsafe/);
+    }
+  } finally {
+    await close(server);
+  }
+});
+
+test('web: update bumps version WITHOUT dropping env', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-'));
+  const claudeJson = join(dir, '.claude.json');
+  writeFileSync(claudeJson, JSON.stringify({ mcpServers: { demo: { command: 'npx', args: ['-y', '@x/demo@1.0.0'], env: { API_KEY: 'secret' } } } }));
+  const adapter = new ClaudeCodeAdapter(claudeJson, join(dir, 'sk'), join(dir, 'CLAUDE.md'));
+  const { server } = createFleetServer([adapter], { token: 't', fleetHome: join(dir, 'home') });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const h = { origin: `http://127.0.0.1:${port}`, 'content-type': 'application/json', authorization: 'Bearer t' };
+  try {
+    const planned = await post(port, '/api/plan', h, JSON.stringify({ action: 'update', name: 'demo', to: ['claude-code'], coordinate: { version: '2.0.0' } }));
+    assert.equal(planned.status, 200);
+    assert.equal(planned.json.runs, 'npx -y @x/demo@2.0.0');
+    await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
+    const written = JSON.parse(readFileSync(claudeJson, 'utf8'));
+    assert.equal(written.mcpServers.demo.args[1], '@x/demo@2.0.0'); // version bumped
+    assert.equal(written.mcpServers.demo.env.API_KEY, 'secret'); // env preserved
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
