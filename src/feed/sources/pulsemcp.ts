@@ -27,7 +27,9 @@ export class PulseMcpSource implements FeedSource {
   async list(): Promise<FeedItem[]> {
     const base = this.opts.baseUrl ?? 'https://api.pulsemcp.com';
     const doFetch = this.opts.fetchImpl ?? fetch;
-    const res = await doFetch(new URL('/v0.1/servers', base).toString());
+    const res = await doFetch(new URL('/v0.1/servers', base).toString(), {
+      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 8000),
+    });
     if (!res.ok) throw new Error(`pulsemcp: HTTP ${res.status}`);
     const data: any = await res.json();
     return (data?.servers ?? []).map(mapServer);

@@ -10,6 +10,8 @@ export interface HttpSourceOpts {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   maxPages?: number;
+  /** per-request timeout (ms) so a stalled registry can't hang the caller */
+  timeoutMs?: number;
 }
 
 export function mapEcosystem(r?: string): 'npm' | 'pypi' | 'other' {
@@ -47,7 +49,7 @@ export class McpRegistrySource implements FeedSource {
       const url = new URL('/v0/servers', base);
       if (o?.since) url.searchParams.set('updated_since', o.since);
       if (cursor) url.searchParams.set('cursor', cursor);
-      const res = await doFetch(url.toString());
+      const res = await doFetch(url.toString(), { signal: AbortSignal.timeout(this.opts.timeoutMs ?? 8000) });
       if (!res.ok) throw new Error(`mcp-registry: HTTP ${res.status}`);
       const data: any = await res.json();
       for (const s of data?.servers ?? []) items.push(mapServer(s));

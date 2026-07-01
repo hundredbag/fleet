@@ -23,6 +23,7 @@ import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
+import { startFleetServer } from '../web/server.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -48,6 +49,7 @@ Usage:
   fleet rule remove <name> --from <ids|all> [--commit]
                                            Manage rules (instruction blocks in CLAUDE.md/AGENTS.md)
 
+  fleet serve [--port <n>]                 Open the local web dashboard (127.0.0.1, token-gated)
   fleet whats-new                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
@@ -267,6 +269,14 @@ async function main(argv: string[]): Promise<number> {
       }
       process.stdout.write('\n(heuristic; verify before installing)\n');
       return 0;
+    }
+    case 'serve': {
+      const port = Number(str(p.flags.port) ?? '7777');
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`serve: invalid --port '${str(p.flags.port)}'`);
+      }
+      startFleetServer(adapters, { port });
+      return 0; // the listening server keeps the process alive
     }
     case 'conflicts': {
       const findings = analyzeConflicts(await buildInventory(adapters));
