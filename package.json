@@ -26,6 +26,14 @@
   "engines": {
     "node": ">=22"
   },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "capability-manager",
+    "developer-tools"
+  ],
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

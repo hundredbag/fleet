@@ -1,75 +1,115 @@
 # fleet
 
-Unified, **cross-agent** capability manager + discovery feed for AI agents.
+**One place to see and manage the capabilities of all your AI coding agents.**
 
-One place to see what's installed across **all** your agents (Claude Code,
-Codex, Gemini, and custom agents like Hermes), manage it with one action
-("apply to all"), and get told what's new — operable **by the AI itself**
-(MCP server) and **by a human** (web dashboard), over a shared core.
+You run Claude Code, Codex (and soon others). Each has its own MCP servers, skills,
+and behavioral rules — scattered across different config files and formats. `fleet`
+gives you **one inventory, one-click install/update/remove across agents, and a
+discovery feed** of new/updated capabilities — from a CLI, an MCP server (so an AI
+can drive it), or a local web dashboard. Same core behind all three.
 
-> Durable design record: `llm-wiki/wiki/projects/agent-fleet-manager/agent-fleet-manager-concept.md`
-> Landscape / white-space: `llm-wiki/wiki/research/market-business/`
+> Status: works end-to-end for **Claude Code + Codex** (MCP servers, skills, rules).
+> Gemini is excluded for now (moved to Antigravity). "Bring your own agent" via adapters.
+> Durable design record: `llm-wiki/wiki/projects/agent-fleet-manager/`.
 
-## Status — v0 (read-only inventory, MCP primitive)
+## Why
 
-The first slice proves the foundation: an **adapter per agent** reads each
-agent's config and produces a **unified inventory**. Read-only, zero-risk.
+- **See everything**: which MCP servers / skills / rules are on which agent, in one matrix.
+- **Manage across agents**: install / update / remove / "apply to all" — instead of editing each agent's config by hand.
+- **Discover**: get told what's new and what has updates, with heuristic recommendations relevant to your setup.
+- **Safely**: every write is **dry-run by default**, backed up, validated, audit-logged, and reversible with `fleet rollback`. Secrets are never shown to an AI or the browser.
 
-```
-        ┌──────────── core engine ────────────┐
-        │ inventory · adapters · (later) sync, │
-        │ feed, trust                          │
-        └──────────────────────────────────────┘
-           │            │              │
-      [MCP server]    [CLI]      [web dashboard]
-       (later)       (now: v0)    (later)
-```
+## Install
 
-Locked decisions: TypeScript/Node · MCP servers first · read-only inventory
-first → then write · imperative one-click before declarative manifest ·
-guardrails first-class (dry-run, self-protection, trust gate, audit log).
-
-## Layout
-
-```
-src/
-  core/
-    types.ts       domain model (primitive- & agent-agnostic)
-    adapter.ts     AgentAdapter interface (read-only in v0)
-    registry.ts    built-in adapters
-    inventory.ts   cross-agent inventory builder
-  adapters/
-    claude-code.ts ~/.claude.json (+ project .mcp.json)
-    codex.ts       ~/.codex/config.toml  [mcp_servers.*]
-    gemini.ts      ~/.gemini/settings.json  mcpServers
-  cli/
-    index.ts       `fleet inventory [--json]`
-    render.ts      capability × agent matrix
-tests/             node:test unit tests
-```
-
-## Develop
+Requires Node ≥ 22.
 
 ```bash
+git clone <repo> fleet && cd fleet
 npm install
-npm run typecheck
-npm test
-npm run inventory        # read your real agents (read-only)
-npm run inventory -- --json
+npm run build
+npm link          # optional: puts `fleet` and `fleet-mcp` on your PATH
 ```
 
-Requires Node >= 22.
+## Use it — three faces, one core
 
-> **Secrets:** the human matrix never prints config values, but `--json` emits
-> the raw inventory verbatim — including MCP `env` / `headers` / `raw`, which may
-> contain tokens. It's a local-only tool over your own config; don't pipe
-> `--json` somewhere public.
+### CLI
 
-> **Scope coverage (v0):** project-scoped `.mcp.json` servers are discovered
-> only for projects your agent already tracks; there's no filesystem scan yet.
+```bash
+fleet inventory                              # capability × agent matrix
+fleet whats-new                              # updates to yours + new/recommended
+fleet install github --to all \
+      --command npx --arg -y --arg @modelcontextprotocol/server-github     # dry-run
+fleet install github --to all --command npx --arg -y --arg @modelcontextprotocol/server-github --commit
+fleet sync github --from claude-code --to codex --commit
+fleet conflicts                              # opposing always-on rules (heuristic)
+fleet rollback                               # undo the last change
+```
+
+Full command reference: [docs/USAGE.md](docs/USAGE.md).
+
+### MCP (let an AI drive it)
+
+```bash
+claude mcp add fleet -- fleet-mcp      # or: -- node /abs/path/dist/mcp/server.js
+```
+
+Then ask your agent: _"fleet inventory"_, _"install playwright on claude and codex"_,
+_"anything new worth adding?"_, _"undo that"_. Mutations are dry-run unless `commit:true`.
+
+### Web dashboard (GUI)
+
+```bash
+fleet serve                            # → http://127.0.0.1:7777/?token=…  (open in a browser)
+```
+
+Capability matrix + updates + recommendations + conflicts, with one-click
+install/update/remove/rollback (each shows a preview → you confirm). Loopback-only
+and token-gated. To reach it from another device over **Tailscale**, keep the
+loopback bind and put `tailscale serve` in front:
+
+```bash
+fleet serve --allow-host <machine>.<tailnet>.ts.net
+tailscale serve --bg 7777
+```
+
+(Never bind `0.0.0.0`; never expose a write-capable daemon via `tailscale funnel`.)
+
+## Safety model
+
+- **Dry-run by default** — writes need `--commit` (CLI) / `commit:true` (MCP) / an explicit Confirm (GUI).
+- **Backup + atomic write + validate + audit + rollback**; a change is refused if the target file changed since the plan (hash guard).
+- **Self-protection**: fleet won't let you remove fleet itself.
+- **Secret redaction** at every AI/human boundary — the MCP tools and web dashboard only ever emit redacted metadata.
+- **`~/.fleet/`** holds the audit log + backups.
+
+> Caveat: `fleet inventory --json` prints the **raw** inventory (including MCP
+> `env`/`headers`, which may hold tokens). It's a local tool over your own config —
+> don't pipe `--json` anywhere public. (The MCP/web faces are always redacted.)
+
+## Architecture
+
+One `core` (inventory, safe write engine, orchestrator, redaction, conflict analysis)
++ per-agent **adapters** + a client-side **feed** + three thin **faces** (CLI / MCP / web).
+The feed is decoupled from the write path (enforced by an ESLint boundary rule): a
+feed source only emits public metadata; your inventory never leaves the machine, and
+"updates to mine" matching is done locally. A future central hub plugs in as one more
+feed source. See `docs/`.
 
 ## Adding an agent (Bring Your Own Agent)
 
-Implement `AgentAdapter` (`detect()` + `readInventory()`) and register it in
-`src/core/registry.ts`. That's the extensibility path that lets custom agents
-(e.g. Hermes) join the same control plane.
+Implement `AgentAdapter` (`detect()` + `readInventory()`, plus the writer methods to
+enable mutation) and register it in `src/core/registry.ts`. That's the extensibility
+path that lets custom agents (e.g. Hermes, Antigravity) join the same control plane.
+
+## Development
+
+```bash
+npm run ci        # lint + format:check + typecheck + test + build
+npm test
+npm run lint
+npm run format
+```
+
+## License
+
+MIT
