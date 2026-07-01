@@ -31,15 +31,30 @@ export async function discover(
       failures.push({ source: s.id, error: e instanceof Error ? e.message : String(e) });
     }
   }
-  const seen = new Set<string>();
-  const items: FeedItem[] = [];
+  // de-dupe by coordinate, MERGING fields across sources (registry version +
+  // PulseMCP popularity combine on one item; first source wins on conflict, later
+  // sources fill only the fields the first left undefined). Items with no
+  // identifier and no url are NOT de-duped on name — each keeps a unique key so
+  // distinct-but-same-named entries aren't collapsed.
+  const byKey = new Map<string, FeedItem>();
+  let uniq = 0;
   for (const it of all) {
-    const key = `${it.ecosystem ?? ''}:${(it.identifier ?? it.url ?? it.name).toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    items.push(it);
+    const base = it.identifier ?? it.url;
+    const key = base ? `${it.ecosystem ?? ''}:${base.toLowerCase()}` : `__uniq__:${uniq++}`;
+    const prior = byKey.get(key);
+    byKey.set(key, prior ? coalesce(it, prior) : it);
   }
-  return { items, failures };
+  return { items: [...byKey.values()], failures };
+}
+
+/** Merge `over` onto `base`, but only for fields `over` actually defines
+ * (so an explicit `undefined` from a mapper can't erase a real value). */
+function coalesce(base: FeedItem, over: FeedItem): FeedItem {
+  const out: FeedItem = { ...base };
+  for (const k of Object.keys(over) as (keyof FeedItem)[]) {
+    if (over[k] !== undefined) (out as unknown as Record<string, unknown>)[k] = over[k];
+  }
+  return out;
 }
 
 // --- minimal version comparison (v1) ---

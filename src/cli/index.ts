@@ -20,6 +20,9 @@ import {
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { analyzeConflicts } from '../core/conflicts.js';
+import { defaultSources } from '../feed/index.js';
+import { discover, updatesForInventory } from '../feed/feed.js';
+import { recommend } from '../feed/recommend.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -45,6 +48,7 @@ Usage:
   fleet rule remove <name> --from <ids|all> [--commit]
                                            Manage rules (instruction blocks in CLAUDE.md/AGENTS.md)
 
+  fleet whats-new                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
   fleet help
@@ -241,6 +245,28 @@ async function main(argv: string[]): Promise<number> {
         return runPlan(adapters, await planRemoveRule(adapters, name, targets), commit);
       }
       throw new Error('usage: fleet rule <install|sync|remove> …');
+    }
+    case 'whats-new': {
+      const inv = await buildInventory(adapters);
+      const { items, failures } = await discover(defaultSources());
+      const { updates } = updatesForInventory(inv, items);
+      const recs = await recommend(inv, items, { limit: 10 });
+      process.stdout.write('Updates available (installed):\n');
+      if (updates.length === 0) process.stdout.write('  (none)\n');
+      for (const u of updates) {
+        process.stdout.write(`  ↑ [${u.agent}] ${u.name}: ${u.installed} → ${u.available}\n`);
+      }
+      process.stdout.write('\nNew / recommended (not installed):\n');
+      if (recs.length === 0) process.stdout.write('  (none)\n');
+      for (const r of recs) {
+        const id = r.item.identifier ? ` (${r.item.identifier})` : '';
+        process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}\n`);
+      }
+      if (failures.length > 0) {
+        process.stdout.write(`\n⚠ couldn't reach: ${failures.map((f) => f.source).join(', ')} (showing what's available)\n`);
+      }
+      process.stdout.write('\n(heuristic; verify before installing)\n');
+      return 0;
     }
     case 'conflicts': {
       const findings = analyzeConflicts(await buildInventory(adapters));

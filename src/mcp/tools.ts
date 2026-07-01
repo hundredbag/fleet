@@ -19,6 +19,9 @@ import {
 import { rollback } from '../core/writer.js';
 import { summarizeInventory, summarizeResult } from '../core/redact.js';
 import { analyzeConflicts } from '../core/conflicts.js';
+import { defaultSources } from '../feed/index.js';
+import { discover, updatesForInventory } from '../feed/feed.js';
+import { recommend } from '../feed/recommend.js';
 
 const targetArg = (v: unknown): string => (Array.isArray(v) ? v.join(',') : String(v));
 
@@ -210,6 +213,30 @@ export function buildTools(
       handler: async (a) => {
         const targets = await resolveTargets(adapters, targetArg(a.from));
         return summarizeResult(await run(await planRemoveRule(adapters, String(a.name), targets), a.commit));
+      },
+    },
+    {
+      name: 'whats_new',
+      description:
+        'New & recommended capabilities for the user\'s agents, plus updates to installed ones. Heuristic ranking (novelty + popularity + relevance to what they use); public-registry data only; verify before installing.',
+      inputSchema: {},
+      handler: async () => {
+        const inv = await buildInventory(adapters);
+        const { items, failures } = await discover(defaultSources());
+        const { updates } = updatesForInventory(inv, items);
+        const recommendations = (await recommend(inv, items, { limit: 10 })).map((r) => ({
+          name: r.item.name,
+          identifier: r.item.identifier,
+          source: r.item.source,
+          score: Number(r.score.toFixed(2)),
+          reasons: r.reasons,
+        }));
+        return {
+          updates,
+          recommendations,
+          failures,
+          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Absence of results may just mean sources were unreachable (see failures).',
+        };
       },
     },
     {

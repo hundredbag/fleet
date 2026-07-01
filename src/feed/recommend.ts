@@ -1,0 +1,129 @@
+import type { Inventory } from '../core/types.js';
+import type { FeedItem } from './source.js';
+import { extractCoordinate } from './coords.js';
+
+/**
+ * Recommendation ranking (the "B" plan): not-installed × (novelty + popularity +
+ * relevance-to-what-you-use). Transparent, local, private (relevance is computed
+ * against the inventory on-device). Scoring is an INJECTABLE `Scorer` — the "C"
+ * upgrade (central hub / LLM-judged) swaps it without touching callers. The seam
+ * is **batch + async** on purpose: an LLM/hub judge scores the whole set in one
+ * round-trip, not N synchronous per-item calls.
+ */
+
+export interface ScoreContext {
+  /** keyword tokens from the user's installed capabilities (names + coordinates) */
+  installedTokens: Set<string>;
+  /** ecosystem:id coordinates of installed capabilities */
+  installedCoords: Set<string>;
+  /** agent ids present in the inventory */
+  agents: string[];
+  /** current time (ms); injected for deterministic tests */
+  now: number;
+}
+
+export interface Scored {
+  score: number;
+  reasons: string[];
+}
+
+/** Batch + async so a hub/LLM judge can drop in unchanged. */
+export type Scorer = (items: FeedItem[], ctx: ScoreContext) => Promise<Scored[]> | Scored[];
+
+export interface Recommendation {
+  item: FeedItem;
+  score: number;
+  reasons: string[];
+}
+
+const STOP = new Set([
+  'server', 'mcp', 'model', 'context', 'protocol', 'tool', 'tools', 'skill', 'the', 'for', 'and', 'with', 'your',
+  // generic tech tokens that would otherwise cause spurious "related" hits
+  'api', 'http', 'client', 'data', 'file', 'code', 'core', 'plugin', 'integration', 'support', 'service', 'cli',
+]);
+
+/** Tokens of length ≥4 (drops generic 3-char noise like "api"/"git"), minus stopwords. */
+function tokensOf(...texts: (string | undefined)[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of texts) {
+    if (!t) continue;
+    for (const w of t.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []) {
+      if (!STOP.has(w)) out.add(w);
+    }
+  }
+  return out;
+}
+
+/** Per-item heuristic: novelty + popularity + relevance. */
+function scoreOne(item: FeedItem, ctx: ScoreContext): Scored {
+  let score = 0;
+  const reasons: string[] = [];
+
+  if (item.updatedAt) {
+    const ageDays = (ctx.now - Date.parse(item.updatedAt)) / 86_400_000;
+    if (ageDays >= 0 && ageDays <= 30) {
+      score += 3;
+      reasons.push('new');
+    }
+  }
+  // require a non-trivial popularity before claiming "popular"
+  if (typeof item.popularity === 'number' && item.popularity >= 10) {
+    score += Math.min(3, Math.log10(item.popularity));
+    reasons.push('popular');
+  }
+  const overlap = [...tokensOf(item.name, item.description, item.identifier)].filter((t) =>
+    ctx.installedTokens.has(t),
+  );
+  if (overlap.length > 0) {
+    score += Math.min(3, overlap.length);
+    reasons.push(`related to your setup (${overlap.slice(0, 3).join(', ')})`);
+  }
+  return { score, reasons };
+}
+
+/** The default local heuristic scorer (batch, synchronous — assignable to the async `Scorer`). */
+export function defaultScorer(items: FeedItem[], ctx: ScoreContext): Scored[] {
+  return items.map((it) => scoreOne(it, ctx));
+}
+
+const coordKey = (eco: string, id: string): string => `${eco}:${id.toLowerCase()}`;
+
+/** Rank not-yet-installed feed items for THIS inventory. */
+export async function recommend(
+  inv: Inventory,
+  items: FeedItem[],
+  opts: { scorer?: Scorer; now?: number; limit?: number } = {},
+): Promise<Recommendation[]> {
+  const scorer = opts.scorer ?? defaultScorer;
+  const now = opts.now ?? Date.now();
+
+  const installedTokens = new Set<string>();
+  const installedCoords = new Set<string>();
+  const agents = new Set<string>();
+  for (const i of inv.items) {
+    agents.add(i.agent);
+    for (const t of tokensOf(i.name)) installedTokens.add(t);
+    if (i.kind !== 'mcp-server') continue;
+    const c = extractCoordinate(i.spec);
+    if (c?.confidence === 'high') {
+      installedCoords.add(coordKey(c.ecosystem, c.id));
+      for (const t of tokensOf(c.id)) installedTokens.add(t);
+    }
+  }
+
+  const candidates = items.filter(
+    (it) => !(it.identifier && it.ecosystem) || !installedCoords.has(coordKey(it.ecosystem, it.identifier)),
+  );
+  const ctx: ScoreContext = { installedTokens, installedCoords, agents: [...agents], now };
+  const scored = await scorer(candidates, ctx);
+
+  const ranked = candidates
+    .map((item, i) => {
+      const s = scored[i] ?? { score: 0, reasons: [] };
+      return { item, score: s.score, reasons: s.reasons };
+    })
+    .filter((r) => r.score >= 1) // signal floor: below this is noise
+    .sort((a, b) => b.score - a.score);
+
+  return opts.limit ? ranked.slice(0, opts.limit) : ranked;
+}
