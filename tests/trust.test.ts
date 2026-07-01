@@ -6,32 +6,51 @@ import type { FeedItem } from '../src/feed/source.js';
 const NOW = Date.parse('2026-07-02T00:00:00Z');
 const item = (o: Partial<FeedItem>): FeedItem => ({ name: 'x', source: 'r', ...o });
 
-test('assessTrust: deprecated status → caution', () => {
-  const t = assessTrust(
-    item({ status: 'deprecated', url: 'https://x', updatedAt: '2026-06-01T00:00:00Z' }),
-    NOW,
+test('caution: deprecated (case-insensitive) and other lifecycle statuses', () => {
+  assert.equal(
+    assessTrust(item({ status: 'Deprecated', url: 'https://x', updatedAt: '2026-06-01T00:00:00Z' }), NOW)
+      .level,
+    'caution',
   );
-  assert.equal(t.level, 'caution');
-  assert.ok(t.reasons.some((r) => /status/.test(r)));
+  assert.equal(
+    assessTrust(item({ status: 'archived', url: 'https://x', updatedAt: '2026-06-01T00:00:00Z' }), NOW).level,
+    'caution',
+  );
 });
 
-test('assessTrust: no repo URL → unknown (can not vet)', () => {
+test('caution: not updated in over a year', () => {
+  assert.equal(
+    assessTrust(item({ url: 'https://x', updatedAt: '2024-01-01T00:00:00Z' }), NOW).level,
+    'caution',
+  );
+});
+
+test('unknown: no source repository', () => {
   const t = assessTrust(item({ updatedAt: '2026-06-01T00:00:00Z' }), NOW);
   assert.equal(t.level, 'unknown');
   assert.ok(t.reasons.some((r) => /repository/.test(r)));
 });
 
-test('assessTrust: stale (>1yr) → caution', () => {
-  const t = assessTrust(item({ url: 'https://x', updatedAt: '2024-01-01T00:00:00Z' }), NOW);
-  assert.equal(t.level, 'caution');
-  assert.ok(t.reasons.some((r) => /year/.test(r)));
+test('unknown: malformed or missing updatedAt is NOT treated as maintained', () => {
+  assert.equal(assessTrust(item({ url: 'https://x', updatedAt: 'not-a-date' }), NOW).level, 'unknown');
+  assert.equal(assessTrust(item({ url: 'https://x' }), NOW).level, 'unknown');
 });
 
-test('assessTrust: maintained + has repo → ok', () => {
+test('no-flags: has a repo and updated within a year (with reasons, not empty)', () => {
   const t = assessTrust(item({ status: 'active', url: 'https://x', updatedAt: '2026-06-20T00:00:00Z' }), NOW);
-  assert.equal(t.level, 'ok');
+  assert.equal(t.level, 'no-flags');
+  assert.ok(t.reasons.length > 0);
 });
 
-test('assessTrust: no signals at all → unknown', () => {
-  assert.equal(assessTrust(item({}), NOW).level, 'unknown');
+test('hub security verdict is authoritative when present', () => {
+  const t = assessTrust(
+    item({
+      url: 'https://x',
+      updatedAt: '2026-06-20T00:00:00Z',
+      security: { level: 'caution', reasons: ['known CVE'] },
+    }),
+    NOW,
+  );
+  assert.equal(t.level, 'caution');
+  assert.ok(t.reasons.includes('known CVE'));
 });

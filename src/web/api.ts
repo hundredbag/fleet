@@ -6,7 +6,6 @@ import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
-import { assessTrust } from '../feed/trust.js';
 
 /**
  * Read-only JSON API over core — the same logic the CLI/MCP faces use, so the
@@ -38,7 +37,7 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
     url: r.item.url,
     score: Number(r.score.toFixed(2)),
     reasons: r.reasons,
-    trust: assessTrust(r.item),
+    trust: r.trust,
   }));
   return { updates, recommendations, failures };
 }

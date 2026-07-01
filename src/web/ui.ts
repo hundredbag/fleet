@@ -182,6 +182,7 @@ async function loadFeed(){
     d.appendChild(el('span','name', r.name + (r.identifier ? (' ('+r.identifier+')') : '')));
     d.appendChild(el('span','why', ' — ' + (r.reasons||[]).join('; ')));
     if(r.trust && r.trust.level==='caution'){ d.appendChild(el('span','warn', '  ⚠ ' + (r.trust.reasons||[]).join(', '))); }
+    else if(r.trust && r.trust.level==='unknown'){ d.appendChild(el('span','muted', '  · ' + (r.trust.reasons||[]).join(', '))); }
     if(r.identifier && (r.ecosystem==='npm' || r.ecosystem==='pypi')){
       const b = el('button','act','Install'); b.addEventListener('click', function(){ pickAgentsThen(function(to){ doPlan({ action:'install', name:r.name, to:to, coordinate:{ ecosystem:r.ecosystem, identifier:r.identifier } }); }); }); d.appendChild(b);
     }

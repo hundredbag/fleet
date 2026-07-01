@@ -22,7 +22,6 @@ import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
-import { assessTrust } from '../feed/trust.js';
 
 const targetArg = (v: unknown): string => (Array.isArray(v) ? v.join(',') : String(v));
 
@@ -240,7 +239,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           source: r.item.source,
           score: Number(r.score.toFixed(2)),
           reasons: r.reasons,
-          trust: assessTrust(r.item),
+          trust: r.trust,
         }));
         return {
           updates,

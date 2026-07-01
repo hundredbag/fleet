@@ -1,6 +1,7 @@
 import type { Inventory } from '../core/types.js';
 import type { FeedItem } from './source.js';
 import { extractCoordinate, coordKey } from './coords.js';
+import { assessTrust, type TrustAssessment } from './trust.js';
 
 /**
  * Recommendation ranking (the "B" plan): not-installed × (novelty + popularity +
@@ -34,6 +35,8 @@ export interface Recommendation {
   item: FeedItem;
   score: number;
   reasons: string[];
+  /** pre-install trust signal, computed once here (threads `now`) */
+  trust: TrustAssessment;
 }
 
 const STOP = new Set([
@@ -141,7 +144,7 @@ export async function recommend(
   const ranked = candidates
     .map((item, i) => {
       const s = scored[i] ?? { score: 0, reasons: [] };
-      return { item, score: s.score, reasons: s.reasons };
+      return { item, score: s.score, reasons: s.reasons, trust: assessTrust(item, now) };
     })
     .filter((r) => r.score >= 1) // signal floor: below this is noise
     .sort((a, b) => b.score - a.score);
