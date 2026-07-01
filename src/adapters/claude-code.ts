@@ -15,6 +15,7 @@ import type { DetectedAgent, InstalledCapability, McpServerSpec, Scope } from '.
 import { asStringArray, asStringRecord } from '../core/coerce.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
+import { readClaudePermissions } from '../core/permissions.js';
 import {
   loadJsonDoc,
   getServers,
@@ -28,6 +29,7 @@ const CLAUDE_LABEL = 'claude-code';
 const DEFAULT_CLAUDE_JSON = join(homedir(), '.claude.json');
 const DEFAULT_CLAUDE_SKILLS = join(homedir(), '.claude', 'skills');
 const DEFAULT_CLAUDE_RULES = join(homedir(), '.claude', 'CLAUDE.md');
+const DEFAULT_CLAUDE_SETTINGS = join(homedir(), '.claude', 'settings.json');
 
 /**
  * Normalize a raw Claude Code MCP server entry into a structured spec.
@@ -76,6 +78,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     private readonly claudeJsonPath: string = DEFAULT_CLAUDE_JSON,
     private readonly skillsDir: string = DEFAULT_CLAUDE_SKILLS,
     private readonly rulesPath: string = DEFAULT_CLAUDE_RULES,
+    private readonly settingsPath: string = DEFAULT_CLAUDE_SETTINGS,
   ) {}
 
   async detect(): Promise<DetectedAgent> {
@@ -110,6 +113,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     if (!existsSync(this.claudeJsonPath)) {
       items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
       items.push(...(await readRulesInventory(this.id, this.rulesPath)));
+      items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
       return items;
     }
 
@@ -143,6 +147,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     }
     items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
+    items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
     return items;
   }
 

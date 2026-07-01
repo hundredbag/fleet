@@ -17,6 +17,7 @@ import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js'
 import { sha256 } from '../core/hash.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
+import { readCodexPermissions } from '../core/permissions.js';
 
 const DEFAULT_CODEX_TOML = join(homedir(), '.codex', 'config.toml');
 const DEFAULT_CODEX_SKILLS = join(homedir(), '.codex', 'skills');
@@ -197,6 +198,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     }
     items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
+    items.push(...(await readCodexPermissions(this.id, this.configPath)));
     return items;
   }
 

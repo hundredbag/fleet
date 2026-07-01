@@ -46,6 +46,14 @@ export function renderInventory(inv: Inventory): string {
     ),
   );
   out.push('');
+  out.push(
+    renderSection(
+      'Permissions (read-only)',
+      inv.items.filter((i) => i.kind === 'permission'),
+      present,
+    ),
+  );
+  out.push('');
   out.push('  legend: ✓ installed · ✗ disabled (U=user P=project L=local) · – not installed');
   return out.join('\n');
 }

@@ -10,8 +10,8 @@
 /** Stable id for an agent runtime we can manage, e.g. 'claude-code'. */
 export type AgentId = string;
 
-/** Capability primitive kinds. v1 reads only 'mcp-server'. */
-export type PrimitiveKind = 'mcp-server' | 'skill' | 'rule' | 'command' | 'hook' | 'subagent';
+/** Capability primitive kinds. */
+export type PrimitiveKind = 'mcp-server' | 'skill' | 'rule' | 'permission' | 'command' | 'hook' | 'subagent';
 
 /** Where a capability is configured for an agent. */
 export type Scope = 'user' | 'project' | 'local';
@@ -80,9 +80,23 @@ export interface RuleCapability extends BaseCapability {
 }
 
 /**
+ * A permission / approval rule an agent enforces. READ-ONLY in fleet: it is
+ * surfaced in the inventory but never written or translated across agents —
+ * permissions are the highest-blast-radius config and each agent's model differs
+ * (Claude allow/deny/ask lists, Codex approval policy, …), so mis-syncing them
+ * could silently grant dangerous capabilities.
+ */
+export interface PermissionCapability extends BaseCapability {
+  kind: 'permission';
+  /** 'allow' | 'deny' | 'ask' (Claude) or a policy label (e.g. 'policy') */
+  effect: string;
+}
+
+/**
  * A capability instance found installed on one agent. Discriminated on `kind`.
  */
-export type InstalledCapability = McpServerCapability | SkillCapability | RuleCapability;
+export type InstalledCapability =
+  McpServerCapability | SkillCapability | RuleCapability | PermissionCapability;
 
 /**
  * Whether a capability is ALWAYS-ON (in context every turn — where opposing
@@ -92,8 +106,8 @@ export type InstalledCapability = McpServerCapability | SkillCapability | RuleCa
 export type Surface = 'gated' | 'always-on';
 
 export function surfaceOf(kind: PrimitiveKind): Surface {
-  // mcp tools + skills are gated; rules/instructions are always-on.
-  return kind === 'rule' ? 'always-on' : 'gated';
+  // mcp tools + skills are gated; rules/instructions + permissions are always-on.
+  return kind === 'rule' || kind === 'permission' ? 'always-on' : 'gated';
 }
 
 /** An agent runtime detected (or not) on this machine. */

@@ -1,4 +1,10 @@
-import type { Inventory, McpServerCapability, RuleCapability, SkillCapability } from './types.js';
+import type {
+  Inventory,
+  McpServerCapability,
+  PermissionCapability,
+  RuleCapability,
+  SkillCapability,
+} from './types.js';
 import type { ExecuteResult } from './orchestrator.js';
 
 /**
@@ -50,11 +56,15 @@ export function summarizeInventory(inv: Inventory) {
   const rules = inv.items
     .filter((i): i is RuleCapability => i.kind === 'rule')
     .map((i) => ({ name: i.name, agent: i.agent, scope: i.scope }));
+  const permissions = inv.items
+    .filter((i): i is PermissionCapability => i.kind === 'permission')
+    .map((i) => ({ name: i.name, agent: i.agent, effect: i.effect }));
   return {
     agents: inv.agents.map((a) => ({ id: a.id, present: a.present, note: a.note })),
     servers,
     skills,
     rules,
+    permissions,
   };
 }
 
