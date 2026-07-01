@@ -2,7 +2,7 @@ import type { AgentAdapter } from './adapter.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code.js';
 import { CodexAdapter } from '../adapters/codex.js';
 import { loadConfig, type FleetConfig } from './config.js';
-import { loadPluginAdapters } from './plugins.js';
+import { loadPluginAdapters, type Importer } from './plugins.js';
 
 /**
  * The built-in active adapters.
@@ -23,15 +23,20 @@ export function defaultAdapters(): AgentAdapter[] {
  */
 export async function loadAdapters(
   config: FleetConfig = loadConfig(),
-  importer?: (spec: string) => Promise<unknown>,
+  importer?: Importer,
 ): Promise<AgentAdapter[]> {
   const builtins = defaultAdapters();
-  const seen = new Set(builtins.map((a) => a.id));
+  const builtinIds = new Set(builtins.map((a) => a.id));
+  const seen = new Set(builtinIds);
   const plugins = await loadPluginAdapters(config.adapterModules ?? [], importer);
   const extra: AgentAdapter[] = [];
   for (const a of plugins) {
     if (seen.has(a.id)) {
-      process.stderr.write(`fleet: plugin adapter '${a.id}' shadows a built-in; ignoring\n`);
+      process.stderr.write(
+        builtinIds.has(a.id)
+          ? `fleet: plugin adapter '${a.id}' shadows a built-in; ignoring\n`
+          : `fleet: duplicate plugin adapter '${a.id}'; ignoring\n`,
+      );
       continue;
     }
     seen.add(a.id);

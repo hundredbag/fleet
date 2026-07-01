@@ -162,7 +162,9 @@ async function main(argv: string[]): Promise<number> {
   const cmd = first && !first.startsWith('-') ? first : 'inventory';
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
   const p = parseArgs(rest);
-  const adapters = await loadAdapters();
+  // Don't load (and thus execute) plugin adapters for commands that don't need them.
+  const needsAdapters = !['config', 'help', '-h', '--help', 'rollback'].includes(cmd);
+  const adapters = needsAdapters ? await loadAdapters() : [];
   const commit = p.flags.commit === true || p.flags.commit === 'true';
 
   switch (cmd) {

@@ -31,6 +31,53 @@ test('loadPluginAdapters: loads instance + factory (sync/async) exports; skips i
   );
 });
 
+test('loadPluginAdapters: a throwing/rejecting factory is skipped (never crashes)', async () => {
+  const importer = async (spec: string): Promise<unknown> => {
+    if (spec === 'boom')
+      return {
+        default: () => {
+          throw new Error('sync throw');
+        },
+      };
+    if (spec === 'reject')
+      return {
+        default: async () => {
+          throw new Error('async reject');
+        },
+      };
+    if (spec === 'ok') return { default: fakeAdapter('ok') };
+    throw new Error('x');
+  };
+  const got = await loadPluginAdapters(['boom', 'reject', 'ok'], importer);
+  assert.deepEqual(
+    got.map((a) => a.id),
+    ['ok'],
+  );
+});
+
+test('loadPluginAdapters: accepts a namespace-shaped module (adapter fields on the module)', async () => {
+  const importer = async (): Promise<unknown> => fakeAdapter('ns'); // no `default`
+  const got = await loadPluginAdapters(['ns'], importer);
+  assert.deepEqual(
+    got.map((a) => a.id),
+    ['ns'],
+  );
+});
+
+test('loadPluginAdapters: skips a module missing displayName (contract violation)', async () => {
+  const importer = async (): Promise<unknown> => ({
+    default: {
+      id: 'x',
+      async detect() {},
+      async readInventory() {
+        return [];
+      },
+    },
+  });
+  const got = await loadPluginAdapters(['x'], importer);
+  assert.equal(got.length, 0);
+});
+
 test('loadPluginAdapters: empty list short-circuits', async () => {
   let called = false;
   await loadPluginAdapters([], async () => {
@@ -51,4 +98,11 @@ test('loadAdapters: built-ins + non-colliding plugins; a shadowing plugin is ign
   assert.ok(ids.includes('claude-code') && ids.includes('codex')); // built-ins present
   assert.ok(ids.includes('hermes')); // non-colliding plugin added
   assert.equal(ids.filter((x) => x === 'claude-code').length, 1); // shadow did not duplicate/override
+});
+
+test('loadAdapters: duplicate plugin ids are deduped (first wins)', async () => {
+  const importer = async (spec: string): Promise<unknown> =>
+    spec === 'a' ? { default: fakeAdapter('dup') } : { default: fakeAdapter('dup') };
+  const adapters = await loadAdapters({ ...DEFAULT_CONFIG, adapterModules: ['a', 'b'] }, importer);
+  assert.equal(adapters.filter((x) => x.id === 'dup').length, 1);
 });

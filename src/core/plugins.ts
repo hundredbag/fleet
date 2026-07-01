@@ -8,12 +8,16 @@ import type { AgentAdapter } from './adapter.js';
  * never crashes fleet. Note: a plugin runs IN-PROCESS (arbitrary code from the
  * user's own config), same trust level as anything else the user installs.
  */
-type Importer = (spec: string) => Promise<unknown>;
+export type Importer = (spec: string) => Promise<unknown>;
 
 function isAdapter(x: unknown): x is AgentAdapter {
   const a = x as Partial<AgentAdapter> | null;
   return (
-    !!a && typeof a.id === 'string' && typeof a.detect === 'function' && typeof a.readInventory === 'function'
+    !!a &&
+    typeof a.id === 'string' &&
+    typeof a.displayName === 'string' &&
+    typeof a.detect === 'function' &&
+    typeof a.readInventory === 'function'
   );
 }
 
