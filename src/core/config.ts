@@ -19,6 +19,8 @@ export interface FleetConfig {
   hubUrl: string | null;
   /** custom feed source ids, or null = built-in defaults */
   feedSources: string[] | null;
+  /** third-party adapter module specifiers to load (bring your own agent) */
+  adapterModules: string[];
 }
 
 export const DEFAULT_CONFIG: FleetConfig = {
@@ -27,6 +29,7 @@ export const DEFAULT_CONFIG: FleetConfig = {
   agents: null,
   hubUrl: null,
   feedSources: null,
+  adapterModules: [],
 };
 
 export function fleetHomeDir(fleetHome?: string): string {
@@ -67,6 +70,8 @@ export function normalizeConfig(parsed: unknown): FleetConfig {
   if (typeof p.hubUrl === 'string' && p.hubUrl && isUrl(p.hubUrl)) c.hubUrl = p.hubUrl;
   const sources = strArray(p.feedSources);
   if (sources && sources.length) c.feedSources = sources;
+  const adapterModules = strArray(p.adapterModules);
+  if (adapterModules) c.adapterModules = adapterModules;
   return c;
 }
 

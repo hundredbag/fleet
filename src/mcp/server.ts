@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { defaultAdapters } from '../core/registry.js';
+import { loadAdapters } from '../core/registry.js';
 import { buildTools } from './tools.js';
 
 /**
@@ -12,7 +12,7 @@ import { buildTools } from './tools.js';
 async function main(): Promise<void> {
   const server = new McpServer({ name: 'fleet', version: '0.0.1' });
 
-  for (const tool of buildTools(defaultAdapters())) {
+  for (const tool of buildTools(await loadAdapters())) {
     server.registerTool(tool.name, { description: tool.description, inputSchema: tool.inputSchema }, (async (
       args: Record<string, unknown>,
     ) => {

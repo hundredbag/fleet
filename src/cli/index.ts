@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { defaultAdapters } from '../core/registry.js';
+import { loadAdapters } from '../core/registry.js';
 import { buildInventory } from '../core/inventory.js';
 import { renderInventory } from './render.js';
 import type { AgentAdapter } from '../core/adapter.js';
@@ -162,7 +162,7 @@ async function main(argv: string[]): Promise<number> {
   const cmd = first && !first.startsWith('-') ? first : 'inventory';
   const rest = first && !first.startsWith('-') ? argv.slice(1) : argv;
   const p = parseArgs(rest);
-  const adapters = defaultAdapters();
+  const adapters = await loadAdapters();
   const commit = p.flags.commit === true || p.flags.commit === 'true';
 
   switch (cmd) {
