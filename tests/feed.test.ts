@@ -10,7 +10,13 @@ function mcp(name: string, agent: string, spec: McpServerSpec): McpServerCapabil
 }
 const inv = (items: McpServerCapability[]): Inventory => ({ agents: [], items });
 const fakeSource = (id: string, items: FeedItem[]): FeedSource => ({ id, list: async () => items });
-const npm = (id: string, version?: string): FeedItem => ({ name: id, source: 'r', identifier: id, ecosystem: 'npm', version });
+const npm = (id: string, version?: string): FeedItem => ({
+  name: id,
+  source: 'r',
+  identifier: id,
+  ecosystem: 'npm',
+  version,
+});
 
 test('extractCoordinate: npx / uvx / value-flags / local-script / remote', () => {
   assert.deepEqual(extractCoordinate({ transport: 'stdio', command: 'npx', args: ['-y', '@x/y'] }), {
@@ -22,9 +28,15 @@ test('extractCoordinate: npx / uvx / value-flags / local-script / remote', () =>
   assert.equal(v?.id, '@x/y');
   assert.equal(v?.version, '1.2.3');
   // value-taking flag's value must not be mistaken for the package
-  assert.equal(extractCoordinate({ transport: 'stdio', command: 'npx', args: ['--loglevel', 'warn', '@x/y'] })?.id, '@x/y');
+  assert.equal(
+    extractCoordinate({ transport: 'stdio', command: 'npx', args: ['--loglevel', 'warn', '@x/y'] })?.id,
+    '@x/y',
+  );
   // explicit -p
-  assert.equal(extractCoordinate({ transport: 'stdio', command: 'npx', args: ['-p', '@x/y', 'cmd'] })?.id, '@x/y');
+  assert.equal(
+    extractCoordinate({ transport: 'stdio', command: 'npx', args: ['-p', '@x/y', 'cmd'] })?.id,
+    '@x/y',
+  );
   assert.equal(extractCoordinate({ transport: 'stdio', command: 'uvx', args: ['mypkg'] })?.ecosystem, 'pypi');
   assert.equal(extractCoordinate({ transport: 'stdio', command: 'node', args: ['server.js'] }), null);
   assert.equal(extractCoordinate({ transport: 'http', url: 'https://h.test/mcp' })?.confidence, 'low');
@@ -53,7 +65,12 @@ test('updatesForInventory: only concrete newer versions are updates', () => {
     mcp('unpinned', 'codex', { transport: 'stdio', command: 'npx', args: ['-y', '@x/up'] }),
     mcp('local', 'codex', { transport: 'stdio', command: 'node', args: ['s.js'] }),
   ]);
-  const items: FeedItem[] = [npm('@x/gh', '2.0.0'), npm('@x/cur', '2.0.0'), npm('@x/down', '1.0.0'), npm('@x/up', '5.0.0')];
+  const items: FeedItem[] = [
+    npm('@x/gh', '2.0.0'),
+    npm('@x/cur', '2.0.0'),
+    npm('@x/down', '1.0.0'),
+    npm('@x/up', '5.0.0'),
+  ];
   const { updates, unmatched } = updatesForInventory(i, items);
   assert.deepEqual(
     updates.map((u) => u.name),

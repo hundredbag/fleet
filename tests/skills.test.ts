@@ -31,14 +31,25 @@ const noValidate: ChangeValidator = () => {};
 function mkSkill(root: string, name: string, body = 'hello'): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: "${name} desc"\nversion: 1.0.0\n---\n${body}\n`);
+  writeFileSync(
+    join(dir, 'SKILL.md'),
+    `---\nname: ${name}\ndescription: "${name} desc"\nversion: 1.0.0\n---\n${body}\n`,
+  );
   return dir;
 }
 
 function dirChange(file: string, sourceDir: string, baseHash?: string): PlannedChange {
   return {
-    agent: 'x', op: 'install', name: 'mine', scope: 'user',
-    file, fsKind: 'dir', dirOp: 'install', sourceDir, newContent: '', baseHash,
+    agent: 'x',
+    op: 'install',
+    name: 'mine',
+    scope: 'user',
+    file,
+    fsKind: 'dir',
+    dirOp: 'install',
+    sourceDir,
+    newContent: '',
+    baseHash,
   };
 }
 
@@ -172,7 +183,10 @@ test(
     const a = new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, 'skills'));
     const src = mkSkill(dir, 'ok');
     await assert.rejects(
-      a.renderInstallSkill({ name: '../escape', dir: src }, { kind: 'skill', name: '../escape', scope: 'user' }),
+      a.renderInstallSkill(
+        { name: '../escape', dir: src },
+        { kind: 'skill', name: '../escape', scope: 'user' },
+      ),
       /escapes|invalid/,
     );
     await assert.rejects(
@@ -224,14 +238,20 @@ test(
       new CodexAdapter(join(dir, 'config.toml'), codexSkills),
     ];
 
-    const plan = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', ['claude-code', 'codex']);
+    const plan = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', [
+      'claude-code',
+      'codex',
+    ]);
     assert.equal(plan.changes.length, 2);
     await applyPlan(adapters, plan, { fleetHome: home });
     assert.ok(existsSync(join(claudeSkills, 'mysk', 'SKILL.md')));
     assert.ok(existsSync(join(codexSkills, 'mysk', 'SKILL.md')));
 
     // identical re-install is a no-op
-    const again = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', ['claude-code', 'codex']);
+    const again = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', [
+      'claude-code',
+      'codex',
+    ]);
     assert.equal(again.changes.length, 0);
     assert.equal(again.skips[0]?.kind, 'noop');
 

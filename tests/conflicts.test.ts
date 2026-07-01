@@ -8,7 +8,10 @@ function rule(name: string, agent: string, body: string): RuleCapability {
 }
 
 test('detectOpposition: opposite poles on an axis are flagged; same pole is not', () => {
-  assert.equal(detectOpposition('Always answer in a terse, concise way', 'Be verbose and thorough'), 'verbosity');
+  assert.equal(
+    detectOpposition('Always answer in a terse, concise way', 'Be verbose and thorough'),
+    'verbosity',
+  );
   assert.equal(detectOpposition('Ask first before running commands', 'Proceed without asking'), 'autonomy');
   assert.equal(detectOpposition('be terse', 'be concise'), null); // same pole
   assert.equal(detectOpposition('be terse', 'use a formal tone'), null); // different axes, not opposite

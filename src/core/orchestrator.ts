@@ -49,10 +49,7 @@ export function writerAdapters(adapters: AgentAdapter[]): WriterAdapter[] {
 export const SELF_PROTECTED = new Set<string>(['fleet', 'fleet-mcp']);
 
 /** Resolve a `--to`/`--from` target string to concrete writer agent ids. */
-export async function resolveTargets(
-  adapters: AgentAdapter[],
-  target: string,
-): Promise<AgentId[]> {
+export async function resolveTargets(adapters: AgentAdapter[], target: string): Promise<AgentId[]> {
   const writers = writerAdapters(adapters);
   if (target === 'all') {
     // 'all' = present writer agents only (don't surprise-create absent ones)
@@ -62,7 +59,10 @@ export async function resolveTargets(
     }
     return present;
   }
-  const ids = target.split(',').map((s) => s.trim()).filter(Boolean);
+  const ids = target
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   const known = new Set(writers.map((w) => w.id));
   for (const id of ids) {
     if (!known.has(id)) throw new Error(`unknown or non-writable agent: '${id}'`);
@@ -92,7 +92,11 @@ export async function planInstall(
   for (const a of writerAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -123,7 +127,11 @@ export async function planRemove(
   for (const a of writerAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -149,9 +157,7 @@ export async function planSync(
 ): Promise<Plan> {
   const source = adapters.find((a) => a.id === fromId);
   if (!source) throw new Error(`unknown source agent: '${fromId}'`);
-  const item = (await source.readInventory()).find(
-    (i) => i.kind === 'mcp-server' && i.name === name,
-  );
+  const item = (await source.readInventory()).find((i) => i.kind === 'mcp-server' && i.name === name);
   if (!item || item.kind !== 'mcp-server') {
     throw new Error(`MCP server "${name}" is not installed on '${fromId}'`);
   }
@@ -194,7 +200,11 @@ export async function planInstallSkill(
   for (const a of skillWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -222,7 +232,11 @@ export async function planRemoveSkill(
   for (const a of skillWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -250,7 +264,12 @@ export async function planSyncSkill(
     throw new Error(`skill "${name}" is not installed on '${fromId}'`);
   }
   const src: SkillSource = { name, dir: item.path, meta: item.meta };
-  return planInstallSkill(adapters, src, name, targetIds.filter((t) => t !== fromId));
+  return planInstallSkill(
+    adapters,
+    src,
+    name,
+    targetIds.filter((t) => t !== fromId),
+  );
 }
 
 // ---- Rules / instructions (always-on, managed blocks in markdown files) ----
@@ -282,7 +301,11 @@ export async function planInstallRule(
   for (const a of ruleWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -295,15 +318,14 @@ export async function planInstallRule(
       // rule already there. MUST NOT block the install — a malformed MCP config
       // would make readInventory throw, and that's unrelated to writing a rule.
       try {
-        const existing = (await a.readInventory()).filter(
-          (i): i is RuleCapability => i.kind === 'rule',
-        );
+        const existing = (await a.readInventory()).filter((i): i is RuleCapability => i.kind === 'rule');
         const opp = opposingRules(existing, body, name);
         if (opp.length) {
           r.warnings = [
             ...(r.warnings ?? []),
             ...opp.map(
-              (o) => `possible ${o.axis} conflict with existing rule "${o.name}" (heuristic) — ${RESOLUTION_HINT}`,
+              (o) =>
+                `possible ${o.axis} conflict with existing rule "${o.name}" (heuristic) — ${RESOLUTION_HINT}`,
             ),
           ];
         }
@@ -329,7 +351,11 @@ export async function planRemoveRule(
   for (const a of ruleWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
-      skips.push({ agent: a.id, kind: 'protected', reason: `refusing to modify fleet's own entry "${name}"` });
+      skips.push({
+        agent: a.id,
+        kind: 'protected',
+        reason: `refusing to modify fleet's own entry "${name}"`,
+      });
       continue;
     }
     try {
@@ -359,7 +385,12 @@ export async function planSyncRule(
   if (!item || item.kind !== 'rule') {
     throw new Error(`rule "${name}" is not installed on '${fromId}'`);
   }
-  return planInstallRule(adapters, name, item.body, targetIds.filter((t) => t !== fromId));
+  return planInstallRule(
+    adapters,
+    name,
+    item.body,
+    targetIds.filter((t) => t !== fromId),
+  );
 }
 
 /** A validator that dispatches to each change's agent writer (kind-aware). */

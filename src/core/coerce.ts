@@ -10,14 +10,10 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 export function asStringArray(v: unknown): string[] | undefined {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-    ? (v as string[])
-    : undefined;
+  return Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined;
 }
 
-export function asStringRecord(
-  v: unknown,
-): Record<string, string> | undefined {
+export function asStringRecord(v: unknown): Record<string, string> | undefined {
   if (v == null || typeof v !== 'object' || Array.isArray(v)) return undefined;
   const entries = Object.entries(v as Record<string, unknown>);
   return entries.every(([, x]) => typeof x === 'string')

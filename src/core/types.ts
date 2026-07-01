@@ -11,13 +11,7 @@
 export type AgentId = string;
 
 /** Capability primitive kinds. v1 reads only 'mcp-server'. */
-export type PrimitiveKind =
-  | 'mcp-server'
-  | 'skill'
-  | 'rule'
-  | 'command'
-  | 'hook'
-  | 'subagent';
+export type PrimitiveKind = 'mcp-server' | 'skill' | 'rule' | 'command' | 'hook' | 'subagent';
 
 /** Where a capability is configured for an agent. */
 export type Scope = 'user' | 'project' | 'local';

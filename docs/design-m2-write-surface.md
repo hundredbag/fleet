@@ -7,10 +7,10 @@ v0 was read-only. M2 makes fleet **mutate real agent configs** (install / remove
 ## Principles
 
 1. **Plan before write.** Every mutation is first produced as a `PlannedChange`
-   (full proposed file content + a human diff) *without touching disk*. The CLI
+   (full proposed file content + a human diff) _without touching disk_. The CLI
    is **dry-run by default**; writing requires explicit `--commit`.
 2. **Format knowledge in adapters; safety mechanics in the engine.** An adapter
-   renders the *new file content* from the current file + the op (it owns
+   renders the _new file content_ from the current file + the op (it owns
    JSON/TOML quirks). The engine owns backup, atomic write, validation, audit,
    rollback (identical for every adapter).
 3. **Never destroy.** Engine backs up the file before writing, writes
@@ -31,9 +31,13 @@ is lossless where targets allow it:
 
 ```ts
 type McpServerSpec =
-  | { transport: 'stdio'; command: string; args?: string[]; env?: Record<string,string> }
-  | { transport: 'http'|'sse'|'ws'; url: string; headers?: Record<string,string>;
-      bearerTokenEnvVar?: string }   // NEW: name of an env var holding a bearer token
+  | { transport: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | {
+      transport: 'http' | 'sse' | 'ws';
+      url: string;
+      headers?: Record<string, string>;
+      bearerTokenEnvVar?: string;
+    }; // NEW: name of an env var holding a bearer token
 ```
 
 Adapters READ into this shape; writers RENDER from it. `bearerTokenEnvVar`
@@ -43,16 +47,25 @@ where they support env expansion.
 ## Engine types (`core/writer.ts`)
 
 ```ts
-interface RenderResult {           // produced by an adapter, no I/O side effects
-  file: string;                    // path to edit
-  newContent: string;             // full proposed file text
-  before?: unknown; after?: unknown; // entry-level, for the diff view
+interface RenderResult {
+  // produced by an adapter, no I/O side effects
+  file: string; // path to edit
+  newContent: string; // full proposed file text
+  before?: unknown;
+  after?: unknown; // entry-level, for the diff view
   warnings?: string[];
 }
 interface PlannedChange extends RenderResult {
-  agent: AgentId; op: 'install'|'remove'|'update'; name: string; scope: Scope;
+  agent: AgentId;
+  op: 'install' | 'remove' | 'update';
+  name: string;
+  scope: Scope;
 }
-interface ApplyResult { change: PlannedChange; auditId: string; backup: string }
+interface ApplyResult {
+  change: PlannedChange;
+  auditId: string;
+  backup: string;
+}
 ```
 
 - `applyChanges(changes, { fleetHome }): Promise<ApplyResult[]>` — for each:
@@ -66,7 +79,11 @@ interface ApplyResult { change: PlannedChange; auditId: string; backup: string }
 ## AgentWriter interface (`core/adapter.ts`)
 
 ```ts
-interface CapabilityRef { kind: 'mcp-server'; name: string; scope: Scope }
+interface CapabilityRef {
+  kind: 'mcp-server';
+  name: string;
+  scope: Scope;
+}
 interface AgentWriter {
   renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult>;
   renderRemove(ref: CapabilityRef): Promise<RenderResult>;
@@ -79,11 +96,11 @@ returns the full new content (preserving everything else verbatim).
 
 ## Translation capability matrix (writers warn on loss)
 
-| | stdio | http | sse | ws | env-var bearer token |
-|---|---|---|---|---|---|
-| **Claude** | ✓ | ✓ | ✓ | ✓ | ✗ → warn, omit auth |
-| **Codex**  | ✓ | ✓ (streamable) | ✗ → warn/skip | ✗ → warn/skip | ✓ `bearer_token_env_var` |
-| **Gemini** | ✓ | ✓ `httpUrl` | ✓ `url` | ✗ → warn/skip | ✓ via `headers: {Authorization: "Bearer $VAR"}` |
+|            | stdio | http           | sse           | ws            | env-var bearer token                            |
+| ---------- | ----- | -------------- | ------------- | ------------- | ----------------------------------------------- |
+| **Claude** | ✓     | ✓              | ✓             | ✓             | ✗ → warn, omit auth                             |
+| **Codex**  | ✓     | ✓ (streamable) | ✗ → warn/skip | ✗ → warn/skip | ✓ `bearer_token_env_var`                        |
+| **Gemini** | ✓     | ✓ `httpUrl`    | ✓ `url`       | ✗ → warn/skip | ✓ via `headers: {Authorization: "Bearer $VAR"}` |
 
 stdio is the clean common case (most MCP servers). Remote translation is
 best-effort with explicit warnings.

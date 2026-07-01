@@ -87,10 +87,7 @@ export async function readInstructionText(instrPath: string): Promise<string | u
   return existsSync(instrPath) ? readFile(instrPath, 'utf8') : undefined;
 }
 
-export async function readRulesInventory(
-  agent: string,
-  instrPath: string,
-): Promise<RuleCapability[]> {
+export async function readRulesInventory(agent: string, instrPath: string): Promise<RuleCapability[]> {
   if (!existsSync(instrPath)) return [];
   const text = await readFile(instrPath, 'utf8');
   return parseRuleBlocks(text).map((b) => ({
@@ -137,10 +134,7 @@ export async function renderRuleInstall(
   };
 }
 
-export async function renderRuleRemove(
-  instrPath: string,
-  ref: CapabilityRef,
-): Promise<RenderResult> {
+export async function renderRuleRemove(instrPath: string, ref: CapabilityRef): Promise<RenderResult> {
   if (!NAME_RE.test(ref.name)) {
     throw new Error(`fleet: invalid rule name "${ref.name}"`);
   }

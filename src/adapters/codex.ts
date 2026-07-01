@@ -12,11 +12,7 @@ import type {
   SkillSource,
   SkillWriter,
 } from '../core/adapter.js';
-import type {
-  DetectedAgent,
-  InstalledCapability,
-  McpServerSpec,
-} from '../core/types.js';
+import type { DetectedAgent, InstalledCapability, McpServerSpec } from '../core/types.js';
 import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
 import { sha256 } from '../core/hash.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
@@ -41,8 +37,7 @@ export function parseCodexEntry(raw: unknown): McpServerSpec {
       transport: 'http',
       url: String(url),
       headers: asStringRecord(r.http_headers),
-      bearerTokenEnvVar:
-        typeof r.bearer_token_env_var === 'string' ? r.bearer_token_env_var : undefined,
+      bearerTokenEnvVar: typeof r.bearer_token_env_var === 'string' ? r.bearer_token_env_var : undefined,
     };
   }
   return {
@@ -62,7 +57,9 @@ const tomlStr = (s: string): string => JSON.stringify(s).replace(/\u007f/g, '\\u
 const tomlKey = (k: string): string => (BARE_KEY.test(k) ? k : JSON.stringify(k));
 const tomlArray = (a: string[]): string => `[${a.map(tomlStr).join(', ')}]`;
 const tomlInline = (o: Record<string, string>): string =>
-  `{ ${Object.entries(o).map(([k, v]) => `${tomlKey(k)} = ${tomlStr(v)}`).join(', ')} }`;
+  `{ ${Object.entries(o)
+    .map(([k, v]) => `${tomlKey(k)} = ${tomlStr(v)}`)
+    .join(', ')} }`;
 
 /** Serialize an arbitrary parsed-TOML value back to TOML (for preserved keys). */
 function tomlValue(v: unknown): string {
@@ -81,7 +78,13 @@ function tomlValue(v: unknown): string {
 
 /** Keys fleet manages on a Codex server table; everything else is preserved. */
 const MANAGED_CODEX = new Set([
-  'command', 'args', 'env', 'url', 'bearer_token_env_var', 'http_headers', 'transport',
+  'command',
+  'args',
+  'env',
+  'url',
+  'bearer_token_env_var',
+  'http_headers',
+  'transport',
 ]);
 
 /** Render a `[mcp_servers.<name>]` table block from a spec (+ preserved keys). */
@@ -133,10 +136,7 @@ function trimTrailing(lines: string[], start: number, end: number): number {
  * Find the line range [start, end) of the `[mcp_servers.<name>]` table,
  * including its sub-tables, stopping at the next unrelated table header.
  */
-function findTableBlock(
-  lines: string[],
-  name: string,
-): { start: number; end: number } | null {
+function findTableBlock(lines: string[], name: string): { start: number; end: number } | null {
   const target = `mcp_servers.${name}`;
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -166,8 +166,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     return {
       id: this.id,
       displayName: this.displayName,
-      present:
-        existsSync(this.configPath) || existsSync(this.skillsDir) || existsSync(this.rulesPath),
+      present: existsSync(this.configPath) || existsSync(this.skillsDir) || existsSync(this.rulesPath),
       configPaths: [this.configPath, this.skillsDir, this.rulesPath],
     };
   }
@@ -248,9 +247,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     if (text !== undefined) {
       try {
         const parsed = parseToml(text) as { mcp_servers?: unknown };
-        const existing = isPlainObject(parsed.mcp_servers)
-          ? parsed.mcp_servers[ref.name]
-          : undefined;
+        const existing = isPlainObject(parsed.mcp_servers) ? parsed.mcp_servers[ref.name] : undefined;
         if (isPlainObject(existing)) {
           for (const [k, v] of Object.entries(existing)) {
             if (!MANAGED_CODEX.has(k)) extras[k] = v;

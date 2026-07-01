@@ -17,12 +17,12 @@ HUB (server, LATER)  crawl registries · tool lists · security/quality ·
 - **Seam = `FeedSource`.** The client consumes one or more sources: direct
   registry sources, or a `FleetHubSource` (the future hub). Matching/diff is
   done by the client **regardless of source**.
-- **Privacy invariant (structural):** a `FeedSource` only ever *produces* public
+- **Privacy invariant (structural):** a `FeedSource` only ever _produces_ public
   metadata; it is NEVER handed the inventory. The "updates to mine" matching
   takes `(inventory, feedItems)` as inputs in a LOCAL function — inventory is
   passed in, never fetched by a source.
 - **Module enforcement:** new code lives in `src/feed/`, which imports the
-  capability *types* and `core` read helpers but **NOT** the writer/engine or
+  capability _types_ and `core` read helpers but **NOT** the writer/engine or
   adapter mutation paths. Network code is confined to source adapters. This keeps
   server-only concerns out of the privacy-sensitive write path, and (when the hub
   is built) lets the hub be a separate entrypoint/package reusing only `core` +
@@ -69,9 +69,10 @@ HUB (server, LATER)  crawl registries · tool lists · security/quality ·
 ## Package-coordinate extraction (the matching crux)
 
 From an `McpServerSpec`:
+
 - stdio `npx -y <pkg>` / `npx <pkg>` → npm package `<pkg>` (strip flags).
 - stdio `uvx <pkg>` / `pipx run <pkg>` → PyPI package.
 - stdio other `command` → best-effort: the command basename (low confidence).
 - remote http/sse → the URL host (low confidence).
-Confidence is recorded; only high-confidence coordinate matches drive an
-"update available" claim. Everything else is "present, unmatched".
+  Confidence is recorded; only high-confidence coordinate matches drive an
+  "update available" claim. Everything else is "present, unmatched".

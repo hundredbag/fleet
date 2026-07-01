@@ -1,15 +1,7 @@
 import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { existsSync } from 'node:fs';
-import {
-  readFile,
-  rename,
-  copyFile,
-  mkdir,
-  appendFile,
-  rm,
-  open,
-} from 'node:fs/promises';
+import { readFile, rename, copyFile, mkdir, appendFile, rm, open } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { AgentId, Scope } from './types.js';
 import type { RenderResult } from './adapter.js';
@@ -120,9 +112,7 @@ async function acquireLock(home: string): Promise<() => Promise<void>> {
     fh = await open(lockPath, 'wx');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new Error(
-        `fleet: another operation holds the lock (${lockPath}); remove it if stale`,
-      );
+      throw new Error(`fleet: another operation holds the lock (${lockPath}); remove it if stale`);
     }
     throw err;
   }
@@ -206,19 +196,12 @@ async function applyFileChange(
     try {
       validate(change, current);
     } catch (err) {
-      throw new Error(
-        `fleet: refusing to write ${change.file}: existing file does not parse (${msg(err)})`,
-      );
+      throw new Error(`fleet: refusing to write ${change.file}: existing file does not parse (${msg(err)})`);
     }
     if (!force && change.baseHash !== undefined && sha256(current) !== change.baseHash) {
-      throw new Error(
-        `fleet: ${change.file} changed since the plan was made; re-plan (or pass force)`,
-      );
+      throw new Error(`fleet: ${change.file} changed since the plan was made; re-plan (or pass force)`);
     }
-    backup = join(
-      backupsDir,
-      `${Date.now()}-${process.pid}-${randomUUID()}-${basename(change.file)}.bak`,
-    );
+    backup = join(backupsDir, `${Date.now()}-${process.pid}-${randomUUID()}-${basename(change.file)}.bak`);
     await copyFile(change.file, backup);
     await fsyncPath(backup);
   }
@@ -277,14 +260,9 @@ async function applyDirChange(
 
   if (existedBefore) {
     if (!force && change.baseHash !== undefined && (await hashDir(target)) !== change.baseHash) {
-      throw new Error(
-        `fleet: ${target} changed since the plan was made; re-plan (or pass force)`,
-      );
+      throw new Error(`fleet: ${target} changed since the plan was made; re-plan (or pass force)`);
     }
-    backup = join(
-      backupsDir,
-      `${Date.now()}-${process.pid}-${randomUUID()}-${basename(target)}.dirbak`,
-    );
+    backup = join(backupsDir, `${Date.now()}-${process.pid}-${randomUUID()}-${basename(target)}.dirbak`);
     await copyDir(target, backup);
     await fsyncPath(backup); // durable backup before we touch the target
   }

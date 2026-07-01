@@ -18,10 +18,7 @@ export interface DiscoverResult {
 const coordKey = (ecosystem: string, id: string): string => `${ecosystem}:${id.toLowerCase()}`;
 
 /** Merge + de-dupe (ecosystem-aware) feed items across sources. */
-export async function discover(
-  sources: FeedSource[],
-  opts?: { since?: string },
-): Promise<DiscoverResult> {
+export async function discover(sources: FeedSource[], opts?: { since?: string }): Promise<DiscoverResult> {
   const all: FeedItem[] = [];
   const failures: { source: string; error: string }[] = [];
   for (const s of sources) {

@@ -1,7 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentAdapter } from '../core/adapter.js';
 import type { FeedSource } from '../feed/source.js';
-import { makeToken, tokenMatches, checkHost, checkOrigin, tokenFromReq, tokenFromHeader } from './security.js';
+import {
+  makeToken,
+  tokenMatches,
+  checkHost,
+  checkOrigin,
+  tokenFromReq,
+  tokenFromHeader,
+} from './security.js';
 import { apiInventory, apiFeed, apiConflicts } from './api.js';
 import { ActionService } from './actions.js';
 import { renderPage } from './ui.js';
@@ -200,7 +207,9 @@ export function startFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {})
       const scheme = /\.ts\.net$/i.test(h) ? 'https' : 'http'; // MagicDNS names answer on HTTPS via 'tailscale serve'
       process.stdout.write(`  also: ${scheme}://${h}/?token=${token}\n`);
     }
-    process.stdout.write('(token-gated; the URL is a secret — use only on a single-user tailnet; Ctrl-C to stop)\n');
+    process.stdout.write(
+      '(token-gated; the URL is a secret — use only on a single-user tailnet; Ctrl-C to stop)\n',
+    );
   });
   return server;
 }

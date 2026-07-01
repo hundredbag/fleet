@@ -6,9 +6,7 @@ import type { Inventory, DetectedAgent, InstalledCapability } from './types.js';
  * itself and (if present) read its installed capabilities. A failing adapter
  * degrades to a note instead of breaking the whole snapshot.
  */
-export async function buildInventory(
-  adapters: AgentAdapter[],
-): Promise<Inventory> {
+export async function buildInventory(adapters: AgentAdapter[]): Promise<Inventory> {
   const agents: DetectedAgent[] = [];
   const items: InstalledCapability[] = [];
 

@@ -82,7 +82,10 @@ test(
     const sync = await planSyncRule(ads, 'r1', 'claude-code', ['codex']);
     assert.equal(sync.changes.length, 1);
     await applyPlan(ads, sync, { fleetHome: home });
-    assert.equal(parseRuleBlocks(readFileSync(codexRules, 'utf8')).find((b) => b.name === 'r1')?.body, 'do X');
+    assert.equal(
+      parseRuleBlocks(readFileSync(codexRules, 'utf8')).find((b) => b.name === 'r1')?.body,
+      'do X',
+    );
   }),
 );
 
@@ -127,7 +130,10 @@ test(
     const f = join(dir, 'CLAUDE.md');
     writeFileSync(f, '');
     await assert.rejects(renderRuleInstall(f, '   ', { kind: 'rule', name: 'r', scope: 'user' }), /empty/);
-    await assert.rejects(renderRuleInstall(f, 'ok', { kind: 'rule', name: '../x', scope: 'user' }), /invalid/);
+    await assert.rejects(
+      renderRuleInstall(f, 'ok', { kind: 'rule', name: '../x', scope: 'user' }),
+      /invalid/,
+    );
   }),
 );
 

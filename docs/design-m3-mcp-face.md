@@ -4,10 +4,12 @@
 > in context.
 
 ## Goal
+
 Expose the core as an **MCP server** so any agent (Claude/Codex/Gemini) can
-drive the whole fleet *in-loop* by calling tools — "the AI is the UI."
+drive the whole fleet _in-loop_ by calling tools — "the AI is the UI."
 
 ## Scope (shipped)
+
 - Tools: `inventory`, `install`, `sync`, `remove`, `rollback`. Thin shell over
   the same core as the CLI (no logic duplication). Mutating tools are **dry-run
   unless `commit: true`** via the shared core `execute()`.
@@ -16,11 +18,13 @@ drive the whole fleet *in-loop* by calling tools — "the AI is the UI."
   tool (vs remove+install) → later.
 
 ## Approach (sketch)
+
 - `@modelcontextprotocol/sdk` (TS), stdio transport.
 - Each tool = a wrapper mapping args → core functions → structured result.
 - Self-installable: `fleet` registers itself as an MCP server in each agent.
 
 ## Key risks / open questions
+
 - **Confirmation when the caller is an AI**: no interactive prompt. Need a
   propose→apply (dry-run returns a plan id; `apply` commits) or an explicit
   `commit: true` param. Decide the safe default (dry-run unless committed).
@@ -29,8 +33,10 @@ drive the whole fleet *in-loop* by calling tools — "the AI is the UI."
 - SDK version + tool schema shapes (verify against current docs at build time).
 
 ## Acceptance
+
 - From inside Claude (and Codex/Gemini), calling fleet tools lists inventory and
   installs/syncs an MCP server; destructive ops are gated (dry-run/commit).
 
 ## Depends on
+
 M2 write surface (install/remove/sync + engine).

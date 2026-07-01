@@ -1,14 +1,5 @@
 import { existsSync } from 'node:fs';
-import {
-  readdir,
-  readFile,
-  mkdir,
-  copyFile,
-  rm,
-  stat,
-  readlink,
-  symlink,
-} from 'node:fs/promises';
+import { readdir, readFile, mkdir, copyFile, rm, stat, readlink, symlink } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 

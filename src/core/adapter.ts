@@ -1,10 +1,4 @@
-import type {
-  DetectedAgent,
-  InstalledCapability,
-  McpServerSpec,
-  PrimitiveKind,
-  Scope,
-} from './types.js';
+import type { DetectedAgent, InstalledCapability, McpServerSpec, PrimitiveKind, Scope } from './types.js';
 
 /**
  * One adapter per agent runtime. It knows how to read (and, when

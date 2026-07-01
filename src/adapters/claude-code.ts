@@ -11,12 +11,7 @@ import type {
   SkillSource,
   SkillWriter,
 } from '../core/adapter.js';
-import type {
-  DetectedAgent,
-  InstalledCapability,
-  McpServerSpec,
-  Scope,
-} from '../core/types.js';
+import type { DetectedAgent, InstalledCapability, McpServerSpec, Scope } from '../core/types.js';
 import { asStringArray, asStringRecord } from '../core/coerce.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
@@ -95,11 +90,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
   async readInventory(): Promise<InstalledCapability[]> {
     const items: InstalledCapability[] = [];
 
-    const collect = (
-      servers: Record<string, unknown> | undefined,
-      scope: Scope,
-      file: string,
-    ) => {
+    const collect = (servers: Record<string, unknown> | undefined, scope: Scope, file: string) => {
       for (const [name, raw] of Object.entries(servers ?? {})) {
         items.push({
           kind: 'mcp-server',
@@ -183,9 +174,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
       warnings.push(`claude-code: only 'user' scope is supported in M2 (got '${ref.scope}')`);
     }
     if (spec.transport !== 'stdio' && spec.bearerTokenEnvVar) {
-      warnings.push(
-        `claude-code: no native env-var bearer token; set headers manually for "${ref.name}"`,
-      );
+      warnings.push(`claude-code: no native env-var bearer token; set headers manually for "${ref.name}"`);
     }
     const { doc, text } = await loadJsonDoc(this.claudeJsonPath, CLAUDE_LABEL);
     const servers = getServers(doc, this.claudeJsonPath, CLAUDE_LABEL);

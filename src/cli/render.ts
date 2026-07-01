@@ -22,23 +22,35 @@ export function renderInventory(inv: Inventory): string {
     return out.join('\n');
   }
 
-  out.push(renderSection('MCP servers', inv.items.filter((i) => i.kind === 'mcp-server'), present));
-  out.push('');
-  out.push(renderSection('Skills', inv.items.filter((i) => i.kind === 'skill'), present));
-  out.push('');
-  out.push(renderSection('Rules', inv.items.filter((i) => i.kind === 'rule'), present));
+  out.push(
+    renderSection(
+      'MCP servers',
+      inv.items.filter((i) => i.kind === 'mcp-server'),
+      present,
+    ),
+  );
   out.push('');
   out.push(
-    '  legend: ✓ installed · ✗ disabled (U=user P=project L=local) · – not installed',
+    renderSection(
+      'Skills',
+      inv.items.filter((i) => i.kind === 'skill'),
+      present,
+    ),
   );
+  out.push('');
+  out.push(
+    renderSection(
+      'Rules',
+      inv.items.filter((i) => i.kind === 'rule'),
+      present,
+    ),
+  );
+  out.push('');
+  out.push('  legend: ✓ installed · ✗ disabled (U=user P=project L=local) · – not installed');
   return out.join('\n');
 }
 
-function renderSection(
-  label: string,
-  items: InstalledCapability[],
-  present: DetectedAgent[],
-): string {
+function renderSection(label: string, items: InstalledCapability[], present: DetectedAgent[]): string {
   if (items.length === 0) {
     return `${label}: none on any detected agent yet.`;
   }
@@ -59,11 +71,8 @@ function renderSection(
 }
 
 function renderTable(header: string[], rows: string[][]): string {
-  const widths = header.map((h, i) =>
-    Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)),
-  );
-  const fmt = (cells: string[]) =>
-    '  ' + cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join('  ');
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
+  const fmt = (cells: string[]) => '  ' + cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join('  ');
   const sep = '  ' + widths.map((w) => '─'.repeat(w)).join('  ');
   return [fmt(header), sep, ...rows.map(fmt)].join('\n');
 }

@@ -69,10 +69,7 @@ export async function readSkillMeta(skillDir: string): Promise<SkillMeta> {
 }
 
 /** Read all skills installed for an agent under `skillsRoot`. */
-export async function readSkillsInventory(
-  agent: string,
-  skillsRoot: string,
-): Promise<SkillCapability[]> {
+export async function readSkillsInventory(agent: string, skillsRoot: string): Promise<SkillCapability[]> {
   const dirs = await listSkillDirs(skillsRoot);
   const out: SkillCapability[] = [];
   for (const d of dirs) {
@@ -112,10 +109,7 @@ export async function renderSkillInstall(
   };
 }
 
-export async function renderSkillRemove(
-  skillsRoot: string,
-  ref: CapabilityRef,
-): Promise<RenderResult> {
+export async function renderSkillRemove(skillsRoot: string, ref: CapabilityRef): Promise<RenderResult> {
   const target = safeJoin(skillsRoot, ref.name);
   if (!existsSync(target)) throw new Error(`skill "${ref.name}" is not installed`);
   return {

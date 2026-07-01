@@ -2,17 +2,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import type {
-  AgentAdapter,
-  AgentWriter,
-  CapabilityRef,
-  RenderResult,
-} from '../core/adapter.js';
-import type {
-  DetectedAgent,
-  InstalledCapability,
-  McpServerSpec,
-} from '../core/types.js';
+import type { AgentAdapter, AgentWriter, CapabilityRef, RenderResult } from '../core/adapter.js';
+import type { DetectedAgent, InstalledCapability, McpServerSpec } from '../core/types.js';
 import { asStringArray, asStringRecord } from '../core/coerce.js';
 import {
   loadJsonDoc,

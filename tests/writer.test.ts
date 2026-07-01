@@ -27,11 +27,7 @@ function withTempDir(fn: (dir: string) => void | Promise<void>) {
 const seedClaude = (path: string) =>
   writeFileSync(
     path,
-    JSON.stringify(
-      { hasCompletedOnboarding: true, mcpServers: { existing: { command: 'keep' } } },
-      null,
-      2,
-    ),
+    JSON.stringify({ hasCompletedOnboarding: true, mcpServers: { existing: { command: 'keep' } } }, null, 2),
   );
 
 /** validator that parses JSON (stands in for an adapter's validate) */
@@ -206,9 +202,13 @@ test(
       { transport: 'stdio', command: 'npx' },
       { kind: 'mcp-server', name: 'tmp', scope: 'user' },
     );
-    await applyChanges([toPlannedChange('claude-code', 'install', 'tmp', 'user', r)], (_c, c) => a.validate(c), {
-      fleetHome: home,
-    });
+    await applyChanges(
+      [toPlannedChange('claude-code', 'install', 'tmp', 'user', r)],
+      (_c, c) => a.validate(c),
+      {
+        fleetHome: home,
+      },
+    );
     assert.notEqual(readFileSync(claudeJson, 'utf8'), original);
 
     const res = await rollback({ fleetHome: home });
@@ -254,7 +254,10 @@ test(
     };
     await applyChanges([change], jsonValidate, { fleetHome: home });
     // the user/agent later populates the file fleet created
-    writeFileSync(created, JSON.stringify({ mcpServers: { x: { command: 'c' }, more: { command: 'd' } } }, null, 2));
+    writeFileSync(
+      created,
+      JSON.stringify({ mcpServers: { x: { command: 'c' }, more: { command: 'd' } } }, null, 2),
+    );
     const res = await rollback({ fleetHome: home });
     assert.equal(res.action, 'skipped');
     assert.ok(existsSync(created)); // not destroyed
@@ -272,9 +275,13 @@ test(
       { transport: 'stdio', command: 'npx' },
       { kind: 'mcp-server', name: 'ok', scope: 'user' },
     );
-    await applyChanges([toPlannedChange('claude-code', 'install', 'ok', 'user', r)], (_c, c) => a.validate(c), {
-      fleetHome: home,
-    });
+    await applyChanges(
+      [toPlannedChange('claude-code', 'install', 'ok', 'user', r)],
+      (_c, c) => a.validate(c),
+      {
+        fleetHome: home,
+      },
+    );
     // corrupt the audit log with a partial line
     writeFileSync(join(home, 'audit.jsonl'), readFileSync(join(home, 'audit.jsonl'), 'utf8') + '{ broken\n');
     const audit = await readAudit(home);

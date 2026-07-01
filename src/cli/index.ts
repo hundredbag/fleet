@@ -112,7 +112,7 @@ function specFromFlags(p: ParsedArgs): McpServerSpec {
     };
   }
   throw new Error(
-    "install: provide --command <cmd> (stdio) or --url <url> (remote), " +
+    'install: provide --command <cmd> (stdio) or --url <url> (remote), ' +
       "or use 'fleet sync' to copy from another agent",
   );
 }
@@ -165,9 +165,7 @@ async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case 'inventory': {
       const inv = await buildInventory(adapters);
-      process.stdout.write(
-        (p.flags.json ? JSON.stringify(inv, null, 2) : renderInventory(inv)) + '\n',
-      );
+      process.stdout.write((p.flags.json ? JSON.stringify(inv, null, 2) : renderInventory(inv)) + '\n');
       return 0;
     }
     case 'install': {
@@ -205,7 +203,11 @@ async function main(argv: string[]): Promise<number> {
           throw new Error('usage: fleet skill install <name> --from-dir <path> --to <ids|all>');
         }
         const targets = await resolveTargets(adapters, to);
-        return runPlan(adapters, await planInstallSkill(adapters, { name, dir: fromDir }, name, targets), commit);
+        return runPlan(
+          adapters,
+          await planInstallSkill(adapters, { name, dir: fromDir }, name, targets),
+          commit,
+        );
       }
       if (sub === 'sync') {
         const from = str(p.flags.from);
@@ -270,7 +272,9 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}\n`);
       }
       if (failures.length > 0) {
-        process.stdout.write(`\n⚠ couldn't reach: ${failures.map((f) => f.source).join(', ')} (showing what's available)\n`);
+        process.stdout.write(
+          `\n⚠ couldn't reach: ${failures.map((f) => f.source).join(', ')} (showing what's available)\n`,
+        );
       }
       process.stdout.write('\n(heuristic; verify before installing)\n');
       return 0;
@@ -313,9 +317,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'rollback': {
       const res = await rollback({ auditId: p.positionals[0] });
-      process.stdout.write(
-        `rollback: ${res.action} ${res.file}${res.reason ? ` (${res.reason})` : ''}\n`,
-      );
+      process.stdout.write(`rollback: ${res.action} ${res.file}${res.reason ? ` (${res.reason})` : ''}\n`);
       return 0;
     }
     case 'help':

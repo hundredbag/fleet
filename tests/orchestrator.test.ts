@@ -1,19 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { CodexAdapter } from '../src/adapters/codex.js';
 import { GeminiAdapter } from '../src/adapters/gemini.js';
-import {
-  planInstall,
-  planRemove,
-  planSync,
-  applyPlan,
-  resolveTargets,
-} from '../src/core/orchestrator.js';
+import { planInstall, planRemove, planSync, applyPlan, resolveTargets } from '../src/core/orchestrator.js';
 import type { McpServerSpec } from '../src/core/types.js';
 
 function setup(dir: string) {
@@ -126,7 +120,7 @@ test(
 test(
   'planSync: copies a server spec from one agent to others',
   withTempDir(async (dir) => {
-    const { adapters, claudeJson, geminiJson } = setup(dir);
+    const { adapters, geminiJson } = setup(dir);
     const home = join(dir, 'fleet-home');
     // install on claude first
     await applyPlan(adapters, await planInstall(adapters, STDIO, 'srv', 'user', ['claude-code']), {

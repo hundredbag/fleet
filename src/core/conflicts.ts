@@ -27,7 +27,17 @@ const AXES: Axis[] = [
   {
     name: 'verbosity',
     a: ['terse', 'brief', 'concise', 'succinct', 'minimal', 'short answer', 'keep it short'],
-    b: ['verbose', 'detailed', 'thorough', 'elaborate', 'comprehensive', 'exhaustive', 'in depth', 'in-depth', 'at length'],
+    b: [
+      'verbose',
+      'detailed',
+      'thorough',
+      'elaborate',
+      'comprehensive',
+      'exhaustive',
+      'in depth',
+      'in-depth',
+      'at length',
+    ],
   },
   {
     name: 'autonomy',
@@ -110,7 +120,14 @@ export function analyzeConflicts(inv: Inventory, judge: Judge = detectOpposition
       for (let j = i + 1; j < rs.length; j++) {
         const axis = judge(rs[i]!.body, rs[j]!.body);
         if (axis) {
-          findings.push({ agent, a: rs[i]!.name, b: rs[j]!.name, axis, confidence: 'low', suggestion: RESOLUTION_HINT });
+          findings.push({
+            agent,
+            a: rs[i]!.name,
+            b: rs[j]!.name,
+            axis,
+            confidence: 'low',
+            suggestion: RESOLUTION_HINT,
+          });
         }
       }
     }

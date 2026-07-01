@@ -14,7 +14,16 @@ export interface Coordinate {
 }
 
 // flags that consume the following arg (so its value isn't mistaken for a package)
-const VALUE_FLAGS = new Set(['-p', '--package', '--loglevel', '--python', '--from', '-c', '--call', '--with']);
+const VALUE_FLAGS = new Set([
+  '-p',
+  '--package',
+  '--loglevel',
+  '--python',
+  '--from',
+  '-c',
+  '--call',
+  '--with',
+]);
 // flags whose value IS the package to resolve
 const EXPLICIT_PKG = new Set(['-p', '--package', '--from']);
 

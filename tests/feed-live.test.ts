@@ -34,10 +34,26 @@ test('discover MERGES fields across sources (registry version + pulse popularity
 
 test('discover merge: later source fills fields the earlier left undefined (no clobber)', async () => {
   const registry = src('registry', [
-    { name: 'gh', source: 'registry', identifier: '@x/gh', ecosystem: 'npm', version: '2.0.0', description: undefined, url: undefined },
+    {
+      name: 'gh',
+      source: 'registry',
+      identifier: '@x/gh',
+      ecosystem: 'npm',
+      version: '2.0.0',
+      description: undefined,
+      url: undefined,
+    },
   ]);
   const pulse = src('pulse', [
-    { name: 'gh', source: 'pulse', identifier: '@x/gh', ecosystem: 'npm', popularity: 50, description: 'from pulse', url: 'http://p' },
+    {
+      name: 'gh',
+      source: 'pulse',
+      identifier: '@x/gh',
+      ecosystem: 'npm',
+      popularity: 50,
+      description: 'from pulse',
+      url: 'http://p',
+    },
   ]);
   const { items } = await discover([registry, pulse]);
   assert.equal(items.length, 1);
@@ -56,11 +72,25 @@ test('discover: items with no identifier/url are not collapsed on shared name', 
 
 test('recommend: novelty + popularity + relevance, installed filtered, limit', async () => {
   const now = Date.parse('2026-07-01T00:00:00Z');
-  const i = inv([mcp('github', 'claude-code', { transport: 'stdio', command: 'npx', args: ['-y', '@x/github-tools'] })]);
+  const i = inv([
+    mcp('github', 'claude-code', { transport: 'stdio', command: 'npx', args: ['-y', '@x/github-tools'] }),
+  ]);
   const items: FeedItem[] = [
-    { name: 'new-thing', source: 'r', identifier: '@x/new', ecosystem: 'npm', updatedAt: '2026-06-25T00:00:00Z' },
+    {
+      name: 'new-thing',
+      source: 'r',
+      identifier: '@x/new',
+      ecosystem: 'npm',
+      updatedAt: '2026-06-25T00:00:00Z',
+    },
     { name: 'popular', source: 'r', identifier: '@x/pop', ecosystem: 'npm', popularity: 10000 },
-    { name: 'github helper', source: 'r', identifier: '@x/gh-helper', ecosystem: 'npm', description: 'github tools' },
+    {
+      name: 'github helper',
+      source: 'r',
+      identifier: '@x/gh-helper',
+      ecosystem: 'npm',
+      description: 'github tools',
+    },
     { name: 'installed-dup', source: 'r', identifier: '@x/github-tools', ecosystem: 'npm', version: '9' },
   ];
   const recs = await recommend(i, items, { now, limit: 10 });
@@ -77,25 +107,39 @@ test('recommend: scorer is injectable + batch + async (the C/hub seam)', async (
     { name: 'a', source: 'r', identifier: '@x/a', ecosystem: 'npm' },
     { name: 'b', source: 'r', identifier: '@x/b', ecosystem: 'npm' },
   ];
-  const recs = await recommend(i, items, { scorer: (its) => its.map(() => ({ score: 1, reasons: ['injected'] })) });
+  const recs = await recommend(i, items, {
+    scorer: (its) => its.map(() => ({ score: 1, reasons: ['injected'] })),
+  });
   assert.equal(recs.length, 2);
   assert.equal(recs[0]?.reasons[0], 'injected');
 });
 
 test('defaultScorer: no signals → score 0 (below the recommend floor)', () => {
-  const [s] = defaultScorer(
-    [{ name: 'obscure', source: 'r', identifier: '@x/obscure', ecosystem: 'npm' }],
-    { installedTokens: new Set(), installedCoords: new Set(), agents: [], now: Date.parse('2026-07-01T00:00:00Z') },
-  );
+  const [s] = defaultScorer([{ name: 'obscure', source: 'r', identifier: '@x/obscure', ecosystem: 'npm' }], {
+    installedTokens: new Set(),
+    installedCoords: new Set(),
+    agents: [],
+    now: Date.parse('2026-07-01T00:00:00Z'),
+  });
   assert.equal(s?.score, 0);
 });
 
 test('McpRegistrySource: maps servers + follows cursor pagination (fake fetch)', async () => {
   const p1 = {
-    servers: [{ name: 'gh', description: 'github', updated_at: '2026-06-25T00:00:00Z', packages: [{ registry_name: 'npm', name: '@x/gh', version: '2.0.0' }] }],
+    servers: [
+      {
+        name: 'gh',
+        description: 'github',
+        updated_at: '2026-06-25T00:00:00Z',
+        packages: [{ registry_name: 'npm', name: '@x/gh', version: '2.0.0' }],
+      },
+    ],
     metadata: { next_cursor: 'c1' },
   };
-  const p2 = { servers: [{ name: 'py', packages: [{ registry_name: 'pypi', name: 'pytool', version: '1.0' }] }], metadata: {} };
+  const p2 = {
+    servers: [{ name: 'py', packages: [{ registry_name: 'pypi', name: 'pytool', version: '1.0' }] }],
+    metadata: {},
+  };
   const source = new McpRegistrySource({ baseUrl: 'http://test', fetchImpl: mkFetch([p1, p2]) });
   const items = await source.list();
   assert.equal(items.length, 2);
@@ -114,7 +158,9 @@ test('McpRegistrySource: non-OK response throws (discover would catch it)', asyn
 test('PulseMcpSource: maps popularity (fake fetch)', async () => {
   const source = new PulseMcpSource({
     baseUrl: 'http://test',
-    fetchImpl: mkFetch([{ servers: [{ name: 'gh', package_name: '@x/gh', package_registry: 'npm', stars: 120 }] }]),
+    fetchImpl: mkFetch([
+      { servers: [{ name: 'gh', package_name: '@x/gh', package_registry: 'npm', stars: 120 }] },
+    ]),
   });
   const items = await source.list();
   assert.equal(items[0]?.popularity, 120);

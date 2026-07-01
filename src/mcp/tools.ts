@@ -44,9 +44,7 @@ function specFromArgs(a: Record<string, unknown>): McpServerSpec {
     throw new Error("provide exactly one of 'command' (stdio) or 'url' (remote)");
   }
   if (command) {
-    const args = Array.isArray(a.args)
-      ? a.args.filter((x): x is string => typeof x === 'string')
-      : undefined;
+    const args = Array.isArray(a.args) ? a.args.filter((x): x is string => typeof x === 'string') : undefined;
     return { transport: 'stdio', command, args: args && args.length ? args : undefined };
   }
   if (url) {
@@ -61,18 +59,14 @@ function specFromArgs(a: Record<string, unknown>): McpServerSpec {
   );
 }
 
-export function buildTools(
-  adapters: AgentAdapter[],
-  opts: { fleetHome?: string } = {},
-): FleetTool[] {
+export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string } = {}): FleetTool[] {
   const run = (plan: Plan, commit: unknown) =>
     execute(adapters, plan, { commit: commit === true, fleetHome: opts.fleetHome });
 
   return [
     {
       name: 'inventory',
-      description:
-        'List MCP servers installed across all detected agents (read-only). Secrets are redacted.',
+      description: 'List MCP servers installed across all detected agents (read-only). Secrets are redacted.',
       inputSchema: {},
       handler: async () => summarizeInventory(await buildInventory(adapters)),
     },
@@ -83,7 +77,9 @@ export function buildTools(
         "Provide 'command' (+args) for stdio, or 'url' (+sse/bearerEnv) for remote.",
       inputSchema: {
         name: z.string(),
-        to: z.union([z.string(), z.array(z.string())]).describe("agent ids (array or comma-separated), or 'all'"),
+        to: z
+          .union([z.string(), z.array(z.string())])
+          .describe("agent ids (array or comma-separated), or 'all'"),
         command: z.string().optional(),
         args: z.array(z.string()).optional(),
         url: z.string().optional(),
@@ -105,7 +101,9 @@ export function buildTools(
       inputSchema: {
         name: z.string(),
         from: z.string(),
-        to: z.union([z.string(), z.array(z.string())]).describe("agent ids (array or comma-separated), or 'all'"),
+        to: z
+          .union([z.string(), z.array(z.string())])
+          .describe("agent ids (array or comma-separated), or 'all'"),
         commit: z.boolean().optional().describe('apply the change (default false = dry-run)'),
       },
       handler: async (a) => {
@@ -119,7 +117,9 @@ export function buildTools(
       description: 'Remove an MCP server from one or more agents. DRY-RUN unless commit=true.',
       inputSchema: {
         name: z.string(),
-        from: z.union([z.string(), z.array(z.string())]).describe("agent ids (array or comma-separated), or 'all'"),
+        from: z
+          .union([z.string(), z.array(z.string())])
+          .describe("agent ids (array or comma-separated), or 'all'"),
         commit: z.boolean().optional().describe('apply the change (default false = dry-run)'),
       },
       handler: async (a) => {
@@ -130,8 +130,7 @@ export function buildTools(
     },
     {
       name: 'skill_sync',
-      description:
-        'Copy a skill (SKILL.md directory) from one agent to others. DRY-RUN unless commit=true.',
+      description: 'Copy a skill (SKILL.md directory) from one agent to others. DRY-RUN unless commit=true.',
       inputSchema: {
         name: z.string(),
         from: z.string(),
@@ -140,7 +139,9 @@ export function buildTools(
       },
       handler: async (a) => {
         const targets = await resolveTargets(adapters, targetArg(a.to));
-        return summarizeResult(await run(await planSyncSkill(adapters, String(a.name), String(a.from), targets), a.commit));
+        return summarizeResult(
+          await run(await planSyncSkill(adapters, String(a.name), String(a.from), targets), a.commit),
+        );
       },
     },
     {
@@ -155,7 +156,12 @@ export function buildTools(
       },
       handler: async (a) => {
         const targets = await resolveTargets(adapters, targetArg(a.to));
-        const plan = await planInstallSkill(adapters, { name: String(a.name), dir: String(a.fromDir) }, String(a.name), targets);
+        const plan = await planInstallSkill(
+          adapters,
+          { name: String(a.name), dir: String(a.fromDir) },
+          String(a.name),
+          targets,
+        );
         return summarizeResult(await run(plan, a.commit));
       },
     },
@@ -175,7 +181,7 @@ export function buildTools(
     {
       name: 'rule_install',
       description:
-        'Install a behavioral rule (instruction block) into one or more agents\' instruction files (CLAUDE.md/AGENTS.md). DRY-RUN unless commit=true.',
+        "Install a behavioral rule (instruction block) into one or more agents' instruction files (CLAUDE.md/AGENTS.md). DRY-RUN unless commit=true.",
       inputSchema: {
         name: z.string(),
         text: z.string().describe('the instruction text'),
@@ -184,13 +190,14 @@ export function buildTools(
       },
       handler: async (a) => {
         const targets = await resolveTargets(adapters, targetArg(a.to));
-        return summarizeResult(await run(await planInstallRule(adapters, String(a.name), String(a.text), targets), a.commit));
+        return summarizeResult(
+          await run(await planInstallRule(adapters, String(a.name), String(a.text), targets), a.commit),
+        );
       },
     },
     {
       name: 'rule_sync',
-      description:
-        'Copy a rule (instruction block) from one agent to others. DRY-RUN unless commit=true.',
+      description: 'Copy a rule (instruction block) from one agent to others. DRY-RUN unless commit=true.',
       inputSchema: {
         name: z.string(),
         from: z.string(),
@@ -199,7 +206,9 @@ export function buildTools(
       },
       handler: async (a) => {
         const targets = await resolveTargets(adapters, targetArg(a.to));
-        return summarizeResult(await run(await planSyncRule(adapters, String(a.name), String(a.from), targets), a.commit));
+        return summarizeResult(
+          await run(await planSyncRule(adapters, String(a.name), String(a.from), targets), a.commit),
+        );
       },
     },
     {
@@ -218,7 +227,7 @@ export function buildTools(
     {
       name: 'whats_new',
       description:
-        'New & recommended capabilities for the user\'s agents, plus updates to installed ones. Heuristic ranking (novelty + popularity + relevance to what they use); public-registry data only; verify before installing.',
+        "New & recommended capabilities for the user's agents, plus updates to installed ones. Heuristic ranking (novelty + popularity + relevance to what they use); public-registry data only; verify before installing.",
       inputSchema: {},
       handler: async () => {
         const inv = await buildInventory(adapters);

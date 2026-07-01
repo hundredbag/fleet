@@ -167,10 +167,19 @@ test(
   'tools report a status field (preview vs applied) and accept array targets',
   withTempDir(async (dir) => {
     const { tool } = setup(dir);
-    const dry = (await tool('install').handler({ name: 'x', to: ['claude-code', 'codex'], command: 'c' })) as any;
+    const dry = (await tool('install').handler({
+      name: 'x',
+      to: ['claude-code', 'codex'],
+      command: 'c',
+    })) as any;
     assert.equal(dry.status, 'preview');
     assert.equal(dry.changes.length, 2); // array target fanned out
-    const wet = (await tool('install').handler({ name: 'x', to: 'claude-code', command: 'c', commit: true })) as any;
+    const wet = (await tool('install').handler({
+      name: 'x',
+      to: 'claude-code',
+      command: 'c',
+      commit: true,
+    })) as any;
     assert.equal(wet.status, 'applied');
   }),
 );

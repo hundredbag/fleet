@@ -2,7 +2,14 @@ import { randomBytes } from 'node:crypto';
 import type { AgentAdapter } from '../core/adapter.js';
 import type { McpServerSpec } from '../core/types.js';
 import { buildInventory } from '../core/inventory.js';
-import { planInstall, planSync, planRemove, execute, resolveTargets, type Plan } from '../core/orchestrator.js';
+import {
+  planInstall,
+  planSync,
+  planRemove,
+  execute,
+  resolveTargets,
+  type Plan,
+} from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { summarizeResult, redactUrl } from '../core/redact.js';
 
@@ -107,7 +114,8 @@ export class ActionService {
         const existing = (await buildInventory(this.adapters)).items.find(
           (i) => i.kind === 'mcp-server' && i.name === name && i.agent === agent,
         );
-        if (!existing || existing.kind !== 'mcp-server') throw new Error(`'${name}' is not an installed MCP server on ${agent}`);
+        if (!existing || existing.kind !== 'mcp-server')
+          throw new Error(`'${name}' is not an installed MCP server on ${agent}`);
         const spec = bumpVersion(existing.spec, String(body.coordinate?.version ?? ''));
         runs = describeSpec(spec);
         const targets = await resolveTargets(this.adapters, agent);
@@ -133,7 +141,9 @@ export class ActionService {
     }
     const planId = randomBytes(12).toString('hex');
     this.plans.set(planId, plan);
-    const preview = summarizeResult(await execute(this.adapters, plan, { commit: false, fleetHome: this.fleetHome }));
+    const preview = summarizeResult(
+      await execute(this.adapters, plan, { commit: false, fleetHome: this.fleetHome }),
+    );
     return { planId, preview, runs };
   }
 

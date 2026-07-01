@@ -37,9 +37,32 @@ export interface Recommendation {
 }
 
 const STOP = new Set([
-  'server', 'mcp', 'model', 'context', 'protocol', 'tool', 'tools', 'skill', 'the', 'for', 'and', 'with', 'your',
+  'server',
+  'mcp',
+  'model',
+  'context',
+  'protocol',
+  'tool',
+  'tools',
+  'skill',
+  'the',
+  'for',
+  'and',
+  'with',
+  'your',
   // generic tech tokens that would otherwise cause spurious "related" hits
-  'api', 'http', 'client', 'data', 'file', 'code', 'core', 'plugin', 'integration', 'support', 'service', 'cli',
+  'api',
+  'http',
+  'client',
+  'data',
+  'file',
+  'code',
+  'core',
+  'plugin',
+  'integration',
+  'support',
+  'service',
+  'cli',
 ]);
 
 /** Tokens of length ≥4 (drops generic 3-char noise like "api"/"git"), minus stopwords. */

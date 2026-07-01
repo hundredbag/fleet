@@ -7,7 +7,13 @@ test('render: empty state shows agents and the no-servers hint', () => {
   const inv: Inventory = {
     agents: [
       { id: 'claude-code', displayName: 'Claude Code', present: true, configPaths: [] },
-      { id: 'gemini', displayName: 'Gemini CLI', present: false, configPaths: [], note: 'not configured on this machine' },
+      {
+        id: 'gemini',
+        displayName: 'Gemini CLI',
+        present: false,
+        configPaths: [],
+        note: 'not configured on this machine',
+      },
     ],
     items: [],
   };
