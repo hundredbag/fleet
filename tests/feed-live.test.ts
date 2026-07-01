@@ -4,6 +4,9 @@ import { discover, updatesForInventory } from '../src/feed/feed.js';
 import { recommend, defaultScorer } from '../src/feed/recommend.js';
 import { McpRegistrySource } from '../src/feed/sources/mcp-registry.js';
 import { PulseMcpSource } from '../src/feed/sources/pulsemcp.js';
+import { FleetHubSource } from '../src/feed/sources/hub.js';
+import { defaultSources } from '../src/feed/index.js';
+import { DEFAULT_CONFIG } from '../src/core/config.js';
 import type { FeedItem, FeedSource } from '../src/feed/source.js';
 import type { Inventory, McpServerCapability, McpServerSpec } from '../src/core/types.js';
 
@@ -219,6 +222,32 @@ test('updatesForInventory: PyPI names normalize (_ ↔ -)', () => {
 test('McpRegistrySource: non-OK response throws (discover would catch it)', async () => {
   const source = new McpRegistrySource({ baseUrl: 'http://test', fetchImpl: mkFetch([{}], false, 503) });
   await assert.rejects(source.list(), /503/);
+});
+
+test('FleetHubSource: maps enriched hub items (accepts {items} or a bare array)', async () => {
+  const payload = {
+    items: [
+      {
+        name: 'H',
+        identifier: '@h/x',
+        ecosystem: 'npm',
+        version: '1.0.0',
+        popularity: 5,
+        security: { level: 'no-flags' },
+      },
+    ],
+  };
+  const s = new FleetHubSource('http://hub', { fetchImpl: mkFetch([payload]) });
+  const items = await s.list();
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.source, 'hub');
+  assert.equal(items[0]?.identifier, '@h/x');
+  assert.equal(items[0]?.popularity, 5);
+});
+
+test('defaultSources: the hub joins only when hubUrl is configured', () => {
+  assert.ok(!defaultSources({ ...DEFAULT_CONFIG }).some((s) => s.id === 'hub'));
+  assert.ok(defaultSources({ ...DEFAULT_CONFIG, hubUrl: 'https://hub' }).some((s) => s.id === 'hub'));
 });
 
 test('PulseMcpSource: requires an API key, then maps popularity', async () => {
