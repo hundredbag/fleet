@@ -133,7 +133,7 @@ async function loadInventory(){
   const inv = await get('/api/inventory');
   agents = inv.agents.map(function(a){ return a.id; });
   const rows = {};
-  function add(kind, item){ const k=kind+'|'+item.name; if(!rows[k])rows[k]={kind:kind,name:item.name,agents:{}}; rows[k].agents[item.agent]=true; }
+  function add(kind, item){ const k=kind+'|'+item.name; if(!rows[k])rows[k]={kind:kind,name:item.name,agents:{},effects:{}}; rows[k].agents[item.agent]=true; if(item.effect) rows[k].effects[item.agent]=item.effect; }
   inv.servers.forEach(function(s){ add('mcp', s); });
   inv.skills.forEach(function(s){ add('skill', s); });
   inv.rules.forEach(function(s){ add('rule', s); });
@@ -150,7 +150,8 @@ async function loadInventory(){
     tr.appendChild(el('td','kind',row.kind));
     tr.appendChild(el('td','name',row.name));
     agents.forEach(function(a){
-      const td=el('td','cell', row.agents[a]?'✓':'·');
+      const val = row.agents[a] ? (row.kind==='permission' && row.effects[a] ? row.effects[a] : '✓') : '·';
+      const td=el('td','cell', val);
       if(row.agents[a]){ td.classList.add('on');
         if(row.kind==='mcp'){ td.title='click to remove'; td.style.cursor='pointer'; td.addEventListener('click', function(){ doPlan({ action:'remove', name:row.name, from:[a] }); }); }
       }

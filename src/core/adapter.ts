@@ -99,3 +99,10 @@ export interface RuleWriter {
   renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult>;
   renderRemoveRule(ref: CapabilityRef): Promise<RenderResult>;
 }
+
+/**
+ * NOTE: there is intentionally NO PermissionWriter. Permissions are read-only in
+ * fleet (surfaced in the inventory, never written or translated across agents) —
+ * see PermissionCapability in types.ts. Do not add one without revisiting that
+ * decision; mis-syncing permissions is the highest-blast-radius change possible.
+ */

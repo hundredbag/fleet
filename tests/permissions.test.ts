@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readClaudePermissions, readCodexPermissions } from '../src/core/permissions.js';
+import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 
 async function withDir(body: (dir: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-perm-'));
@@ -57,5 +58,25 @@ test('readCodexPermissions: approval_policy + sandbox_mode → policy entries', 
 test('readCodexPermissions: missing file → [] (never throws)', async () => {
   await withDir(async (dir) => {
     assert.deepEqual(await readCodexPermissions('codex', join(dir, 'nope.toml')), []);
+  });
+});
+
+test('adapter: a malformed settings.json does not drop the rest of the inventory', async () => {
+  await withDir(async (dir) => {
+    const claudeJson = join(dir, '.claude.json');
+    writeFileSync(
+      claudeJson,
+      JSON.stringify({ mcpServers: { gh: { command: 'npx', args: ['-y', '@x/gh'] } } }),
+    );
+    writeFileSync(join(dir, 'settings.json'), '{ not json'); // malformed permissions file
+    const ad = new ClaudeCodeAdapter(
+      claudeJson,
+      join(dir, 'sk'),
+      join(dir, 'CLAUDE.md'),
+      join(dir, 'settings.json'),
+    );
+    const items = await ad.readInventory();
+    assert.ok(items.some((i) => i.kind === 'mcp-server' && i.name === 'gh')); // MCP survived
+    assert.equal(items.filter((i) => i.kind === 'permission').length, 0); // bad perms → none, no throw
   });
 });

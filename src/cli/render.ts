@@ -1,4 +1,4 @@
-import type { DetectedAgent, Inventory, InstalledCapability } from '../core/types.js';
+import type { DetectedAgent, Inventory, InstalledCapability, PermissionCapability } from '../core/types.js';
 
 const SCOPE_TAG: Record<string, string> = { user: 'U', project: 'P', local: 'L' };
 
@@ -51,6 +51,9 @@ export function renderInventory(inv: Inventory): string {
       'Permissions (read-only)',
       inv.items.filter((i) => i.kind === 'permission'),
       present,
+      // show the effect (allow/deny/ask/policy), not a presence tick — a deny
+      // must not look like an allow.
+      (found) => [...new Set(found.map((f) => (f as PermissionCapability).effect))].join(','),
     ),
   );
   out.push('');
@@ -58,7 +61,12 @@ export function renderInventory(inv: Inventory): string {
   return out.join('\n');
 }
 
-function renderSection(label: string, items: InstalledCapability[], present: DetectedAgent[]): string {
+function renderSection(
+  label: string,
+  items: InstalledCapability[],
+  present: DetectedAgent[],
+  markOf?: (found: InstalledCapability[]) => string,
+): string {
   if (items.length === 0) {
     return `${label}: none on any detected agent yet.`;
   }
@@ -69,6 +77,7 @@ function renderSection(label: string, items: InstalledCapability[], present: Det
   const cell = (name: string, agentId: string): string => {
     const found = items.filter((m) => m.name === name && m.agent === agentId);
     if (found.length === 0) return '–';
+    if (markOf) return markOf(found);
     const scopes = [...new Set(found.map((f) => SCOPE_TAG[f.scope] ?? '?'))].join('');
     const mark = found.every((f) => !f.enabled) ? '✗' : '✓';
     return `${mark}${scopes}`;
