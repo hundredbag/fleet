@@ -37,10 +37,12 @@ export function fleetHomeDir(fleetHome?: string): string {
   return fleetHome || process.env.FLEET_HOME || join(homedir(), '.fleet');
 }
 
-function isUrl(s: string): boolean {
+/** hubUrl must be https (or http on loopback) — it's a trusted-metadata source. */
+function isHubUrl(s: string): boolean {
   try {
-    new URL(s);
-    return true;
+    const u = new URL(s);
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
   } catch {
     return false;
   }
@@ -67,7 +69,7 @@ export function normalizeConfig(parsed: unknown): FleetConfig {
   // ("all detected") rather than flipping to [] ("none").
   const agents = strArray(p.agents);
   if (agents && agents.length) c.agents = agents;
-  if (typeof p.hubUrl === 'string' && p.hubUrl && isUrl(p.hubUrl)) c.hubUrl = p.hubUrl;
+  if (typeof p.hubUrl === 'string' && p.hubUrl && isHubUrl(p.hubUrl)) c.hubUrl = p.hubUrl;
   const sources = strArray(p.feedSources);
   if (sources && sources.length) c.feedSources = sources;
   const adapterModules = strArray(p.adapterModules);

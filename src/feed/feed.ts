@@ -19,13 +19,16 @@ export interface DiscoverResult {
 export async function discover(sources: FeedSource[], opts?: { since?: string }): Promise<DiscoverResult> {
   const all: FeedItem[] = [];
   const failures: { source: string; error: string }[] = [];
-  for (const s of sources) {
-    try {
-      all.push(...(await s.list(opts)));
-    } catch (e) {
-      failures.push({ source: s.id, error: e instanceof Error ? e.message : String(e) });
-    }
-  }
+  // Fetch sources in parallel; a slow/flaky one shouldn't add its timeout to the total.
+  const settled = await Promise.allSettled(sources.map((s) => s.list(opts)));
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') all.push(...r.value);
+    else
+      failures.push({
+        source: sources[i]!.id,
+        error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+      });
+  });
   // de-dupe by coordinate, MERGING fields across sources (registry version +
   // PulseMCP popularity combine on one item; first source wins on conflict, later
   // sources fill only the fields the first left undefined). Items with no

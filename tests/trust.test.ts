@@ -42,7 +42,7 @@ test('no-flags: has a repo and updated within a year (with reasons, not empty)',
   assert.ok(t.reasons.length > 0);
 });
 
-test('hub security verdict is authoritative when present', () => {
+test('hub verdict may ESCALATE (clean local + hub caution → caution)', () => {
   const t = assessTrust(
     item({
       url: 'https://x',
@@ -52,5 +52,18 @@ test('hub security verdict is authoritative when present', () => {
     NOW,
   );
   assert.equal(t.level, 'caution');
-  assert.ok(t.reasons.includes('known CVE'));
+  assert.ok(t.reasons.some((r) => /known CVE/.test(r)));
+});
+
+test('hub verdict may NOT downgrade a local caution (unsigned hub cannot mask a red flag)', () => {
+  const t = assessTrust(
+    item({
+      status: 'deprecated',
+      url: 'https://x',
+      updatedAt: '2026-06-20T00:00:00Z',
+      security: { level: 'no-flags', reasons: ['scanned clean'] },
+    }),
+    NOW,
+  );
+  assert.equal(t.level, 'caution'); // local caution stands; hub can't clear it
 });

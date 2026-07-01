@@ -245,6 +245,25 @@ test('FleetHubSource: maps enriched hub items (accepts {items} or a bare array)'
   assert.equal(items[0]?.popularity, 5);
 });
 
+test('FleetHubSource: accepts a bare array and tolerates a malformed response', async () => {
+  const bare = [{ name: 'A', identifier: '@a/a', ecosystem: 'npm' }, 1, null, 'x'];
+  const s1 = new FleetHubSource('http://hub', { fetchImpl: mkFetch([bare]) });
+  const items = await s1.list();
+  assert.equal(items.length, 4); // non-object elements degrade to defaults, no throw
+  assert.equal(items[0]?.identifier, '@a/a');
+  // non-array body → []
+  const s2 = new FleetHubSource('http://hub', { fetchImpl: mkFetch([{ nope: true }]) });
+  assert.deepEqual(await s2.list(), []);
+});
+
+test('FleetHubSource: non-OK response throws (discover catches it into failures)', async () => {
+  const s = new FleetHubSource('http://hub', { fetchImpl: mkFetch([{}], false, 500) });
+  await assert.rejects(s.list(), /hub: HTTP 500/);
+  const { items, failures } = await discover([s]);
+  assert.equal(items.length, 0);
+  assert.equal(failures[0]?.source, 'hub');
+});
+
 test('defaultSources: the hub joins only when hubUrl is configured', () => {
   assert.ok(!defaultSources({ ...DEFAULT_CONFIG }).some((s) => s.id === 'hub'));
   assert.ok(defaultSources({ ...DEFAULT_CONFIG, hubUrl: 'https://hub' }).some((s) => s.id === 'hub'));

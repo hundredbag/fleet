@@ -12,6 +12,15 @@ import type { HttpSourceOpts } from './mcp-registry.js';
  * Protocol: `GET {hubUrl}/v0/feed[?since=RFC3339]` → `{ items: FeedItem[] }`
  * (a bare array is also accepted). See docs/design-hub.md.
  */
+/** Keep only a well-formed { level, reasons } security verdict; drop anything else. */
+function cleanSecurity(s: any): unknown {
+  if (s && typeof s === 'object' && typeof s.level === 'string') {
+    const reasons = Array.isArray(s.reasons) ? s.reasons.filter((r: unknown) => typeof r === 'string') : [];
+    return { level: s.level, reasons };
+  }
+  return undefined;
+}
+
 function mapItem(x: any): FeedItem {
   const eco = x?.ecosystem;
   return {
@@ -25,7 +34,7 @@ function mapItem(x: any): FeedItem {
     updatedAt: typeof x?.updatedAt === 'string' ? x.updatedAt : undefined,
     popularity: typeof x?.popularity === 'number' ? x.popularity : undefined,
     status: typeof x?.status === 'string' ? x.status : undefined,
-    security: x?.security,
+    security: cleanSecurity(x?.security),
   };
 }
 
