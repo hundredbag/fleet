@@ -89,11 +89,12 @@ tailscale serve --bg 7777
 ## Architecture
 
 One `core` (inventory, safe write engine, orchestrator, redaction, conflict analysis)
-+ per-agent **adapters** + a client-side **feed** + three thin **faces** (CLI / MCP / web).
-The feed is decoupled from the write path (enforced by an ESLint boundary rule): a
-feed source only emits public metadata; your inventory never leaves the machine, and
-"updates to mine" matching is done locally. A future central hub plugs in as one more
-feed source. See `docs/`.
+
+- per-agent **adapters** + a client-side **feed** + three thin **faces** (CLI / MCP / web).
+  The feed is decoupled from the write path (enforced by an ESLint boundary rule): a
+  feed source only emits public metadata; your inventory never leaves the machine, and
+  "updates to mine" matching is done locally. A future central hub plugs in as one more
+  feed source. See `docs/`.
 
 ## Adding an agent (Bring Your Own Agent)
 

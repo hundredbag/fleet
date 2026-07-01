@@ -24,6 +24,7 @@ import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend } from '../feed/recommend.js';
 import { startFleetServer } from '../web/server.js';
+import { loadConfig, configPath } from '../core/config.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -55,6 +56,7 @@ Usage:
                                              --allow-host <machine>.<tailnet>.ts.net
                                            Direct bind: --host <tailscale-ip> (auto-allows <ip>:<port>).
                                            Never bind 0.0.0.0; never expose via 'tailscale funnel'.
+  fleet config                             Show effective config (~/.fleet/config.json) + its path
   fleet whats-new                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
@@ -280,9 +282,10 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'serve': {
-      const port = Number(str(p.flags.port) ?? '7777');
+      const cfg = loadConfig();
+      const port = p.flags.port !== undefined ? Number(str(p.flags.port)) : cfg.port;
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new Error(`serve: invalid --port '${str(p.flags.port)}'`);
+        throw new Error(`serve: invalid port '${str(p.flags.port)}'`);
       }
       const host = str(p.flags.host) ?? '127.0.0.1';
       if ((host === '0.0.0.0' || host === '::' || host === '') && p.flags['insecure-bind-all'] !== true) {
@@ -292,12 +295,19 @@ async function main(argv: string[]): Promise<number> {
             '  Pass --insecure-bind-all only if you truly mean to expose every interface.',
         );
       }
-      const allowHosts = (str(p.flags['allow-host']) ?? '')
+      const flagHosts = (str(p.flags['allow-host']) ?? '')
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+      const allowHosts = flagHosts.length ? flagHosts : cfg.allowHosts;
       startFleetServer(adapters, { port, host, allowHosts });
       return 0; // the listening server keeps the process alive
+    }
+    case 'config': {
+      const cfg = loadConfig();
+      process.stdout.write(`config: ${configPath()}\n`);
+      process.stdout.write(JSON.stringify(cfg, null, 2) + '\n');
+      return 0;
     }
     case 'conflicts': {
       const findings = analyzeConflicts(await buildInventory(adapters));
