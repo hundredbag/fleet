@@ -22,7 +22,8 @@ import { rollback } from '../core/writer.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
-import { recommend } from '../feed/recommend.js';
+import { recommend, diversifyByCategory } from '../feed/recommend.js';
+import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
 import { redactUrl } from '../core/redact.js';
@@ -44,6 +45,7 @@ Usage:
   fleet skill install <name> --from-dir <path> --to <ids|all> [--commit]
   fleet skill sync <name> --from <id> --to <ids|all> [--commit]
   fleet skill remove <name> --from <ids|all> [--commit]
+  fleet skill find <query>                 Search the skills.sh registry
                                            Manage skills (SKILL.md directories)
 
   fleet rule install <name> --text <instruction> --to <ids|all> [--commit]
@@ -229,7 +231,25 @@ async function main(argv: string[]): Promise<number> {
         const targets = await resolveTargets(adapters, from);
         return runPlan(adapters, await planRemoveSkill(adapters, name, targets), commit);
       }
-      throw new Error('usage: fleet skill <install|sync|remove> …');
+      if (sub === 'find') {
+        const query = p.positionals.slice(1).join(' ').trim();
+        if (query.length < 2) throw new Error('usage: fleet skill find <query>  (2+ chars)');
+        const found = await new SkillsShSource().search(query);
+        if (found.length === 0) {
+          process.stdout.write('No skills found (skills.sh).\n');
+          return 0;
+        }
+        const top = found.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0)).slice(0, 15);
+        for (const s of top) {
+          const installs = s.popularity ? ` — ${s.popularity.toLocaleString()} installs` : '';
+          process.stdout.write(`  ◆ [${s.category ?? 'other'}] ${s.name}${installs}\n      ${s.url ?? ''}\n`);
+        }
+        process.stdout.write(
+          '\n(install: clone the repo, then `fleet skill install <name> --from-dir <path> --to all`)\n',
+        );
+        return 0;
+      }
+      throw new Error('usage: fleet skill <install|sync|remove|find> …');
     }
     case 'rule': {
       const sub = p.positionals[0];
@@ -264,23 +284,35 @@ async function main(argv: string[]): Promise<number> {
       const inv = await buildInventory(adapters);
       const { items, failures } = await discover(defaultSources());
       const { updates } = updatesForInventory(inv, items);
-      const recs = await recommend(inv, items, { limit: 10 });
+      const recs = await recommend(inv, items, { limit: 60 });
       process.stdout.write('Updates available (installed):\n');
       if (updates.length === 0) process.stdout.write('  (none)\n');
       for (const u of updates) {
         process.stdout.write(`  ↑ [${u.agent}] ${u.name}: ${u.installed} → ${u.available}\n`);
       }
-      process.stdout.write('\nNew / recommended (not installed):\n');
-      if (recs.length === 0) process.stdout.write('  (none)\n');
-      for (const r of recs) {
+      const trustNote = (r: (typeof recs)[number]): string =>
+        r.trust.level === 'caution'
+          ? `  ⚠ ${r.trust.reasons.join(', ')}`
+          : r.trust.level === 'unknown'
+            ? `  · ${r.trust.reasons.join(', ')}`
+            : '';
+      const servers = recs.filter((r) => r.item.kind !== 'skill').slice(0, 10);
+      const skills = diversifyByCategory(
+        recs.filter((r) => r.item.kind === 'skill'),
+        10,
+      );
+      process.stdout.write('\nNew / recommended MCP servers (not installed):\n');
+      if (servers.length === 0) process.stdout.write('  (none)\n');
+      for (const r of servers) {
         const id = r.item.identifier ? ` (${r.item.identifier})` : '';
-        const note =
-          r.trust.level === 'caution'
-            ? `  ⚠ ${r.trust.reasons.join(', ')}`
-            : r.trust.level === 'unknown'
-              ? `  · ${r.trust.reasons.join(', ')}`
-              : '';
-        process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}${note}\n`);
+        process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}${trustNote(r)}\n`);
+      }
+      process.stdout.write('\nRecommended skills (not installed):\n');
+      if (skills.length === 0) process.stdout.write('  (none)\n');
+      for (const r of skills) {
+        process.stdout.write(
+          `  ◆ [${r.item.category ?? 'other'}] ${r.item.name} — ${r.reasons.join('; ')}  ${r.item.url ?? ''}\n`,
+        );
       }
       if (failures.length > 0) {
         process.stdout.write(

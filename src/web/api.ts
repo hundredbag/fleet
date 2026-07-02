@@ -5,7 +5,7 @@ import { summarizeInventory } from '../core/redact.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
-import { recommend } from '../feed/recommend.js';
+import { recommend, diversifyByCategory } from '../feed/recommend.js';
 
 /**
  * Read-only JSON API over core — the same logic the CLI/MCP faces use, so the
@@ -28,8 +28,18 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
   const inv = await buildInventory(adapters);
   const { items, failures } = await discover(sources);
   const { updates } = updatesForInventory(inv, items);
-  const recommendations = (await recommend(inv, items, { limit: 20 })).map((r) => ({
+  const ranked = await recommend(inv, items, { limit: 60 });
+  const mixed = [
+    ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 15),
+    ...diversifyByCategory(
+      ranked.filter((r) => r.item.kind === 'skill'),
+      15,
+    ),
+  ];
+  const recommendations = mixed.map((r) => ({
     name: r.item.name,
+    kind: r.item.kind ?? 'mcp-server',
+    category: r.item.category,
     identifier: r.item.identifier,
     ecosystem: r.item.ecosystem,
     source: r.item.source,

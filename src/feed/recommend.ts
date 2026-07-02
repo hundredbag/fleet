@@ -123,10 +123,12 @@ export async function recommend(
 
   const installedTokens = new Set<string>();
   const installedCoords = new Set<string>();
+  const installedSkillNames = new Set<string>();
   const agents = new Set<string>();
   for (const i of inv.items) {
     agents.add(i.agent);
     for (const t of tokensOf(i.name)) installedTokens.add(t);
+    if (i.kind === 'skill') installedSkillNames.add(i.name.toLowerCase());
     if (i.kind !== 'mcp-server') continue;
     const c = extractCoordinate(i.spec);
     if (c?.confidence === 'high') {
@@ -135,9 +137,11 @@ export async function recommend(
     }
   }
 
-  const candidates = items.filter(
-    (it) => !(it.identifier && it.ecosystem) || !installedCoords.has(coordKey(it.ecosystem, it.identifier)),
-  );
+  const candidates = items.filter((it) => {
+    // an already-installed skill (by name) is not a recommendation
+    if (it.kind === 'skill') return !installedSkillNames.has(it.name.toLowerCase());
+    return !(it.identifier && it.ecosystem) || !installedCoords.has(coordKey(it.ecosystem, it.identifier));
+  });
   const ctx: ScoreContext = { installedTokens, installedCoords, agents: [...agents], now };
   const scored = await scorer(candidates, ctx);
 
@@ -147,7 +151,36 @@ export async function recommend(
       return { item, score: s.score, reasons: s.reasons, trust: assessTrust(item, now) };
     })
     .filter((r) => r.score >= 1) // signal floor: below this is noise
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score || (b.item.popularity ?? 0) - (a.item.popularity ?? 0));
 
   return opts.limit ? ranked.slice(0, opts.limit) : ranked;
+}
+
+/**
+ * Round-robin across categories so one dominant category (e.g. everything the
+ * 'git' seed returned) doesn't fill the whole list. Preserves in-category order.
+ */
+export function diversifyByCategory(recs: Recommendation[], limit: number): Recommendation[] {
+  const buckets = new Map<string, Recommendation[]>();
+  for (const r of recs) {
+    const key = r.item.category ?? 'other';
+    const b = buckets.get(key) ?? [];
+    b.push(r);
+    buckets.set(key, b);
+  }
+  const out: Recommendation[] = [];
+  const lists = [...buckets.values()];
+  for (let round = 0; out.length < limit; round++) {
+    let added = false;
+    for (const list of lists) {
+      const next = list[round];
+      if (next) {
+        out.push(next);
+        added = true;
+        if (out.length >= limit) break;
+      }
+    }
+    if (!added) break;
+  }
+  return out;
 }

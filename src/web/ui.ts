@@ -56,7 +56,8 @@ export function renderPage(): string {
   <div id="preview" class="preview" style="display:none"></div>
   <section><h2>Inventory — what's installed where (click a ✓ to remove)</h2><div id="inventory"></div></section>
   <section><h2>Updates available</h2><div id="updates"></div></section>
-  <section><h2>New / recommended (heuristic)</h2><div id="recommended"></div></section>
+  <section><h2>New / recommended MCP servers (heuristic)</h2><div id="recommended"></div></section>
+  <section><h2>Recommended skills (heuristic)</h2><div id="recskills"></div></section>
   <section><h2>Possible conflicts (heuristic)</h2><div id="conflicts"></div></section>
 </main>
 <div class="foot">Recommendations & conflicts are heuristic — verify before acting. Empty feed may mean sources were unreachable.</div>
@@ -175,8 +176,11 @@ async function loadFeed(){
     up.appendChild(d);
   });
   const rec = document.getElementById('recommended'); rec.innerHTML='';
-  if(!feed.recommendations.length) rec.appendChild(el('p','muted','(none)'));
-  feed.recommendations.forEach(function(r){
+  const rsk = document.getElementById('recskills'); rsk.innerHTML='';
+  const servers = (feed.recommendations||[]).filter(function(r){ return r.kind !== 'skill'; });
+  const skills = (feed.recommendations||[]).filter(function(r){ return r.kind === 'skill'; });
+  if(!servers.length) rec.appendChild(el('p','muted','(none)'));
+  servers.forEach(function(r){
     const d = el('div','row');
     d.appendChild(el('span','star','★ '));
     d.appendChild(el('span','name', r.name + (r.identifier ? (' ('+r.identifier+')') : '')));
@@ -187,6 +191,16 @@ async function loadFeed(){
       const b = el('button','act','Install'); b.addEventListener('click', function(){ pickAgentsThen(function(to){ doPlan({ action:'install', name:r.name, to:to, coordinate:{ ecosystem:r.ecosystem, identifier:r.identifier } }); }); }); d.appendChild(b);
     }
     rec.appendChild(d);
+  });
+  if(!skills.length) rsk.appendChild(el('p','muted','(none)'));
+  skills.forEach(function(r){
+    const d = el('div','row');
+    d.appendChild(el('span','star','◆ '));
+    d.appendChild(el('span','muted','['+(r.category||'other')+'] '));
+    d.appendChild(el('span','name', r.name));
+    d.appendChild(el('span','why', ' — ' + (r.reasons||[]).join('; ')));
+    if(r.url){ const a=el('a','why',' repo'); a.href=r.url; a.target='_blank'; a.rel='noreferrer noopener'; d.appendChild(a); }
+    rsk.appendChild(d);
   });
   if(feed.failures && feed.failures.length){ rec.appendChild(el('p','warn', "⚠ couldn't reach: " + feed.failures.map(function(f){ return f.source; }).join(', '))); }
 }

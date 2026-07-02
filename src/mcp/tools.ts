@@ -21,7 +21,8 @@ import { summarizeInventory, summarizeResult } from '../core/redact.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
-import { recommend } from '../feed/recommend.js';
+import { recommend, diversifyByCategory } from '../feed/recommend.js';
+import { SkillsShSource } from '../feed/sources/skills-sh.js';
 
 const targetArg = (v: unknown): string => (Array.isArray(v) ? v.join(',') : String(v));
 
@@ -233,9 +234,20 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         const inv = await buildInventory(adapters);
         const { items, failures } = await discover(defaultSources());
         const { updates } = updatesForInventory(inv, items);
-        const recommendations = (await recommend(inv, items, { limit: 10 })).map((r) => ({
+        const ranked = await recommend(inv, items, { limit: 60 });
+        const mixed = [
+          ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 10),
+          ...diversifyByCategory(
+            ranked.filter((r) => r.item.kind === 'skill'),
+            10,
+          ),
+        ];
+        const recommendations = mixed.map((r) => ({
           name: r.item.name,
+          kind: r.item.kind ?? 'mcp-server',
+          category: r.item.category,
           identifier: r.item.identifier,
+          url: r.item.url,
           source: r.item.source,
           score: Number(r.score.toFixed(2)),
           reasons: r.reasons,
@@ -246,6 +258,28 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           recommendations,
           failures,
           note: 'Heuristic (novelty+popularity+relevance); verify before installing. Absence of results may just mean sources were unreachable (see failures).',
+        };
+      },
+    },
+    {
+      name: 'skill_search',
+      description:
+        'Search the skills.sh registry for agent skills by keyword. Returns name, category, install count, and the source repo URL. To install one: clone the repo, then use skill_install with fromDir.',
+      inputSchema: { query: z.string().min(2).describe('search terms (2+ chars)') },
+      handler: async (a) => {
+        const found = await new SkillsShSource().search(String(a.query));
+        return {
+          skills: found
+            .sort((x, y) => (y.popularity ?? 0) - (x.popularity ?? 0))
+            .slice(0, 20)
+            .map((s) => ({
+              name: s.name,
+              category: s.category,
+              installs: s.popularity,
+              repo: s.url,
+              identifier: s.identifier,
+            })),
+          note: 'From skills.sh (public metadata). Install counts are registry-reported; review a skill before installing.',
         };
       },
     },

@@ -36,7 +36,8 @@ npm link          # optional: puts `fleet` and `fleet-mcp` on your PATH
 
 ```bash
 fleet inventory                              # capability × agent matrix
-fleet whats-new                              # updates to yours + new/recommended
+fleet whats-new                              # updates + new MCP servers + recommended skills (categorized)
+fleet skill find <query>                     # search the skills.sh registry
 fleet install github --to all \
       --command npx --arg -y --arg @modelcontextprotocol/server-github     # dry-run
 fleet install github --to all --command npx --arg -y --arg @modelcontextprotocol/server-github --commit

@@ -9,8 +9,12 @@
 export interface FeedItem {
   /** display name */
   name: string;
-  /** which source produced it (e.g. 'mcp-registry', 'hub') */
+  /** which source produced it (e.g. 'mcp-registry', 'skills.sh', 'hub') */
   source: string;
+  /** capability kind this item describes (default: 'mcp-server') */
+  kind?: 'mcp-server' | 'skill';
+  /** category label (see feed/classify.ts) */
+  category?: string;
   /** package coordinate used for matching (e.g. '@modelcontextprotocol/server-github') */
   identifier?: string;
   ecosystem?: 'npm' | 'pypi' | 'other';

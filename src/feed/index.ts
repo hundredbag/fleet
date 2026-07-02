@@ -2,16 +2,17 @@ import type { FeedSource } from './source.js';
 import { loadConfig, type FleetConfig } from '../core/config.js';
 import { McpRegistrySource } from './sources/mcp-registry.js';
 import { PulseMcpSource } from './sources/pulsemcp.js';
+import { SkillsShSource } from './sources/skills-sh.js';
 import { FleetHubSource } from './sources/hub.js';
 
 /**
  * The default live feed sources. The MCP Registry (novelty/version/identifier)
- * is always on. The central hub (curated, enriched metadata) joins when
- * `hubUrl` is configured. PulseMCP (popularity) is opt-in — it needs an API key,
- * so it only joins when PULSEMCP_API_KEY is set (otherwise every request 401s).
+ * and skills.sh (skills + install counts) are always on. The central hub
+ * (curated, enriched metadata) joins when `hubUrl` is configured. PulseMCP
+ * (popularity) is opt-in — it needs an API key (PULSEMCP_API_KEY).
  */
 export function defaultSources(config: FleetConfig = loadConfig()): FeedSource[] {
-  const sources: FeedSource[] = [new McpRegistrySource()];
+  const sources: FeedSource[] = [new McpRegistrySource(), new SkillsShSource()];
   if (config.hubUrl) sources.push(new FleetHubSource(config.hubUrl));
   const pulseKey = process.env.PULSEMCP_API_KEY;
   if (pulseKey) sources.push(new PulseMcpSource({ apiKey: pulseKey }));
