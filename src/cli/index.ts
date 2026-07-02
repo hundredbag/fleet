@@ -310,7 +310,7 @@ async function main(argv: string[]): Promise<number> {
         const id = r.item.identifier ? ` (${r.item.identifier})` : '';
         process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}${trustNote(r)}\n`);
       }
-      process.stdout.write('\nRecommended skills (sampled from skills.sh — not exhaustive):\n');
+      process.stdout.write('\nRecommended skills (sampled from skill registries — not exhaustive):\n');
       if (skills.length === 0) process.stdout.write('  (none)\n');
       for (const r of skills) {
         process.stdout.write(

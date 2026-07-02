@@ -257,7 +257,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           updates,
           recommendations,
           failures,
-          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skills.sh via seed queries (not exhaustive). Absence of results may just mean sources were unreachable (see failures).',
+          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (skills.sh, SkillsMP, ClawHub, ClaudeSkills.info — not exhaustive). Absence of results may just mean sources were unreachable (see failures).',
         };
       },
     },
