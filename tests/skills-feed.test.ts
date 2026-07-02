@@ -76,6 +76,61 @@ test('defaultClassifier: keyword buckets + other fallback', () => {
   assert.equal(defaultClassifier(item('postgres-query-tuner')), 'data/db');
   assert.equal(defaultClassifier(item('deploy-to-kubernetes')), 'devops/cloud');
   assert.equal(defaultClassifier(item('mysterious-thing')), 'other');
+  // stems must match suffixed forms (regression: trailing \b broke these)
+  assert.equal(defaultClassifier(item('security-scanner')), 'security');
+  assert.equal(defaultClassifier(item('vulnerability-check')), 'security');
+  assert.equal(defaultClassifier(item('unit-testing-helper')), 'testing');
+  // 'author' must NOT read as security
+  assert.notEqual(defaultClassifier(item('author-bio-writer')), 'security');
+});
+
+test('mapSkill hardening: malformed entries skipped; hostile source gets no URL', async () => {
+  const payload = {
+    skills: [
+      null,
+      {},
+      { id: 1, name: 'bad-id' },
+      { id: 'a/b/ok', name: 'ok', installs: 5, source: 'anthropics/skills/../../evil' }, // path traversal
+      { id: 'a/b/ok2', name: 'ok2', installs: 5, source: 'https://evil.com/x' }, // full URL
+      { id: 'a/b/ok3', skillId: {}, source: 'good/repo' }, // non-string skillId → falls back to id
+    ],
+  };
+  const s = new SkillsShSource({
+    baseUrl: 'http://t',
+    fetchImpl: (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+    })) as unknown as typeof fetch,
+  });
+  const items = await s.search('xx');
+  assert.equal(items.length, 3); // null/{}/bad-id skipped
+  assert.equal(items.find((i) => i.name === 'ok')?.url, undefined); // traversal source → no URL
+  assert.equal(items.find((i) => i.name === 'ok2')?.url, undefined); // full-URL source → no URL
+  assert.equal(items.find((i) => i.identifier === 'a/b/ok3')?.name, 'a/b/ok3'); // safe fallback
+});
+
+test('diversifyByCategory: round-robin, preserves order, terminates when limit > total', async () => {
+  const { diversifyByCategory } = await import('../src/feed/recommend.js');
+  const rec = (name: string, category: string, score: number) => ({
+    item: { name, source: 't', kind: 'skill' as const, category },
+    score,
+    reasons: [],
+    trust: { level: 'unknown' as const, reasons: [] },
+  });
+  const recs = [
+    rec('a1', 'git/vcs', 9),
+    rec('a2', 'git/vcs', 8),
+    rec('b1', 'data/db', 7),
+    rec('c1', 'other', 6),
+  ];
+  const out = diversifyByCategory(recs, 3);
+  assert.deepEqual(
+    out.map((r) => r.item.name),
+    ['a1', 'b1', 'c1'],
+  ); // one per category first
+  assert.equal(diversifyByCategory(recs, 99).length, 4); // limit > total terminates
+  assert.equal(diversifyByCategory([], 5).length, 0);
 });
 
 test('recommend: an installed skill (by name) is not recommended again', async () => {

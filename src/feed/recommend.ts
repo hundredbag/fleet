@@ -138,7 +138,9 @@ export async function recommend(
   }
 
   const candidates = items.filter((it) => {
-    // an already-installed skill (by name) is not a recommendation
+    // Installed skills are filtered by NAME (local skills carry no registry id —
+    // name is the only join key). A different skill sharing an installed name is
+    // also dropped; a missed recommendation is the safe direction.
     if (it.kind === 'skill') return !installedSkillNames.has(it.name.toLowerCase());
     return !(it.identifier && it.ecosystem) || !installedCoords.has(coordKey(it.ecosystem, it.identifier));
   });

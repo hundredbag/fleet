@@ -240,6 +240,9 @@ async function main(argv: string[]): Promise<number> {
           return 0;
         }
         const top = found.sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0)).slice(0, 15);
+        if (found.length > top.length) {
+          process.stdout.write(`(top ${top.length} of ${found.length} matches)\n`);
+        }
         for (const s of top) {
           const installs = s.popularity ? ` — ${s.popularity.toLocaleString()} installs` : '';
           process.stdout.write(`  ◆ [${s.category ?? 'other'}] ${s.name}${installs}\n      ${s.url ?? ''}\n`);
@@ -284,7 +287,7 @@ async function main(argv: string[]): Promise<number> {
       const inv = await buildInventory(adapters);
       const { items, failures } = await discover(defaultSources());
       const { updates } = updatesForInventory(inv, items);
-      const recs = await recommend(inv, items, { limit: 60 });
+      const recs = await recommend(inv, items); // uncapped; sliced per section below
       process.stdout.write('Updates available (installed):\n');
       if (updates.length === 0) process.stdout.write('  (none)\n');
       for (const u of updates) {
@@ -307,7 +310,7 @@ async function main(argv: string[]): Promise<number> {
         const id = r.item.identifier ? ` (${r.item.identifier})` : '';
         process.stdout.write(`  ★ ${r.item.name}${id} — ${r.reasons.join('; ')}${trustNote(r)}\n`);
       }
-      process.stdout.write('\nRecommended skills (not installed):\n');
+      process.stdout.write('\nRecommended skills (sampled from skills.sh — not exhaustive):\n');
       if (skills.length === 0) process.stdout.write('  (none)\n');
       for (const r of skills) {
         process.stdout.write(

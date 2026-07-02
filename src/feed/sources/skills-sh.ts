@@ -5,8 +5,10 @@ import { defaultClassifier, type Classifier } from '../classify.js';
 /**
  * skills.sh (the Vercel skills registry) as a FeedSource for SKILLS.
  * Its public API is search-only (`GET /api/search?q=…`, min 2 chars), so we
- * sweep a set of category-seed queries in parallel and merge — a de-facto
- * listing. Response shape (verified live 2026-07-02):
+ * sweep a set of category-seed queries in parallel and merge. NOT exhaustive:
+ * only skills matching these seeds (plus whatever per-query cap the API
+ * applies) are seen — a SAMPLE of the registry, and faces say so.
+ * Response shape (verified live 2026-07-02):
  *   { skills: [{ id: "owner/repo/skill-id", skillId, name, installs, source: "owner/repo" }] }
  * `installs` is a real install count → popularity. No description/updatedAt, so
  * skills rank on popularity+relevance (novelty never fires) and trust is
@@ -32,13 +34,17 @@ export interface SkillsShOpts extends HttpSourceOpts {
   classifier?: Classifier;
 }
 
+// a repo ref must be exactly "owner/repo" — anything else (../, ?, #, full URLs)
+// could rewrite the github.com link we build from it, so it is dropped.
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
 function mapSkill(s: any, classify: Classifier): FeedItem | null {
   const id = typeof s?.id === 'string' ? s.id : undefined;
-  const name = typeof s?.name === 'string' ? s.name : (s?.skillId ?? id);
+  const name = typeof s?.name === 'string' ? s.name : typeof s?.skillId === 'string' ? s.skillId : id;
   if (!id || !name) return null;
-  const repo = typeof s?.source === 'string' ? s.source : undefined;
+  const repo = typeof s?.source === 'string' && REPO_RE.test(s.source) ? s.source : undefined;
   const item: FeedItem = {
-    name: String(name),
+    name: name.slice(0, 200),
     source: 'skills.sh',
     kind: 'skill',
     identifier: id, // "owner/repo/skill-id"

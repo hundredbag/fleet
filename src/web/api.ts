@@ -28,7 +28,7 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
   const inv = await buildInventory(adapters);
   const { items, failures } = await discover(sources);
   const { updates } = updatesForInventory(inv, items);
-  const ranked = await recommend(inv, items, { limit: 60 });
+  const ranked = await recommend(inv, items); // uncapped; sliced per kind below
   const mixed = [
     ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 15),
     ...diversifyByCategory(

@@ -57,7 +57,7 @@ export function renderPage(): string {
   <section><h2>Inventory — what's installed where (click a ✓ to remove)</h2><div id="inventory"></div></section>
   <section><h2>Updates available</h2><div id="updates"></div></section>
   <section><h2>New / recommended MCP servers (heuristic)</h2><div id="recommended"></div></section>
-  <section><h2>Recommended skills (heuristic)</h2><div id="recskills"></div></section>
+  <section><h2>Recommended skills (sampled from skills.sh — not exhaustive)</h2><div id="recskills"></div></section>
   <section><h2>Possible conflicts (heuristic)</h2><div id="conflicts"></div></section>
 </main>
 <div class="foot">Recommendations & conflicts are heuristic — verify before acting. Empty feed may mean sources were unreachable.</div>

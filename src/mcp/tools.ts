@@ -234,7 +234,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         const inv = await buildInventory(adapters);
         const { items, failures } = await discover(defaultSources());
         const { updates } = updatesForInventory(inv, items);
-        const ranked = await recommend(inv, items, { limit: 60 });
+        const ranked = await recommend(inv, items); // uncapped; sliced per kind below
         const mixed = [
           ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 10),
           ...diversifyByCategory(
@@ -257,7 +257,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           updates,
           recommendations,
           failures,
-          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Absence of results may just mean sources were unreachable (see failures).',
+          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skills.sh via seed queries (not exhaustive). Absence of results may just mean sources were unreachable (see failures).',
         };
       },
     },
@@ -269,6 +269,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
       handler: async (a) => {
         const found = await new SkillsShSource().search(String(a.query));
         return {
+          total: found.length,
           skills: found
             .sort((x, y) => (y.popularity ?? 0) - (x.popularity ?? 0))
             .slice(0, 20)

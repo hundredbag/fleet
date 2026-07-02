@@ -9,17 +9,28 @@ import type { FeedItem } from './source.js';
  */
 export type Classifier = (item: FeedItem) => string;
 
+// NOTE: stems use `\w*` (not a trailing \b) so 'testing'/'security-scanner'
+// still match; `\bauth\b` stays whole-word so 'author' doesn't read as security.
 const RULES: [category: string, re: RegExp][] = [
-  ['git/vcs', /\b(git|github|gitlab|commit|branch|merge|rebase|pull-?request|pr)\b/i],
-  ['testing', /\b(test|tdd|e2e|coverage|vitest|jest|playwright-test|unit)\b/i],
-  ['docs/writing', /\b(doc|docs|documentation|readme|writing|blog|markdown|changelog)\b/i],
-  ['data/db', /\b(sql|database|db|postgres|mysql|sqlite|mongo|redis|analytics|etl|csv)\b/i],
-  ['web/browser', /\b(browser|web|playwright|puppeteer|scrape|screenshot|dom|css|frontend|react|vue)\b/i],
-  ['devops/cloud', /\b(deploy|docker|kubernetes|k8s|terraform|aws|gcp|azure|ci|cd|infra|cloud|actions)\b/i],
-  ['security', /\b(secur|auth|oauth|secret|vulnerab|pentest|crypto|audit)\b/i],
-  ['design/media', /\b(design|figma|image|video|audio|diagram|excalidraw|svg|ui|ux)\b/i],
-  ['ai/agents', /\b(agent|llm|prompt|mcp|claude|gpt|gemini|codex|rag|embedding)\b/i],
-  ['productivity', /\b(task|todo|note|calendar|email|slack|jira|linear|notion)\b/i],
+  ['git/vcs', /\b(git\w*|github|gitlab|commit\w*|branch\w*|merge|rebase|pull-?request|pr)\b/i],
+  ['testing', /\b(test\w*|tdd|e2e|coverage|vitest|jest|unit-test\w*)\b/i],
+  ['docs/writing', /\b(docs?\b|document\w*|readme|writing|blog\w*|markdown|changelog)/i],
+  ['data/db', /\b(sql|database\w*|db|postgres\w*|mysql|sqlite|mongo\w*|redis|analytics|etl|csv)\b/i],
+  [
+    'web/browser',
+    /\b(browser|web|playwright|puppeteer|scrap\w*|screenshot\w*|dom|css|frontend|react|vue)\b/i,
+  ],
+  [
+    'devops/cloud',
+    /\b(deploy\w*|docker|kubernetes|k8s|terraform|aws|gcp|azure|ci|cd|infra\w*|cloud|actions)\b/i,
+  ],
+  [
+    'security',
+    /\b(secur\w*|authenticat\w*|authoriz\w*|auth\b|oauth|secret\w*|vulnerab\w*|pentest\w*|crypto|audit\w*)/i,
+  ],
+  ['design/media', /\b(design\w*|figma|image\w*|video\w*|audio|diagram\w*|excalidraw|svg|ui|ux)\b/i],
+  ['ai/agents', /\b(agent\w*|llm|prompt\w*|mcp|claude|gpt|gemini|codex|rag|embedding\w*)\b/i],
+  ['productivity', /\b(task\w*|todo|note\w*|calendar|email|slack|jira|linear|notion)\b/i],
 ];
 
 /** Default keyword classifier: first matching category, else 'other'. */
