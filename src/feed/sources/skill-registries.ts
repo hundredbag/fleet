@@ -12,19 +12,26 @@ import { defaultClassifier, type Classifier } from '../classify.js';
  *  - ClaudeSkills    GET claudeskills.info/api/skills?limit&offset (community-curated ~658;
  *                    license + requires_code_execution + repo_url + categories[])
  *
- * Cross-registry dedupe: when a GitHub coordinate is known, `identifier` is the
- * canonical `owner/repo/skill` (same convention as skills.sh), so discover()'s
- * merge combines the SAME skill listed on several registries (e.g. skills.sh
- * installs + SkillsMP description). ClawHub has no GitHub link → `clawhub/…`
- * namespace (not cross-deduped). Native categories win; the keyword classifier
- * is the fallback. Each source is a SAMPLE (first N pages), and faces say so.
+ * Cross-registry dedupe is BEST-EFFORT: when a GitHub coordinate is known,
+ * `identifier` is the canonical `owner/repo/<skill-dir>` (skills.sh convention),
+ * so items merge when registries agree on the directory slug — when they don't
+ * (display-name vs slug, or repo-level entries like ClaudeSkills bundles), the
+ * same skill can appear twice under different ids. A missed merge is acceptable
+ * for a discovery feed; a false merge is what we guard against (see ghParts).
+ * ClawHub has no GitHub link → `clawhub/…` namespace (never cross-deduped).
+ * Native categories win; the keyword classifier is the fallback. Each source is
+ * a SAMPLE (first N pages), and faces say so.
  */
 
 const PAGE_CAPS = { skillsmp: 5, clawhub: 3, claudeskills: 2 };
 
 function iso(v: unknown): string | undefined {
   if (typeof v !== 'string' || !v) return undefined;
-  if (/^\d{9,}$/.test(v)) return new Date(Number(v) * 1000).toISOString(); // unix seconds
+  if (/^\d{9,}$/.test(v)) {
+    // all-digits epoch: ≥12 digits is milliseconds, else seconds
+    const n = Number(v);
+    return new Date(v.length >= 12 ? n : n * 1000).toISOString();
+  }
   const t = Date.parse(v.includes(' ') ? v.replace(' ', 'T') + 'Z' : v);
   return Number.isNaN(t) ? undefined : new Date(t).toISOString();
 }
@@ -35,6 +42,22 @@ function num(...vals: unknown[]): number | undefined {
 }
 
 const GH_RE = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)/;
+
+/** Parse a github URL into owner/repo plus the skill's directory segment when
+ * the URL points inside the repo (…/tree/<branch>/…/<skill-dir>). Using the
+ * directory (not the display name) as the id tail prevents two same-named
+ * skills in one monorepo from colliding. */
+function ghParts(url: string): { owner: string; repo: string; skillSeg?: string } | null {
+  const m = GH_RE.exec(url);
+  if (!m) return null;
+  const segs = url.slice(m[0].length).split(/[?#]/)[0]!.split('/').filter(Boolean);
+  let skillSeg: string | undefined;
+  if (segs.length >= 3 && (segs[0] === 'tree' || segs[0] === 'blob')) {
+    skillSeg = segs[segs.length - 1];
+    if (skillSeg && /^skill\.md$/i.test(skillSeg)) skillSeg = segs[segs.length - 2];
+  }
+  return { owner: m[1]!, repo: m[2]!, skillSeg };
+}
 
 async function fetchJson(
   url: string,
@@ -71,6 +94,8 @@ async function pagedList(
         added++;
       }
     }
+    // stop-on-no-new: a shifting sort order could repeat a page and stop us
+    // early — acceptable for a labeled SAMPLE. Do not loop past maxPages.
     if (added === 0) break;
   }
   return [...byId.values()];
@@ -95,16 +120,19 @@ export class SkillsMpSource implements FeedSource {
           .map((s: any): FeedItem | null => {
             const name = typeof s?.name === 'string' ? s.name : undefined;
             if (!name) return null;
-            const gh = typeof s?.githubUrl === 'string' ? GH_RE.exec(s.githubUrl) : null;
+            const gh = typeof s?.githubUrl === 'string' ? ghParts(s.githubUrl) : null;
+            const idTail = (gh?.skillSeg ?? name).slice(0, 100);
             const item: FeedItem = {
               name: name.slice(0, 200),
               source: 'skillsmp',
               kind: 'skill',
-              identifier: gh ? `${gh[1]}/${gh[2]}/${name}` : `skillsmp/${String(s?.id ?? name)}`,
+              identifier: gh
+                ? `${gh.owner}/${gh.repo}/${idTail}`
+                : `skillsmp/${String(s?.id ?? name).slice(0, 150)}`,
               description: typeof s?.description === 'string' ? s.description.slice(0, 500) : undefined,
               popularity: num(s?.stars),
               updatedAt: iso(s?.updatedAt),
-              url: gh ? `https://github.com/${gh[1]}/${gh[2]}` : undefined,
+              url: gh ? `https://github.com/${gh.owner}/${gh.repo}` : undefined,
             };
             item.category = classify(item);
             return item;
@@ -142,8 +170,9 @@ export class ClawHubSource implements FeedSource {
               description: typeof s?.summary === 'string' ? s.summary.slice(0, 500) : undefined,
               popularity: num(s?.installsAllTime, s?.downloads, s?.stars),
               updatedAt: iso(s?.updatedAt),
-              // native category wins over the keyword classifier
-              category: typeof s?.category === 'string' && s.category ? s.category : undefined,
+              // native category wins over the keyword classifier (capped: it's a
+              // diversify bucket key — unbounded strings would dilute round-robin)
+              category: typeof s?.category === 'string' && s.category ? s.category.slice(0, 64) : undefined,
             };
             if (!item.category) item.category = classify(item);
             return item;
@@ -179,7 +208,7 @@ export class ClaudeSkillsInfoSource implements FeedSource {
             const ghUrl = typeof s?.repo_url === 'string' && GH_RE.test(s.repo_url) ? s.repo_url : undefined;
             const cat =
               Array.isArray(s?.categories) && typeof s.categories[0] === 'string'
-                ? s.categories[0]
+                ? s.categories[0].slice(0, 64)
                 : undefined;
             const item: FeedItem = {
               name: name.slice(0, 200),

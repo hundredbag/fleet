@@ -15,6 +15,9 @@ import { FleetHubSource } from './sources/hub.js';
  * configured. PulseMCP (popularity) is opt-in (PULSEMCP_API_KEY).
  */
 export function defaultSources(config: FleetConfig = loadConfig()): FeedSource[] {
+  // ORDER MATTERS for merged items: discover() is first-source-wins on field
+  // conflicts, so skills.sh comes first among skill registries — its install
+  // counts are the truest popularity signal (stars/downloads fill gaps only).
   const sources: FeedSource[] = [
     new McpRegistrySource(),
     new SkillsShSource(),

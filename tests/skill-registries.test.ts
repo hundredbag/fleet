@@ -126,6 +126,48 @@ test('cross-registry merge: same canonical id from two registries merges into on
   assert.ok(merged[0]?.description?.includes('Compress')); // filled from SkillsMP
 });
 
+test('iso(): 13-digit millisecond epoch is not multiplied again', async () => {
+  const page = {
+    skills: [
+      {
+        name: 'x',
+        githubUrl: 'https://github.com/a/b/tree/main/skills/x',
+        updatedAt: '1782789486000', // milliseconds
+      },
+    ],
+  };
+  const items = await new SkillsMpSource({ fetchImpl: onePageFetch(page) }).list();
+  assert.match(items[0]?.updatedAt ?? '', /^2026-06-30T/); // NOT year +58000
+});
+
+test('SkillsMP: id tail comes from the skill DIRECTORY, so same-named skills in a monorepo stay distinct', async () => {
+  const page = {
+    skills: [
+      { name: 'helper', githubUrl: 'https://github.com/o/mono/tree/main/skills/alpha-helper', stars: 1 },
+      { name: 'helper', githubUrl: 'https://github.com/o/mono/tree/main/skills/beta-helper', stars: 1 },
+    ],
+  };
+  const items = await new SkillsMpSource({ fetchImpl: onePageFetch(page) }).list();
+  assert.equal(items.length, 2); // directory-based ids do not collide
+  assert.deepEqual(items.map((i) => i.identifier).sort(), ['o/mono/alpha-helper', 'o/mono/beta-helper']);
+});
+
+test('mappers tolerate malformed payloads (non-array, missing fields)', async () => {
+  const bad = { skills: [null, {}, { slug: 7 }, { name: 42 }] };
+  assert.deepEqual(await new SkillsMpSource({ fetchImpl: onePageFetch(bad) }).list(), []);
+  assert.deepEqual(await new ClawHubSource({ fetchImpl: onePageFetch(bad) }).list(), []);
+  assert.deepEqual(await new ClaudeSkillsInfoSource({ fetchImpl: onePageFetch(bad) }).list(), []);
+  const notArray = { skills: 'nope' };
+  assert.deepEqual(await new ClawHubSource({ fetchImpl: onePageFetch(notArray) }).list(), []);
+});
+
+test('defaultSources: the three registries are on by default', async () => {
+  const { defaultSources } = await import('../src/feed/index.js');
+  const { DEFAULT_CONFIG } = await import('../src/core/config.js');
+  const ids = defaultSources({ ...DEFAULT_CONFIG }).map((s) => s.id);
+  for (const id of ['skills.sh', 'skillsmp', 'clawhub', 'claudeskills']) assert.ok(ids.includes(id), id);
+});
+
 test('pagedList: page-1 failure throws (one discover failure); later-page failure keeps partial', async () => {
   const failAll = (async () => ({
     ok: false,
