@@ -18,7 +18,7 @@ import {
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
-import { rollback } from '../core/writer.js';
+import { rollback, readAudit } from '../core/writer.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
@@ -26,7 +26,7 @@ import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
-import { planPluginAction, runDelegated } from '../core/delegate.js';
+import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.js';
 import { redactUrl } from '../core/redact.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
@@ -49,7 +49,7 @@ Usage:
   fleet skill find <query>                 Search the skills.sh registry
 
   fleet plugin install <p[@market]> --to <ids|all> [--commit]
-  fleet plugin remove <p[@market]> --from… (--to) [--commit]
+  fleet plugin remove <p[@market]> --from <ids|all> [--commit]
                                            Vendor plugins via the vendor's own CLI
                                            (claude plugin / codex plugin; dry-run shows
                                            the exact command; undo = vendor uninstall)
@@ -72,7 +72,8 @@ Usage:
   fleet help
 
 Agents: claude-code, codex, gemini. Writes are dry-run by default; pass --commit
-to apply. Every applied change is backed up and reversible via 'fleet rollback'.`;
+to apply. File changes are backed up and reversible via 'fleet rollback';
+delegated plugin actions are undone via the vendor CLI (fleet prints the command).`;
 
 interface ParsedArgs {
   positionals: string[];
@@ -297,24 +298,30 @@ async function main(argv: string[]): Promise<number> {
           'usage: fleet plugin <install|remove> <plugin[@marketplace]> --to <ids|all> [--commit]',
         );
       }
-      const to = str(p.flags.to);
+      const to = str(p.flags.to) ?? str(p.flags.from); // remove reads --from like its siblings
       if (!to) throw new Error('usage: fleet plugin … --to <ids|all>');
       const targets = await resolveTargets(adapters, to);
       let failed = false;
       for (const agent of targets) {
-        const plan = planPluginAction(agent, sub, selector);
-        const res = await runDelegated(plan, { commit });
-        if (res.status === 'preview') {
-          process.stdout.write(`  → [${agent}] would run: ${res.command}\n`);
-          if (res.undoCommand) process.stdout.write(`      undo: ${res.undoCommand}\n`);
-        } else {
-          process.stdout.write(
-            `  ${res.status === 'applied' ? '✓' : '✗'} [${agent}] ${res.command} (exit ${res.exitCode})\n`,
-          );
-          if (res.status === 'failed') {
-            failed = true;
-            process.stdout.write(`${res.outputTail ?? ''}\n`);
+        // per-agent isolation: one agent failing (e.g. codex not installed) must
+        // not hide what already ran on the others
+        try {
+          const res = await runDelegated(planPluginAction(agent, sub, selector), { commit });
+          if (res.status === 'preview') {
+            process.stdout.write(`  → [${agent}] would run: ${res.command}\n`);
+            if (res.undoCommand) process.stdout.write(`      undo: ${res.undoCommand}\n`);
+          } else {
+            process.stdout.write(
+              `  ${res.status === 'applied' ? '✓' : '✗'} [${agent}] ${res.command} (exit ${res.exitCode})\n`,
+            );
+            if (res.status === 'failed') {
+              failed = true;
+              process.stdout.write(`${res.outputTail ?? ''}\n`);
+            }
           }
+        } catch (e) {
+          failed = true;
+          process.stdout.write(`  ✗ [${agent}] ${e instanceof Error ? e.message : String(e)}\n`);
         }
       }
       if (!commit) {
@@ -412,6 +419,18 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'rollback': {
+      // a delegated plugin action can't be file-rolled-back — point at the vendor undo
+      if (!p.positionals[0]) {
+        const [del, audit] = await Promise.all([lastDelegated(), readAudit()]);
+        const lastTs = audit[audit.length - 1]?.ts ?? 0;
+        if (del && Date.parse(del.time) > lastTs) {
+          process.stdout.write(
+            `last change was a delegated plugin action (${del.argv.join(' ')});\n` +
+              (del.undoArgv ? `undo it with: ${del.undoArgv.join(' ')}\n` : 'undo it via the vendor CLI.\n'),
+          );
+          return 0;
+        }
+      }
       const res = await rollback({ auditId: p.positionals[0] });
       process.stdout.write(`rollback: ${res.action} ${res.file}${res.reason ? ` (${res.reason})` : ''}\n`);
       return 0;

@@ -20,7 +20,19 @@ test('planPluginAction: vendor argv table + undo', () => {
 });
 
 test('planPluginAction: rejects unsafe selectors + unknown agents (trust boundary)', () => {
-  for (const bad of ['-y', '--force', 'a b', 'x;rm -rf', 'x`y`', '$(x)', '']) {
+  for (const bad of [
+    '-y',
+    '--force',
+    'a b',
+    'x;rm -rf',
+    'x`y`',
+    '$(x)',
+    '',
+    'x\ny',
+    'x\ty',
+    '한글',
+    'a/../b',
+  ]) {
     assert.throws(() => planPluginAction('codex', 'install', bad), /unsafe|selector/);
   }
   assert.throws(() => planPluginAction('hermes', 'install', 'x'), /no plugin CLI/);

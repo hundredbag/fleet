@@ -9,7 +9,9 @@ import { randomUUID } from 'node:crypto';
  * runs the vendor's own CLI (docs/design-plugins.md Part B, commands verified
  * 2026-07-03). spawn with an argv ARRAY (no shell → no injection surface),
  * selector validated at this trust boundary (AI/feed data can reach it).
- * HONEST LIMITS: no hash-guard/backup; undo = the vendor's uninstall command.
+ * HONEST LIMITS: no hash-guard/backup; undo = the vendor's uninstall command;
+ * the confirm shows the exact command but no marketplace provenance/trust score
+ * yet (plugins Part C).
  */
 
 // PLUGIN[@MARKETPLACE]; also allows @scope/name. Leading '-' rejected (no flag smuggling).
@@ -31,7 +33,9 @@ const VENDOR: Record<string, Record<PluginOp, string[]>> = {
 };
 
 export function planPluginAction(agent: string, op: PluginOp, selector: string): DelegatedPlan {
-  if (!SELECTOR_RE.test(selector)) throw new Error(`refusing unsafe plugin selector '${selector}'`);
+  if (!SELECTOR_RE.test(selector) || selector.includes('..')) {
+    throw new Error(`refusing unsafe plugin selector '${selector}'`);
+  }
   const cmds = VENDOR[agent];
   if (!cmds) throw new Error(`agent '${agent}' has no plugin CLI support (built-ins: claude-code, codex)`);
   return {
@@ -54,14 +58,20 @@ export type Runner = (argv: string[]) => Promise<{ exitCode: number; output: str
 
 const defaultRunner: Runner = (argv) =>
   new Promise((resolve, reject) => {
-    const child = spawn(argv[0]!, argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    // cwd-neutral: vendor scope defaults must not depend on where fleet was launched
+    const child = spawn(argv[0]!, argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], cwd: homedir() });
     let out = '';
     const grab = (c: Buffer) => {
-      if (out.length < 8192) out += c.toString();
+      out = (out + c.toString()).slice(-8192); // rolling tail — the error is at the END
     };
     child.stdout.on('data', grab);
     child.stderr.on('data', grab);
-    const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      // grandchildren can hold the pipes open past the kill — don't wait on them
+      child.stdout.destroy();
+      child.stderr.destroy();
+    }, 120_000);
     child.on('error', (e) => {
       clearTimeout(timer);
       reject(e);
@@ -71,6 +81,22 @@ const defaultRunner: Runner = (argv) =>
       resolve({ exitCode: code ?? 1, output: out });
     });
   });
+
+/** Newest delegated-ledger entry, or null (for `fleet rollback`'s "that was a
+ * plugin action" hint — file-rollback cannot undo vendor state). */
+export async function lastDelegated(
+  fleetHome?: string,
+): Promise<{ time: string; argv: string[]; undoArgv?: string[] } | null> {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const lines = (await readFile(join(fleetHome ?? join(homedir(), '.fleet'), 'delegated.jsonl'), 'utf8'))
+      .trim()
+      .split('\n');
+    return JSON.parse(lines[lines.length - 1]!);
+  } catch {
+    return null;
+  }
+}
 
 /** Execute (or preview) a delegated plan; applied/failed runs are appended to
  * ~/.fleet/delegated.jsonl (separate ledger — file-rollback machinery can't undo these). */
@@ -83,7 +109,8 @@ export async function runDelegated(
   if (!opts.commit) return { status: 'preview', agent: plan.agent, command, undoCommand };
 
   const { exitCode, output } = await (opts.runner ?? defaultRunner)(plan.argv);
-  const outputTail = output.slice(-2000);
+  // scrub creds-in-URL userinfo before the tail reaches the ledger / an AI face
+  const outputTail = output.slice(-2000).replace(/:\/\/[^/\s@]+@/g, '://REDACTED@');
   const home = opts.fleetHome ?? join(homedir(), '.fleet');
   await mkdir(home, { recursive: true });
   await appendFile(
