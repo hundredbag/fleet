@@ -105,4 +105,8 @@ export interface RuleWriter {
  * fleet (surfaced in the inventory, never written or translated across agents) —
  * see PermissionCapability in types.ts. Do not add one without revisiting that
  * decision; mis-syncing permissions is the highest-blast-radius change possible.
+ *
+ * NOTE: there is also intentionally NO PluginWriter. Vendor plugin dirs are the
+ * vendor CLI's own state — install/remove is DELEGATED to the vendor CLI
+ * (docs/design-plugins.md Part B); never write those dirs directly.
  */

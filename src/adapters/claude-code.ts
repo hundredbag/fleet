@@ -88,8 +88,15 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     return {
       id: this.id,
       displayName: this.displayName,
-      present: existsSync(this.claudeJsonPath) || existsSync(this.skillsDir),
-      configPaths: [this.claudeJsonPath, '<project>/.mcp.json', this.skillsDir],
+      present: existsSync(this.claudeJsonPath) || existsSync(this.skillsDir) || existsSync(this.settingsPath),
+      configPaths: [
+        this.claudeJsonPath,
+        '<project>/.mcp.json',
+        this.skillsDir,
+        this.rulesPath,
+        this.settingsPath,
+        this.pluginsDir,
+      ],
     };
   }
 

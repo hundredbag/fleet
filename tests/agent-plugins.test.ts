@@ -66,6 +66,54 @@ test('readClaudePlugins: missing/malformed settings or manifests → [] (never t
   });
 });
 
+test('readClaudePlugins: disabled plugins SURFACE with enabled:false; truthy-non-boolean is not enabled', async () => {
+  await withDir(async (dir) => {
+    const settings = join(dir, 's.json');
+    writeFileSync(
+      settings,
+      JSON.stringify({ enabledPlugins: { 'on@m': true, 'off@m': false, 'weird@m': 'true' } }),
+    );
+    const plugins = await readClaudePlugins('c', join(dir, 'nope'), settings);
+    assert.equal(plugins.length, 3); // all surface
+    assert.equal(plugins.find((p) => p.name === 'on')?.enabled, true);
+    assert.equal(plugins.find((p) => p.name === 'off')?.enabled, false);
+    assert.equal(plugins.find((p) => p.name === 'weird')?.enabled, false); // strict
+  });
+});
+
+test('readClaudePlugins: scoped plugin name (@scope/x@market) splits on the LAST @', async () => {
+  await withDir(async (dir) => {
+    const settings = join(dir, 's.json');
+    writeFileSync(settings, JSON.stringify({ enabledPlugins: { '@scope/x@market': true, noatall: true } }));
+    const plugins = await readClaudePlugins('c', join(dir, 'nope'), settings);
+    const scoped = plugins.find((p) => p.name === '@scope/x');
+    assert.equal(scoped?.marketplace, 'market');
+    const bare = plugins.find((p) => p.name === 'noatall');
+    assert.equal(bare?.marketplace, undefined);
+  });
+});
+
+test('readClaudePlugins: registered marketplace with missing installLocation or bad manifest → no description, no throw', async () => {
+  await withDir(async (dir) => {
+    const pluginsDir = join(dir, 'plugins');
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(join(pluginsDir, 'known_marketplaces.json'), JSON.stringify({ m: { source: {} } })); // no installLocation
+    const settings = join(dir, 's.json');
+    writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'a@m': true } }));
+    const plugins = await readClaudePlugins('c', pluginsDir, settings);
+    assert.equal(plugins.length, 1);
+    assert.equal(plugins[0]?.description, undefined);
+  });
+});
+
+test('readCodexPlugins: pointed at a FILE → [] (ENOTDIR caught)', async () => {
+  await withDir(async (dir) => {
+    const f = join(dir, 'notadir');
+    writeFileSync(f, 'x');
+    assert.deepEqual(await readCodexPlugins('codex', f), []);
+  });
+});
+
 test('readCodexPlugins: guarded dir scan; missing dir → []', async () => {
   await withDir(async (dir) => {
     assert.deepEqual(await readCodexPlugins('codex', join(dir, 'nope')), []);

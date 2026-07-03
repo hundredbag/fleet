@@ -121,6 +121,8 @@ export type Surface = 'gated' | 'always-on';
 
 export function surfaceOf(kind: PrimitiveKind): Surface {
   // mcp tools + skills are gated; rules/instructions + permissions are always-on.
+  // Plugins default to gated even though a bundle may contain always-on hooks —
+  // the analyzer cannot inspect bundle contents (revisit in plugins Part C).
   return kind === 'rule' || kind === 'permission' ? 'always-on' : 'gated';
 }
 

@@ -56,7 +56,9 @@ export async function readClaudePlugins(
 
   const out: PluginCapability[] = [];
   for (const [key, on] of Object.entries(enabled)) {
-    if (on === false) continue;
+    // disabled plugins still SURFACE (matrix shows ✗) — hiding them would break
+    // "see everything in one place". Strict: only `true` counts as enabled.
+    const isEnabled = on === true;
     const at = key.lastIndexOf('@');
     const name = at > 0 ? key.slice(0, at) : key;
     const marketplace = at > 0 ? key.slice(at + 1) : undefined;
@@ -75,7 +77,7 @@ export async function readClaudePlugins(
       name,
       agent: agentId,
       scope: 'user',
-      enabled: true,
+      enabled: isEnabled,
       marketplace,
       description,
       source: { file: settingsPath },
