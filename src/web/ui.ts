@@ -28,7 +28,7 @@ export function renderPage(): string {
   [data-theme="light"] {
     color-scheme: light;
     --bg:#f4f6f9; --glow:#e9eef5; --surface:#ffffff; --elevated:#ffffff; --border:#dbe1ea; --border-soft:#e7ebf1;
-    --text:#1b2434; --text-2:#4e5a70; --text-3:#8791a3;
+    --text:#1b2434; --text-2:#44506a; --text-3:#5d6980; /* small-text contrast ≥4.5:1 on white */
     --accent:#e8a812; --accent-hi:#f5bd33; --accent-ink:#231a00;
     --green:#1f9d63; --red:#d43f44; --yellow:#a87708; --blue:#2f6fd0; --violet:#7c5fd8;
     --orange:#d0741f; --pink:#c25ba3; --hover:rgba(20,30,50,.03); --btn-hover:#f0f3f8; --shadow:rgba(30,40,60,.18);
@@ -88,6 +88,13 @@ export function renderPage(): string {
   td.name { font-family:var(--mono); font-size:12.5px; overflow-wrap:anywhere; }
   td.cell { text-align:center; width:110px; }
   .chip { display:inline-block; font:600 10.5px/1 var(--sans); letter-spacing:.05em; text-transform:uppercase; padding:4px 8px; border-radius:99px; border:1px solid; white-space:nowrap; }
+  /* per-kind chip colors via theme vars (light theme gets darker variants automatically) */
+  .chip.mcp        { color:var(--blue);   border-color:color-mix(in srgb, var(--blue) 40%, transparent);   background:color-mix(in srgb, var(--blue) 10%, transparent); }
+  .chip.skill      { color:var(--violet); border-color:color-mix(in srgb, var(--violet) 40%, transparent); background:color-mix(in srgb, var(--violet) 10%, transparent); }
+  .chip.rule       { color:var(--green);  border-color:color-mix(in srgb, var(--green) 40%, transparent);  background:color-mix(in srgb, var(--green) 10%, transparent); }
+  .chip.permission { color:var(--orange); border-color:color-mix(in srgb, var(--orange) 40%, transparent); background:color-mix(in srgb, var(--orange) 10%, transparent); }
+  .chip.plugin     { color:var(--pink);   border-color:color-mix(in srgb, var(--pink) 40%, transparent);   background:color-mix(in srgb, var(--pink) 10%, transparent); }
+  .chip.other      { color:var(--text-2); border-color:var(--border); background:var(--hover); }
   .dot { display:inline-block; width:8px; height:8px; border-radius:99px; background:var(--green); box-shadow:0 0 6px rgba(76,195,138,.5); }
   .dot.off { background:var(--border); box-shadow:none; }
   .pill { display:inline-block; font:600 11px/1 var(--mono); padding:3px 8px; border-radius:6px; margin:1px; }
@@ -101,7 +108,7 @@ export function renderPage(): string {
   .item { display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--border-soft); }
   .item:last-child { border-bottom:none; }
   .item .body { min-width:0; flex:1; }
-  .item .title { font-weight:650; font-size:13.5px; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .item .title { font-weight:650; font-size:13.5px; display:flex; align-items:center; gap:7px; flex-wrap:wrap; overflow-wrap:anywhere; min-width:0; }
   .item .title .id { font-family:var(--mono); font-weight:400; font-size:11.5px; color:var(--text-3); overflow-wrap:anywhere; }
   .item .desc { font-size:12.5px; color:var(--text-2); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   @media (max-width:640px){ .item .desc { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; } }
@@ -111,8 +118,7 @@ export function renderPage(): string {
   .item a:hover { text-decoration:underline; }
   .badge { display:inline-block; font:700 10px/1 var(--sans); letter-spacing:.06em; padding:3.5px 7px; border-radius:6px; text-transform:uppercase; }
   .badge.new { color:var(--accent-ink); background:var(--accent); }
-  .badge.pop { color:var(--blue); background:rgba(108,167,245,.14); border:1px solid rgba(108,167,245,.3); }
-  .badge.warn { color:var(--yellow); background:rgba(240,180,41,.13); border:1px solid rgba(240,180,41,.3); }
+  .badge.pop { color:var(--blue); background:color-mix(in srgb, var(--blue) 12%, transparent); border:1px solid color-mix(in srgb, var(--blue) 30%, transparent); }
   .catchip { display:inline-block; font:600 10.5px/1 var(--mono); padding:3px 7px; border-radius:6px;
     color:var(--violet); background:rgba(167,139,250,.12); border:1px solid rgba(167,139,250,.28); white-space:nowrap; }
   .upver { font-family:var(--mono); font-size:12px; color:var(--green); }
@@ -184,11 +190,14 @@ export function renderPage(): string {
 <div class="foot" data-t="foot"></div>
 <div id="overlay"><div id="preview"></div></div>
 <script>
+// storage may be blocked (private mode / cookie-block) — a throw must not kill the page
+function sGet(store, k){ try { return store.getItem(k); } catch(e){ return null; } }
+function sSet(store, k, v){ try { store.setItem(k, v); } catch(e){} }
 // Take the token off the URL: stash in sessionStorage and strip ?token= so it
 // doesn't linger in history or leak via a future Referer.
-let token = sessionStorage.getItem('fleet_token') || '';
+let token = sGet(sessionStorage, 'fleet_token') || '';
 const qtok = new URLSearchParams(location.search).get('token');
-if (qtok) { token = qtok; sessionStorage.setItem('fleet_token', qtok); history.replaceState(null, '', location.pathname); }
+if (qtok) { token = qtok; sSet(sessionStorage, 'fleet_token', qtok); history.replaceState(null, '', location.pathname); }
 
 /* ── i18n (ko default) ─────────────────────────────────── */
 const I18N = {
@@ -207,7 +216,10 @@ const I18N = {
     related:'관련', conflictOn:'상충 가능', cantReach:'접속 실패: ',
     pvTitle:'미리보기 — {n}개 변경', pvNone:'적용할 것 없음 ({s})', pvRuns:'실행: ',
     confirm:'확인 후 적용', cancel:'취소', pickTitle:'어느 에이전트에 설치할까요?', allAgents:'모든 에이전트',
-    applied:'적용됨 ✓', done:'완료: ', rolled:'롤백됨: ', removeFrom:'에서 제거: ',
+    applied:'적용됨 ✓', done:'완료: ', rolled:'롤백됨: ', removeFrom:'{a}에서 제거',
+    ops:{ install:'설치', remove:'제거', update:'업데이트' },
+    statuses:{ preview:'미리보기', 'nothing-to-do':'변경 없음', applied:'적용됨', refused:'거부됨', failed:'실패' },
+    axes:{ verbosity:'응답 길이', autonomy:'자율성', tone:'말투' },
   },
   en: {
     sub:'cross-agent capability manager', rollback:'Rollback', refresh:'Refresh',
@@ -224,11 +236,14 @@ const I18N = {
     related:'related', conflictOn:'possible conflict', cantReach:"couldn't reach: ",
     pvTitle:'Preview — {n} change(s)', pvNone:'Nothing to apply ({s})', pvRuns:'runs: ',
     confirm:'Confirm & apply', cancel:'Cancel', pickTitle:'Install to which agent(s)?', allAgents:'All agents',
-    applied:'Applied ✓', done:'Done: ', rolled:'Rolled back: ', removeFrom:'remove from: ',
+    applied:'Applied ✓', done:'Done: ', rolled:'Rolled back: ', removeFrom:'remove from {a}',
+    ops:{}, statuses:{}, axes:{},
   },
 };
-let lang = localStorage.getItem('fleet_lang') || 'ko';
+let lang = sGet(localStorage, 'fleet_lang') || 'ko';
 function T(k){ return (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k; }
+/* server enum words (op/status/axis) get a ko mapping; unknown values pass through */
+function TT(map, v){ const m = I18N[lang][map] || {}; return m[v] || v; }
 function applyStatic(){
   document.documentElement.lang = lang;
   document.querySelectorAll('[data-t]').forEach(function(n){ n.textContent = T(n.getAttribute('data-t')); });
@@ -237,7 +252,7 @@ function applyStatic(){
 }
 
 /* ── theme ─────────────────────────────────────────────── */
-let theme = localStorage.getItem('fleet_theme') ||
+let theme = sGet(localStorage, 'fleet_theme') ||
   (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 function applyTheme(){ document.documentElement.setAttribute('data-theme', theme); }
 applyTheme();
@@ -250,13 +265,13 @@ async function get(path){
 function el(tag, cls, txt){ const e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
 function stat(id, n){ document.getElementById(id).textContent = String(n); }
 
-const KIND_COLORS = { mcp:'#6ca7f5', skill:'#a78bfa', rule:'#45c4b0', permission:'#f09046', plugin:'#e17ec2' };
+const KINDS = ['mcp','skill','rule','permission','plugin'];
 function kindChip(kind){
-  const c = el('span','chip', kind);
-  const col = KIND_COLORS[kind] || '#9aa4b2';
-  c.style.color = col; c.style.borderColor = col + '55'; c.style.background = col + '14';
-  return c;
+  return el('span','chip ' + (KINDS.indexOf(kind) >= 0 ? kind : 'other'), kind);
 }
+/* remote URLs may be hostile — only https ever becomes a link (javascript: would
+ * execute in this origin; the CSP permits inline script). */
+function safeHttpUrl(u){ return (typeof u === 'string' && /^https:\\/\\//i.test(u)) ? u : null; }
 /* reasons[] → badges (NEW/인기) + remaining text (e.g. relevance) */
 function reasonBits(reasons){
   const badges = [], rest = [];
@@ -282,16 +297,15 @@ async function postJson(path, body){
 }
 function clearPreview(){ document.getElementById('overlay').className=''; document.getElementById('preview').innerHTML=''; }
 document.getElementById('overlay').addEventListener('click', function(e){ if(e.target===this) clearPreview(); });
-let pendingPlanId = null;
 function showPreview(res, onConfirm){
   const preview = res.preview || res;
   const bar = document.getElementById('preview'); bar.innerHTML='';
   document.getElementById('overlay').className='show';
   const changes = preview.changes || [];
-  bar.appendChild(el('div','ptitle', changes.length ? T('pvTitle').replace('{n}', changes.length) : T('pvNone').replace('{s}', preview.status)));
+  bar.appendChild(el('div','ptitle', changes.length ? T('pvTitle').replace('{n}', changes.length) : T('pvNone').replace('{s}', TT('statuses', preview.status))));
   if(res.runs){ bar.appendChild(el('div','row', T('pvRuns')+res.runs)); }
   changes.forEach(function(c){
-    bar.appendChild(el('div','row '+(c.op==='remove'?'del':'add'), (c.op==='remove'?'− ':'+ ')+'['+c.agent+'] '+c.op+' "'+c.name+'"'));
+    bar.appendChild(el('div','row '+(c.op==='remove'?'del':'add'), (c.op==='remove'?'− ':'+ ')+'['+c.agent+'] '+TT('ops', c.op)+' "'+c.name+'"'));
     (c.warnings||[]).forEach(function(w){ bar.appendChild(el('div','row warn','  ⚠ '+w)); });
   });
   (preview.skips||[]).forEach(function(s){ bar.appendChild(el('div','row muted','· ['+s.agent+'] '+s.reason)); });
@@ -304,12 +318,12 @@ async function doPlan(req){
   setErr('');
   try {
     const res = await postJson('/api/plan', req);
-    pendingPlanId = res.planId;
+    const planId = res.planId; // closure-captured: no cross-plan race
     showPreview(res, async function(){
       try {
-        const applied = await postJson('/api/apply', { planId: pendingPlanId });
-        pendingPlanId=null; clearPreview(); await refresh();
-        flash(applied.status==='applied' ? T('applied') : (T('done')+applied.status));
+        const applied = await postJson('/api/apply', { planId: planId });
+        clearPreview(); await refresh();
+        flash(applied.status==='applied' ? T('applied') : (T('done')+TT('statuses', applied.status)));
       } catch(e){ setErr(e); clearPreview(); }
     });
   } catch(e){ setErr(e); }
@@ -330,8 +344,14 @@ async function doRollback(){
   catch(e){ setErr(e); }
 }
 
+/* last responses cached so a language toggle re-renders instantly, offline */
+const cache = { inv:null, feed:null, conf:null };
+
 async function loadInventory(){
-  const inv = await get('/api/inventory');
+  cache.inv = await get('/api/inventory');
+  renderInventory(cache.inv);
+}
+function renderInventory(inv){
   agents = inv.agents.map(function(a){ return a.id; });
   stat('st-agents', inv.agents.filter(function(a){ return a.present; }).length);
   stat('st-mcp', inv.servers.length);
@@ -366,7 +386,7 @@ async function loadInventory(){
         } else {
           td.appendChild(el('span','dot'));
           if(row.kind==='mcp'){
-            td.classList.add('rm'); td.title=T('removeFrom')+a;
+            td.classList.add('rm'); td.title=T('removeFrom').replace('{a}', a);
             td.addEventListener('click', function(){ doPlan({ action:'remove', name:row.name, from:[a] }); });
           }
         }
@@ -392,7 +412,10 @@ function addBadges(t, badges){
 }
 
 async function loadFeed(){
-  const feed = await get('/api/feed');
+  cache.feed = await get('/api/feed');
+  renderFeed(cache.feed);
+}
+function renderFeed(feed){
   stat('st-upd', feed.updates.length);
   const up = document.getElementById('updates'); up.innerHTML='';
   if(!feed.updates.length) up.appendChild(el('p','empty',T('emptyUpd')));
@@ -448,14 +471,18 @@ async function loadFeed(){
     if(r.description){ body.appendChild(el('div','desc', r.description)); }
     if(bits.text){ const m = el('div','meta'); m.appendChild(el('span',null,bits.text)); body.appendChild(m); }
     d.appendChild(body);
-    if(r.url){ const a=el('a',null,T('repo')); a.href=r.url; a.target='_blank'; a.rel='noreferrer noopener'; d.appendChild(a); }
+    const safeUrl = safeHttpUrl(r.url);
+    if(safeUrl){ const a=el('a',null,T('repo')); a.href=safeUrl; a.target='_blank'; a.rel='noreferrer noopener'; d.appendChild(a); }
     rsk.appendChild(d);
   });
   if(feed.failures && feed.failures.length){ rec.appendChild(el('p','srcwarn', '⚠ ' + T('cantReach') + feed.failures.map(function(f){ return f.source; }).join(', '))); }
 }
 
 async function loadConflicts(){
-  const c = await get('/api/conflicts');
+  cache.conf = await get('/api/conflicts');
+  renderConflicts(cache.conf);
+}
+function renderConflicts(c){
   const box = document.getElementById('conflicts'); box.innerHTML='';
   if(!c.findings.length){ box.appendChild(el('p','empty',T('emptyCf'))); return; }
   c.findings.forEach(function(f){
@@ -463,7 +490,7 @@ async function loadConflicts(){
     const body = el('div','body');
     body.appendChild(el('div','title', '"'+f.a+'" vs "'+f.b+'"'));
     const m = el('div','meta');
-    m.appendChild(el('span','warn','⚠ '+f.axis+' — '+T('conflictOn')));
+    m.appendChild(el('span','warn','⚠ '+TT('axes', f.axis)+' — '+T('conflictOn')));
     m.appendChild(el('span',null,' ['+f.agent+']'));
     body.appendChild(m);
     d.appendChild(body);
@@ -473,16 +500,22 @@ async function loadConflicts(){
 
 async function refresh(){
   try { await Promise.all([loadInventory(), loadFeed(), loadConflicts()]); document.getElementById('err').textContent=''; }
-  catch(e){ document.getElementById('err').textContent = (e && e.message) ? e.message : String(e); }
+  catch(e){ setErr(e); }
 }
 document.getElementById('refresh').addEventListener('click', refresh);
 document.getElementById('rollback').addEventListener('click', doRollback);
 document.getElementById('theme').addEventListener('click', function(){
-  theme = theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('fleet_theme', theme); applyTheme(); applyStatic();
+  theme = theme === 'dark' ? 'light' : 'dark'; applyTheme(); applyStatic(); sSet(localStorage, 'fleet_theme', theme);
 });
 document.getElementById('lang').addEventListener('click', function(){
-  lang = lang === 'ko' ? 'en' : 'ko'; localStorage.setItem('fleet_lang', lang); applyStatic(); refresh();
+  lang = lang === 'ko' ? 'en' : 'ko'; applyStatic(); sSet(localStorage, 'fleet_lang', lang);
+  // instant, offline re-render from cache (no refetch; nothing stays stale)
+  if(cache.inv) renderInventory(cache.inv);
+  if(cache.feed) renderFeed(cache.feed);
+  if(cache.conf) renderConflicts(cache.conf);
+  if(!cache.inv) refresh();
 });
+document.addEventListener('keydown', function(e){ if(e.key === 'Escape') clearPreview(); });
 applyStatic();
 refresh();
 </script>
