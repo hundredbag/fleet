@@ -106,8 +106,17 @@ test(
   'adapter detect(): absent config reports not present',
   withTempDir(async (dir) => {
     const missing = join(dir, 'nope.json');
-    const det = await new ClaudeCodeAdapter(missing, join(dir, '_sk')).detect();
+    // hermetic: pass ALL config paths so the real ~/.claude is never touched
+    const mk = () =>
+      new ClaudeCodeAdapter(
+        missing,
+        join(dir, '_sk'),
+        join(dir, '_CLAUDE.md'),
+        join(dir, '_settings.json'),
+        join(dir, '_plugins'),
+      );
+    const det = await mk().detect();
     assert.equal(det.present, false);
-    assert.deepEqual(await new ClaudeCodeAdapter(missing, join(dir, '_sk')).readInventory(), []);
+    assert.deepEqual(await mk().readInventory(), []);
   }),
 );

@@ -43,12 +43,13 @@ test('readClaudePlugins: enabled plugins with marketplace + manifest description
   await withDir(async (dir) => {
     const { pluginsDir, settingsPath } = scaffoldClaude(dir);
     const plugins = await readClaudePlugins('claude-code', pluginsDir, settingsPath);
-    assert.equal(plugins.length, 1); // enabled:false filtered out
-    const p = plugins[0]!;
+    assert.equal(plugins.length, 2); // disabled SURFACES too (matrix shows ✗)
+    const p = plugins.find((x) => x.name === 'plugin-dev')!;
     assert.equal(p.kind, 'plugin');
-    assert.equal(p.name, 'plugin-dev');
+    assert.equal(p.enabled, true);
     assert.equal(p.marketplace, 'official');
     assert.match(p.description ?? '', /toolkit/);
+    assert.equal(plugins.find((x) => x.name === 'off-thing')?.enabled, false);
   });
 });
 
