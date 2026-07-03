@@ -16,6 +16,7 @@ import { asStringArray, asStringRecord } from '../core/coerce.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
 import { readClaudePermissions } from '../core/permissions.js';
+import { readClaudePlugins } from '../core/agent-plugins.js';
 import {
   loadJsonDoc,
   getServers,
@@ -30,6 +31,7 @@ const DEFAULT_CLAUDE_JSON = join(homedir(), '.claude.json');
 const DEFAULT_CLAUDE_SKILLS = join(homedir(), '.claude', 'skills');
 const DEFAULT_CLAUDE_RULES = join(homedir(), '.claude', 'CLAUDE.md');
 const DEFAULT_CLAUDE_SETTINGS = join(homedir(), '.claude', 'settings.json');
+const DEFAULT_CLAUDE_PLUGINS = join(homedir(), '.claude', 'plugins');
 
 /**
  * Normalize a raw Claude Code MCP server entry into a structured spec.
@@ -79,6 +81,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     private readonly skillsDir: string = DEFAULT_CLAUDE_SKILLS,
     private readonly rulesPath: string = DEFAULT_CLAUDE_RULES,
     private readonly settingsPath: string = DEFAULT_CLAUDE_SETTINGS,
+    private readonly pluginsDir: string = DEFAULT_CLAUDE_PLUGINS,
   ) {}
 
   async detect(): Promise<DetectedAgent> {
@@ -114,6 +117,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
       items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
       items.push(...(await readRulesInventory(this.id, this.rulesPath)));
       items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
+      items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
       return items;
     }
 
@@ -148,6 +152,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
     items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
+    items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
     return items;
   }
 

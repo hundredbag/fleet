@@ -48,6 +48,14 @@ export function renderInventory(inv: Inventory): string {
   out.push('');
   out.push(
     renderSection(
+      'Plugins (read-only)',
+      inv.items.filter((i) => i.kind === 'plugin'),
+      present,
+    ),
+  );
+  out.push('');
+  out.push(
+    renderSection(
       'Permissions (read-only)',
       inv.items.filter((i) => i.kind === 'permission'),
       present,

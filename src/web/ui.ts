@@ -139,6 +139,7 @@ async function loadInventory(){
   inv.skills.forEach(function(s){ add('skill', s); });
   inv.rules.forEach(function(s){ add('rule', s); });
   (inv.permissions||[]).forEach(function(s){ add('permission', s); });
+  (inv.plugins||[]).forEach(function(s){ add('plugin', s); });
   const box = document.getElementById('inventory'); box.innerHTML='';
   const keys = Object.keys(rows);
   if(keys.length===0){ box.appendChild(el('p','muted','No capabilities found.')); return; }

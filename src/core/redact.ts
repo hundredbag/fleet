@@ -2,6 +2,7 @@ import type {
   Inventory,
   McpServerCapability,
   PermissionCapability,
+  PluginCapability,
   RuleCapability,
   SkillCapability,
 } from './types.js';
@@ -59,12 +60,16 @@ export function summarizeInventory(inv: Inventory) {
   const permissions = inv.items
     .filter((i): i is PermissionCapability => i.kind === 'permission')
     .map((i) => ({ name: i.name, agent: i.agent, effect: i.effect }));
+  const plugins = inv.items
+    .filter((i): i is PluginCapability => i.kind === 'plugin')
+    .map((i) => ({ name: i.name, agent: i.agent, marketplace: i.marketplace, description: i.description }));
   return {
     agents: inv.agents.map((a) => ({ id: a.id, present: a.present, note: a.note })),
     servers,
     skills,
     rules,
     permissions,
+    plugins,
   };
 }
 

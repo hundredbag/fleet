@@ -11,7 +11,8 @@
 export type AgentId = string;
 
 /** Capability primitive kinds. */
-export type PrimitiveKind = 'mcp-server' | 'skill' | 'rule' | 'permission' | 'command' | 'hook' | 'subagent';
+export type PrimitiveKind =
+  'mcp-server' | 'skill' | 'rule' | 'permission' | 'plugin' | 'command' | 'hook' | 'subagent';
 
 /** Where a capability is configured for an agent. */
 export type Scope = 'user' | 'project' | 'local';
@@ -93,10 +94,23 @@ export interface PermissionCapability extends BaseCapability {
 }
 
 /**
+ * A vendor plugin/extension installed on one agent — a vendor-specific BUNDLE
+ * of primitives (commands/skills/MCP/hooks). READ-ONLY for now: fleet surfaces
+ * them so the inventory stays complete; install/remove will be DELEGATED to the
+ * vendor's own CLI (never by writing vendor-managed plugin dirs directly).
+ */
+export interface PluginCapability extends BaseCapability {
+  kind: 'plugin';
+  /** which marketplace/registry it came from, when known */
+  marketplace?: string;
+  description?: string;
+}
+
+/**
  * A capability instance found installed on one agent. Discriminated on `kind`.
  */
 export type InstalledCapability =
-  McpServerCapability | SkillCapability | RuleCapability | PermissionCapability;
+  McpServerCapability | SkillCapability | RuleCapability | PermissionCapability | PluginCapability;
 
 /**
  * Whether a capability is ALWAYS-ON (in context every turn — where opposing
