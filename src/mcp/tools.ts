@@ -23,6 +23,7 @@ import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
+import { planPluginAction, runDelegated } from '../core/delegate.js';
 
 const targetArg = (v: unknown): string => (Array.isArray(v) ? v.join(',') : String(v));
 
@@ -259,6 +260,54 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           failures,
           note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (skills.sh, SkillsMP, ClawHub, ClaudeSkills.info — not exhaustive). Absence of results may just mean sources were unreachable (see failures).',
         };
+      },
+    },
+    {
+      name: 'plugin_install',
+      description:
+        "Install a vendor plugin (bundle of skills/MCP/hooks — RUNS CODE) by delegating to the agent's own CLI (claude plugin install / codex plugin add). DRY-RUN unless commit=true; the preview is the exact command. Verify the marketplace first. Undo = plugin_remove.",
+      inputSchema: {
+        selector: z.string().describe('plugin[@marketplace]'),
+        to: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.to));
+        const results = [];
+        for (const agent of targets) {
+          results.push(
+            await runDelegated(planPluginAction(agent, 'install', String(a.selector)), {
+              commit: a.commit === true,
+              fleetHome: opts.fleetHome,
+            }),
+          );
+        }
+        return {
+          results,
+          note: 'Delegated to the vendor CLI — no fleet hash-guard/backup; undo via plugin_remove.',
+        };
+      },
+    },
+    {
+      name: 'plugin_remove',
+      description: "Remove a vendor plugin by delegating to the agent's own CLI. DRY-RUN unless commit=true.",
+      inputSchema: {
+        selector: z.string().describe('plugin[@marketplace]'),
+        from: z.union([z.string(), z.array(z.string())]).describe("agent ids or 'all'"),
+        commit: z.boolean().optional(),
+      },
+      handler: async (a) => {
+        const targets = await resolveTargets(adapters, targetArg(a.from));
+        const results = [];
+        for (const agent of targets) {
+          results.push(
+            await runDelegated(planPluginAction(agent, 'remove', String(a.selector)), {
+              commit: a.commit === true,
+              fleetHome: opts.fleetHome,
+            }),
+          );
+        }
+        return { results };
       },
     },
     {

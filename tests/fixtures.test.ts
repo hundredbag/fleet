@@ -38,7 +38,14 @@ test(
       }),
     );
 
-    const items = await new ClaudeCodeAdapter(claudeJson, join(dir, '_sk')).readInventory();
+    // hermetic: all paths in temp so the real ~/.claude never leaks in
+    const items = await new ClaudeCodeAdapter(
+      claudeJson,
+      join(dir, '_sk'),
+      join(dir, '_CLAUDE.md'),
+      join(dir, '_settings.json'),
+      join(dir, '_plugins'),
+    ).readInventory();
     const byName = new Map(items.map((i) => [i.name, i as any]));
     assert.equal(items.length, 3);
     assert.equal(byName.get('glob')?.scope, 'user');

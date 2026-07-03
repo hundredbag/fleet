@@ -26,6 +26,7 @@ import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
+import { planPluginAction, runDelegated } from '../core/delegate.js';
 import { redactUrl } from '../core/redact.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
@@ -46,7 +47,12 @@ Usage:
   fleet skill sync <name> --from <id> --to <ids|all> [--commit]
   fleet skill remove <name> --from <ids|all> [--commit]
   fleet skill find <query>                 Search the skills.sh registry
-                                           Manage skills (SKILL.md directories)
+
+  fleet plugin install <p[@market]> --to <ids|all> [--commit]
+  fleet plugin remove <p[@market]> --from… (--to) [--commit]
+                                           Vendor plugins via the vendor's own CLI
+                                           (claude plugin / codex plugin; dry-run shows
+                                           the exact command; undo = vendor uninstall)
 
   fleet rule install <name> --text <instruction> --to <ids|all> [--commit]
   fleet rule sync <name> --from <id> --to <ids|all> [--commit]
@@ -282,6 +288,41 @@ async function main(argv: string[]): Promise<number> {
         return runPlan(adapters, await planRemoveRule(adapters, name, targets), commit);
       }
       throw new Error('usage: fleet rule <install|sync|remove> …');
+    }
+    case 'plugin': {
+      const sub = p.positionals[0];
+      const selector = p.positionals[1];
+      if ((sub !== 'install' && sub !== 'remove') || !selector) {
+        throw new Error(
+          'usage: fleet plugin <install|remove> <plugin[@marketplace]> --to <ids|all> [--commit]',
+        );
+      }
+      const to = str(p.flags.to);
+      if (!to) throw new Error('usage: fleet plugin … --to <ids|all>');
+      const targets = await resolveTargets(adapters, to);
+      let failed = false;
+      for (const agent of targets) {
+        const plan = planPluginAction(agent, sub, selector);
+        const res = await runDelegated(plan, { commit });
+        if (res.status === 'preview') {
+          process.stdout.write(`  → [${agent}] would run: ${res.command}\n`);
+          if (res.undoCommand) process.stdout.write(`      undo: ${res.undoCommand}\n`);
+        } else {
+          process.stdout.write(
+            `  ${res.status === 'applied' ? '✓' : '✗'} [${agent}] ${res.command} (exit ${res.exitCode})\n`,
+          );
+          if (res.status === 'failed') {
+            failed = true;
+            process.stdout.write(`${res.outputTail ?? ''}\n`);
+          }
+        }
+      }
+      if (!commit) {
+        process.stdout.write(
+          '\n⚠ plugins run code (hooks/commands) — verify the marketplace before installing.\n(dry-run; re-run with --commit to execute the vendor CLI)\n',
+        );
+      }
+      return failed ? 1 : 0;
     }
     case 'whats-new': {
       const inv = await buildInventory(adapters);
