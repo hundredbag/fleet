@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import type { FeedItem, FeedSource } from '../source.js';
 import { defaultClassifier, type Classifier } from '../classify.js';
 
@@ -27,18 +27,21 @@ export class LocalMarketplacesSource implements FeedSource {
     } catch {
       return []; // no marketplaces registered → nothing to discover (not a failure)
     }
+    if (!markets || typeof markets !== 'object' || Array.isArray(markets)) return [];
     const out: FeedItem[] = [];
+    const allowedRoot = resolve(this.pluginsDir, 'marketplaces') + sep;
     for (const [market, info] of Object.entries(markets)) {
       if (typeof info?.installLocation !== 'string') continue;
+      // containment: only read mirrors under <pluginsDir>/marketplaces/
+      const loc = resolve(info.installLocation);
+      if (!(loc + sep).startsWith(allowedRoot)) continue;
       let manifest: { plugins?: unknown };
       try {
-        manifest = JSON.parse(
-          await readFile(join(info.installLocation, '.claude-plugin', 'marketplace.json'), 'utf8'),
-        );
+        manifest = JSON.parse(await readFile(join(loc, '.claude-plugin', 'marketplace.json'), 'utf8'));
       } catch {
         continue;
       }
-      if (!Array.isArray(manifest.plugins)) continue;
+      if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.plugins)) continue;
       for (const p of manifest.plugins) {
         const name = (p as { name?: unknown })?.name;
         if (typeof name !== 'string' || !name) continue;

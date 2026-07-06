@@ -104,7 +104,10 @@ function scoreOne(item: FeedItem, ctx: ScoreContext): Scored {
     score += Math.min(3, Math.log10(item.popularity));
     reasons.push('popular');
   }
-  const overlap = [...tokensOf(item.name, item.description, item.identifier)].filter((t) =>
+  // plugins: the identifier's @marketplace suffix would pollute relevance
+  // ("claude-plugins-official" → 'claude' matches everything) — name+desc only.
+  const idForTokens = item.kind === 'plugin' ? undefined : item.identifier;
+  const overlap = [...tokensOf(item.name, item.description, idForTokens)].filter((t) =>
     ctx.installedTokens.has(t),
   );
   if (overlap.length > 0) {
@@ -163,7 +166,14 @@ export async function recommend(
       return { item, score: s.score, reasons: s.reasons, trust: assessTrust(item, now) };
     })
     .filter((r) => r.score >= 1) // signal floor: below this is noise
-    .sort((a, b) => b.score - a.score || (b.item.popularity ?? 0) - (a.item.popularity ?? 0));
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        (b.item.popularity ?? 0) - (a.item.popularity ?? 0) ||
+        // deterministic final tiebreak (marketplace plugins share a base score —
+        // without this, order would be manifest order, i.e. arbitrary)
+        a.item.name.localeCompare(b.item.name),
+    );
 
   return opts.limit ? ranked.slice(0, opts.limit) : ranked;
 }

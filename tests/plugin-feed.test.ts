@@ -43,6 +43,27 @@ test('LocalMarketplacesSource: maps local marketplace catalogs to plugin FeedIte
   }
 });
 
+test('LocalMarketplacesSource: installLocation outside marketplaces/ is skipped (containment)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-plm-'));
+  try {
+    const pluginsDir = join(dir, 'plugins');
+    const outside = join(dir, 'evil');
+    mkdirSync(join(outside, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(outside, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({ plugins: [{ name: 'evil-plugin' }] }),
+    );
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(
+      join(pluginsDir, 'known_marketplaces.json'),
+      JSON.stringify({ evil: { installLocation: outside } }),
+    );
+    assert.deepEqual(await new LocalMarketplacesSource(pluginsDir).list(), []); // outside root → skipped
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('LocalMarketplacesSource: no marketplaces registered → [] (not a failure)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-plm-'));
   try {

@@ -373,7 +373,7 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write('\nRecommended plugins (from your registered marketplaces):\n');
         for (const r of plugins) {
           process.stdout.write(
-            `  ▣ [${r.item.category ?? 'other'}] ${r.item.name} — fleet plugin install ${r.item.identifier ?? r.item.name} --to claude-code\n`,
+            `  ▣ [${r.item.category ?? 'other'}] ${r.item.name} — fleet plugin install ${r.item.identifier ?? r.item.name} --to claude-code (preview first, then --commit)\n`,
           );
         }
       }

@@ -230,7 +230,7 @@ const I18N = {
     skTitle:'추천 스킬', skHint:'스킬 레지스트리 샘플 — 전체 아님',
     plTitle:'추천 플러그인', plHint:'등록된 마켓 카탈로그 기준 · 설치는 CLI',
     emptyPl:'등록된 마켓에 추천할 플러그인이 없습니다.', fromMarket:'마켓에서 설치 가능',
-    installHint:'설치: fleet plugin install {id} --to claude-code --commit',
+    installHint:'설치: fleet plugin install {id} --to claude-code  (미리보기 확인 후 --commit)',
     sortRec:'추천순', sortNew:'최신순', sortPop:'인기순',
     foot:'추천·충돌은 휴리스틱입니다 — 적용 전에 직접 확인하세요. 피드가 비면 소스에 접속 못 했을 수 있습니다.',
     kind:'종류', cap:'이름', emptyInv:'아직 설치된 것이 없어요 — 아래 추천을 둘러보세요.',
@@ -257,7 +257,7 @@ const I18N = {
     skTitle:'Recommended skills', skHint:'sampled from skill registries — not exhaustive',
     plTitle:'Recommended plugins', plHint:'from your registered marketplaces · install via CLI',
     emptyPl:'No plugin recommendations from registered marketplaces.', fromMarket:'in your marketplace',
-    installHint:'install: fleet plugin install {id} --to claude-code --commit',
+    installHint:'install: fleet plugin install {id} --to claude-code  (preview first, then --commit)',
     sortRec:'Top', sortNew:'Newest', sortPop:'Popular',
     foot:'Recommendations & conflicts are heuristic — verify before acting. An empty feed may mean sources were unreachable.',
     kind:'kind', cap:'capability', emptyInv:'Nothing installed yet — try the recommendations below.',
@@ -319,9 +319,10 @@ function reasonBits(reasons){
 
 /* ── sort controls (client-side over the fetched slice) ── */
 const sorts = { rec:'rec', sk:'rec' };
+function ts(v){ const t = Date.parse(v || ''); return Number.isFinite(t) ? t : 0; } // missing → last (0 < any real date)
 const SORT_FNS = {
   rec: function(a,b){ return b.score - a.score; },
-  new: function(a,b){ return (Date.parse(b.updatedAt||0)||0) - (Date.parse(a.updatedAt||0)||0); },
+  new: function(a,b){ return ts(b.updatedAt) - ts(a.updatedAt); },
   pop: function(a,b){ return (b.popularity||0) - (a.popularity||0); },
 };
 function renderSortSeg(elId, key){

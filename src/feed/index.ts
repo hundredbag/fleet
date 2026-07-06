@@ -8,12 +8,12 @@ import { LocalMarketplacesSource } from './sources/local-marketplaces.js';
 import { FleetHubSource } from './sources/hub.js';
 
 /**
- * The default live feed sources. The MCP Registry (novelty/version/identifier)
- * and the skill registries (skills.sh installs + SkillsMP description/updatedAt +
- * ClawHub native categories/quality + ClaudeSkills.info curation) are always on —
- * the same skill found on several registries is merged by its canonical
- * owner/repo/skill identifier. The central hub joins when `hubUrl` is
- * configured. PulseMCP (popularity) is opt-in (PULSEMCP_API_KEY).
+ * The default live feed sources. Always on: the MCP Registry (novelty/version/
+ * identifier), the skill registries (skills.sh installs + SkillsMP description/
+ * updatedAt + ClaudeSkills.info curation — same skill across registries merges
+ * by its canonical owner/repo/skill id), and locally-registered plugin
+ * marketplace catalogs. The central hub joins when `hubUrl` is configured;
+ * PulseMCP (popularity) is opt-in (PULSEMCP_API_KEY).
  */
 export function defaultSources(config: FleetConfig = loadConfig()): FeedSource[] {
   // ORDER MATTERS for merged items: discover() is first-source-wins on field

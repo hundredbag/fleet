@@ -237,10 +237,14 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         const { updates } = updatesForInventory(inv, items);
         const ranked = await recommend(inv, items); // uncapped; sliced per kind below
         const mixed = [
-          ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 10),
+          ...ranked.filter((r) => !r.item.kind || r.item.kind === 'mcp-server').slice(0, 10),
           ...diversifyByCategory(
             ranked.filter((r) => r.item.kind === 'skill'),
             10,
+          ),
+          ...diversifyByCategory(
+            ranked.filter((r) => r.item.kind === 'plugin'),
+            8,
           ),
         ];
         const recommendations = mixed.map((r) => ({
@@ -258,7 +262,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           updates,
           recommendations,
           failures,
-          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (skills.sh, SkillsMP, ClawHub, ClaudeSkills.info — not exhaustive). Absence of results may just mean sources were unreachable (see failures).',
+          note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (not exhaustive); plugins come from locally-registered marketplace catalogs (install via plugin_install). Absence of results may just mean sources were unreachable (see failures).',
         };
       },
     },
