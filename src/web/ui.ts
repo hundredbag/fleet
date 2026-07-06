@@ -135,6 +135,13 @@ export function renderPage(): string {
   #preview .row.warn { color:var(--yellow); }
   #preview .row.muted { color:var(--text-3); }
   .pactions { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  /* detail modal rows */
+  .drow { display:flex; align-items:center; gap:12px; padding:7px 0; border-bottom:1px solid var(--border-soft); font-size:13px; }
+  .drow:last-of-type { border-bottom:none; }
+  .dlabel { color:var(--text-2); min-width:120px; display:flex; align-items:center; gap:7px; flex:none; }
+  .dval { color:var(--text); overflow-wrap:anywhere; display:flex; align-items:center; gap:10px; justify-content:space-between; flex:1; min-width:0; }
+  .dval .faint { color:var(--text-3); font-size:12.5px; }
+  .dsect { font-weight:700; font-size:12px; color:var(--text-3); text-transform:uppercase; letter-spacing:.07em; margin-top:12px; padding-bottom:4px; }
   .foot { color:var(--text-3); font-size:12px; text-align:center; padding:8px 20px 24px; }
 </style>
 </head>
@@ -204,7 +211,10 @@ const I18N = {
   ko: {
     sub:'크로스-에이전트 능력 관리자', rollback:'롤백', refresh:'새로고침',
     stAgents:'에이전트', stMcp:'MCP 서버', stSkill:'스킬', stRule:'룰', stPlugin:'플러그인', stUpd:'업데이트',
-    invTitle:'인벤토리', invHint:'어디에 뭐가 설치돼 있나 · MCP 점을 클릭하면 제거',
+    invTitle:'인벤토리', invHint:'행을 클릭하면 상세 · 에이전트별 설치/제거',
+    dStatus:'에이전트별 상태', dDesc:'설명', dRuns:'실행 명령', dPath:'경로', dMarket:'마켓', dVer:'버전',
+    dInstalled:'설치됨', dNot:'없음', dInstallTo:'{a}에 설치', dRemoveFrom:'{a}에서 제거',
+    dInfoOnly:'이 종류는 아직 조회만 지원해요 (설치/제거는 CLI: fleet '+'{k}'+' …)', close:'닫기',
     updTitle:'업데이트', updHint:'레지스트리에 새 버전이 있는 항목',
     cfTitle:'충돌', cfHint:'상시 룰 간 상충 · 휴리스틱',
     recTitle:'추천 MCP 서버', recHint:'내 설정 기준 추천 · 휴리스틱',
@@ -224,7 +234,10 @@ const I18N = {
   en: {
     sub:'cross-agent capability manager', rollback:'Rollback', refresh:'Refresh',
     stAgents:'agents', stMcp:'MCP servers', stSkill:'skills', stRule:'rules', stPlugin:'plugins', stUpd:'updates',
-    invTitle:'Inventory', invHint:"what's installed where · click an MCP dot to remove",
+    invTitle:'Inventory', invHint:'click a row for details · per-agent install/remove',
+    dStatus:'Status by agent', dDesc:'Description', dRuns:'Runs', dPath:'Path', dMarket:'Marketplace', dVer:'Version',
+    dInstalled:'installed', dNot:'not installed', dInstallTo:'Install to {a}', dRemoveFrom:'Remove from {a}',
+    dInfoOnly:'This kind is read-only here for now (use the CLI: fleet {k} …)', close:'Close',
     updTitle:'Updates', updHint:'newer version on the registry',
     cfTitle:'Conflicts', cfHint:'opposing always-on rules · heuristic',
     recTitle:'Recommended MCP servers', recHint:'for your setup · heuristic',
@@ -338,6 +351,72 @@ function pickAgentsThen(cb){
   const allb = el('button','primary',T('allAgents')); allb.addEventListener('click', function(){ cb('all'); }); act.appendChild(allb);
   bar.appendChild(act);
 }
+/* ── inventory detail modal ────────────────────────────── */
+function itemsOf(kind, name){
+  const inv = cache.inv; if(!inv) return [];
+  const src = kind==='mcp' ? inv.servers : kind==='skill' ? inv.skills : kind==='rule' ? inv.rules
+    : kind==='permission' ? (inv.permissions||[]) : (inv.plugins||[]);
+  return src.filter(function(x){ return x.name === name; });
+}
+function kv(box, label, value){
+  if(value == null || value === '') return;
+  const row = el('div','drow');
+  row.appendChild(el('span','dlabel', label));
+  row.appendChild(el('span','dval', String(value)));
+  box.appendChild(row);
+}
+function openDetail(kind, name){
+  const found = itemsOf(kind, name);
+  const bar = document.getElementById('preview'); bar.innerHTML='';
+  document.getElementById('overlay').className='show';
+  const head = el('div','ptitle');
+  head.appendChild(kindChip(kind));
+  head.appendChild(el('span',null,' ' + name));
+  bar.appendChild(head);
+  const first = found[0] || {};
+  const desc = first.description || (first.meta && first.meta.description);
+  if(desc) kv(bar, T('dDesc'), desc);
+  if(first.target) kv(bar, T('dRuns'), first.target);
+  if(first.version || (first.meta && first.meta.version)) kv(bar, T('dVer'), first.version || first.meta.version);
+  if(first.marketplace) kv(bar, T('dMarket'), first.marketplace);
+  bar.appendChild(el('div','dsect', T('dStatus')));
+  const canAct = kind === 'mcp';
+  const haveAgents = found.map(function(x){ return x.agent; });
+  agents.forEach(function(a){
+    const mine = found.filter(function(x){ return x.agent === a; });
+    const row = el('div','drow');
+    const st = el('span','dlabel');
+    st.appendChild(el('span', 'dot' + (mine.length ? '' : ' off')));
+    st.appendChild(el('span', null, ' ' + a));
+    row.appendChild(st);
+    const right = el('span','dval');
+    if(mine.length){
+      const bits = mine.map(function(x){
+        return (x.scope||'') + (x.enabled === false ? ' · off' : '') + (x.effect ? ' · '+x.effect : '');
+      }).join(', ');
+      right.appendChild(el('span','faint', bits || T('dInstalled')));
+      if(canAct){
+        const b = el('button','act', T('dRemoveFrom').replace('{a}', a));
+        b.addEventListener('click', function(){ doPlan({ action:'remove', name:name, from:[a] }); });
+        right.appendChild(b);
+      }
+    } else {
+      right.appendChild(el('span','faint', T('dNot')));
+      if(canAct && haveAgents.length){
+        const b = el('button','act primary', T('dInstallTo').replace('{a}', a));
+        b.addEventListener('click', function(){ doPlan({ action:'sync', name:name, from:haveAgents[0], to:[a] }); });
+        right.appendChild(b);
+      }
+    }
+    row.appendChild(right);
+    bar.appendChild(row);
+  });
+  if(!canAct){ bar.appendChild(el('div','meta', T('dInfoOnly').replace('{k}', kind==='plugin' ? 'plugin' : kind))); }
+  const act = el('div','pactions');
+  const close = el('button',null,T('close')); close.addEventListener('click', clearPreview); act.appendChild(close);
+  bar.appendChild(act);
+}
+
 async function doRollback(){
   setErr('');
   try { const r = await postJson('/api/rollback', {}); await refresh(); flash(T('rolled') + (r.action || 'done')); }
@@ -385,16 +464,14 @@ function renderInventory(inv){
           String(row.effects[a]).split(',').forEach(function(eff){ td.appendChild(el('span','pill '+eff, eff)); });
         } else {
           td.appendChild(el('span','dot'));
-          if(row.kind==='mcp'){
-            td.classList.add('rm'); td.title=T('removeFrom').replace('{a}', a);
-            td.addEventListener('click', function(){ doPlan({ action:'remove', name:row.name, from:[a] }); });
-          }
         }
       } else {
         td.appendChild(el('span','dot off'));
       }
       tr.appendChild(td);
     });
+    tr.style.cursor='pointer';
+    tr.addEventListener('click', function(){ openDetail(row.kind, row.name); });
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
