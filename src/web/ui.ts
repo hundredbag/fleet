@@ -142,6 +142,11 @@ export function renderPage(): string {
   .dval { color:var(--text); overflow-wrap:anywhere; display:flex; align-items:center; gap:10px; justify-content:space-between; flex:1; min-width:0; }
   .dval .faint { color:var(--text-3); font-size:12.5px; }
   .dsect { font-weight:700; font-size:12px; color:var(--text-3); text-transform:uppercase; letter-spacing:.07em; margin-top:12px; padding-bottom:4px; }
+  /* sort segmented control */
+  .seg { display:inline-flex; gap:0; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { border:none; border-radius:0; padding:5px 11px; font-size:11.5px; background:transparent; color:var(--text-2); }
+  .seg button + button { border-left:1px solid var(--border-soft); }
+  .seg button.active { background:var(--accent); color:var(--accent-ink); font-weight:700; }
   .foot { color:var(--text-3); font-size:12px; text-align:center; padding:8px 20px 24px; }
 </style>
 </head>
@@ -186,12 +191,16 @@ export function renderPage(): string {
     </section>
   </div>
   <section class="card">
-    <div class="head"><h2 data-t="recTitle"></h2><span class="hint" data-t="recHint"></span></div>
+    <div class="head"><h2 data-t="recTitle"></h2><span class="seg" id="sort-rec"></span><span class="hint" data-t="recHint"></span></div>
     <div id="recommended"></div>
   </section>
   <section class="card">
-    <div class="head"><h2 data-t="skTitle"></h2><span class="hint" data-t="skHint"></span></div>
+    <div class="head"><h2 data-t="skTitle"></h2><span class="seg" id="sort-sk"></span><span class="hint" data-t="skHint"></span></div>
     <div id="recskills"></div>
+  </section>
+  <section class="card">
+    <div class="head"><h2 data-t="plTitle"></h2><span class="hint" data-t="plHint"></span></div>
+    <div id="recplugins"></div>
   </section>
 </main>
 <div class="foot" data-t="foot"></div>
@@ -219,6 +228,10 @@ const I18N = {
     cfTitle:'충돌', cfHint:'상시 룰 간 상충 · 휴리스틱',
     recTitle:'추천 MCP 서버', recHint:'내 설정 기준 추천 · 휴리스틱',
     skTitle:'추천 스킬', skHint:'스킬 레지스트리 샘플 — 전체 아님',
+    plTitle:'추천 플러그인', plHint:'등록된 마켓 카탈로그 기준 · 설치는 CLI',
+    emptyPl:'등록된 마켓에 추천할 플러그인이 없습니다.', fromMarket:'마켓에서 설치 가능',
+    installHint:'설치: fleet plugin install {id} --to claude-code --commit',
+    sortRec:'추천순', sortNew:'최신순', sortPop:'인기순',
     foot:'추천·충돌은 휴리스틱입니다 — 적용 전에 직접 확인하세요. 피드가 비면 소스에 접속 못 했을 수 있습니다.',
     kind:'종류', cap:'이름', emptyInv:'아직 설치된 것이 없어요 — 아래 추천을 둘러보세요.',
     emptyUpd:'고정된 버전은 모두 최신입니다.', emptyCf:'충돌 후보가 없습니다.', emptyRec:'지금은 추천이 없습니다.', emptySk:'지금은 스킬 추천이 없습니다.',
@@ -242,6 +255,10 @@ const I18N = {
     cfTitle:'Conflicts', cfHint:'opposing always-on rules · heuristic',
     recTitle:'Recommended MCP servers', recHint:'for your setup · heuristic',
     skTitle:'Recommended skills', skHint:'sampled from skill registries — not exhaustive',
+    plTitle:'Recommended plugins', plHint:'from your registered marketplaces · install via CLI',
+    emptyPl:'No plugin recommendations from registered marketplaces.', fromMarket:'in your marketplace',
+    installHint:'install: fleet plugin install {id} --to claude-code --commit',
+    sortRec:'Top', sortNew:'Newest', sortPop:'Popular',
     foot:'Recommendations & conflicts are heuristic — verify before acting. An empty feed may mean sources were unreachable.',
     kind:'kind', cap:'capability', emptyInv:'Nothing installed yet — try the recommendations below.',
     emptyUpd:'Everything pinned is current.', emptyCf:'No likely conflicts found.', emptyRec:'No recommendations right now.', emptySk:'No skill recommendations right now.',
@@ -291,12 +308,29 @@ function reasonBits(reasons){
   (reasons||[]).forEach(function(r){
     if(r === 'new') badges.push(['new', T('badgeNew')]);
     else if(r === 'popular') badges.push(['pop', T('badgePop')]);
+    else if(r === 'marketplace') rest.push(T('fromMarket'));
     else {
       const m = /^related to your setup \\((.+)\\)$/.exec(r);
       rest.push(m ? (T('related') + ': ' + m[1]) : r);
     }
   });
   return { badges: badges, text: rest.join(' · ') };
+}
+
+/* ── sort controls (client-side over the fetched slice) ── */
+const sorts = { rec:'rec', sk:'rec' };
+const SORT_FNS = {
+  rec: function(a,b){ return b.score - a.score; },
+  new: function(a,b){ return (Date.parse(b.updatedAt||0)||0) - (Date.parse(a.updatedAt||0)||0); },
+  pop: function(a,b){ return (b.popularity||0) - (a.popularity||0); },
+};
+function renderSortSeg(elId, key){
+  const box = document.getElementById(elId); box.innerHTML='';
+  [['rec','sortRec'],['new','sortNew'],['pop','sortPop']].forEach(function(pair){
+    const b = el('button', sorts[key]===pair[0] ? 'active' : null, T(pair[1]));
+    b.addEventListener('click', function(){ sorts[key]=pair[0]; if(cache.feed) renderFeed(cache.feed); });
+    box.appendChild(b);
+  });
 }
 
 let agents = [];
@@ -512,8 +546,11 @@ function renderFeed(feed){
   });
   const rec = document.getElementById('recommended'); rec.innerHTML='';
   const rsk = document.getElementById('recskills'); rsk.innerHTML='';
-  const servers = (feed.recommendations||[]).filter(function(r){ return r.kind !== 'skill'; });
-  const skills = (feed.recommendations||[]).filter(function(r){ return r.kind === 'skill'; });
+  const rpl = document.getElementById('recplugins'); rpl.innerHTML='';
+  renderSortSeg('sort-rec','rec'); renderSortSeg('sort-sk','sk');
+  const servers = (feed.recommendations||[]).filter(function(r){ return !r.kind || r.kind === 'mcp-server'; }).slice().sort(SORT_FNS[sorts.rec]);
+  const skills = (feed.recommendations||[]).filter(function(r){ return r.kind === 'skill'; }).slice().sort(SORT_FNS[sorts.sk]);
+  const plugins = (feed.recommendations||[]).filter(function(r){ return r.kind === 'plugin'; });
   if(!servers.length) rec.appendChild(el('p','empty',T('emptyRec')));
   servers.forEach(function(r){
     const bits = reasonBits(r.reasons);
@@ -551,6 +588,21 @@ function renderFeed(feed){
     const safeUrl = safeHttpUrl(r.url);
     if(safeUrl){ const a=el('a',null,T('repo')); a.href=safeUrl; a.target='_blank'; a.rel='noreferrer noopener'; d.appendChild(a); }
     rsk.appendChild(d);
+  });
+  if(!plugins.length) rpl.appendChild(el('p','empty',T('emptyPl')));
+  plugins.forEach(function(r){
+    const d = el('div','item');
+    const body = el('div','body');
+    const t = el('div','title');
+    t.appendChild(el('span','catchip', r.category||'other'));
+    t.appendChild(el('span',null, r.name));
+    body.appendChild(t);
+    if(r.description){ body.appendChild(el('div','desc', r.description)); }
+    const m = el('div','meta');
+    m.appendChild(el('span',null, T('installHint').replace('{id}', r.identifier || r.name)));
+    body.appendChild(m);
+    d.appendChild(body);
+    rpl.appendChild(d);
   });
   if(feed.failures && feed.failures.length){ rec.appendChild(el('p','srcwarn', '⚠ ' + T('cantReach') + feed.failures.map(function(f){ return f.source; }).join(', '))); }
 }

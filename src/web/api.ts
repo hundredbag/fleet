@@ -30,9 +30,13 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
   const { updates } = updatesForInventory(inv, items);
   const ranked = await recommend(inv, items); // uncapped; sliced per kind below
   const mixed = [
-    ...ranked.filter((r) => r.item.kind !== 'skill').slice(0, 15),
+    ...ranked.filter((r) => !r.item.kind || r.item.kind === 'mcp-server').slice(0, 30),
     ...diversifyByCategory(
       ranked.filter((r) => r.item.kind === 'skill'),
+      30,
+    ),
+    ...diversifyByCategory(
+      ranked.filter((r) => r.item.kind === 'plugin'),
       15,
     ),
   ];
@@ -45,6 +49,8 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
     source: r.item.source,
     description: r.item.description,
     url: r.item.url,
+    updatedAt: r.item.updatedAt,
+    popularity: r.item.popularity,
     score: Number(r.score.toFixed(2)),
     reasons: r.reasons,
     trust: r.trust,

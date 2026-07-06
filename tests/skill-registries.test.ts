@@ -165,7 +165,10 @@ test('defaultSources: the three registries are on by default', async () => {
   const { defaultSources } = await import('../src/feed/index.js');
   const { DEFAULT_CONFIG } = await import('../src/core/config.js');
   const ids = defaultSources({ ...DEFAULT_CONFIG }).map((s) => s.id);
-  for (const id of ['skills.sh', 'skillsmp', 'clawhub', 'claudeskills']) assert.ok(ids.includes(id), id);
+  // clawhub deliberately absent: clawhub-skills.com 403s Node's TLS fingerprint
+  for (const id of ['skills.sh', 'skillsmp', 'claudeskills', 'plugin-markets'])
+    assert.ok(ids.includes(id), id);
+  assert.ok(!ids.includes('clawhub'));
 });
 
 test('pagedList: page-1 failure throws (one discover failure); later-page failure keeps partial', async () => {

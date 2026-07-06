@@ -85,6 +85,13 @@ function scoreOne(item: FeedItem, ctx: ScoreContext): Scored {
   let score = 0;
   const reasons: string[] = [];
 
+  // marketplace plugins have no novelty/popularity metadata — being one click
+  // away in an already-registered marketplace IS the signal (base +1).
+  if (item.kind === 'plugin') {
+    score += 1;
+    reasons.push('marketplace');
+  }
+
   if (item.updatedAt) {
     const ageDays = (ctx.now - Date.parse(item.updatedAt)) / 86_400_000;
     if (ageDays >= 0 && ageDays <= 30) {
@@ -124,11 +131,13 @@ export async function recommend(
   const installedTokens = new Set<string>();
   const installedCoords = new Set<string>();
   const installedSkillNames = new Set<string>();
+  const installedPluginNames = new Set<string>();
   const agents = new Set<string>();
   for (const i of inv.items) {
     agents.add(i.agent);
     for (const t of tokensOf(i.name)) installedTokens.add(t);
     if (i.kind === 'skill') installedSkillNames.add(i.name.toLowerCase());
+    if (i.kind === 'plugin') installedPluginNames.add(i.name.toLowerCase());
     if (i.kind !== 'mcp-server') continue;
     const c = extractCoordinate(i.spec);
     if (c?.confidence === 'high') {
@@ -142,6 +151,7 @@ export async function recommend(
     // name is the only join key). A different skill sharing an installed name is
     // also dropped; a missed recommendation is the safe direction.
     if (it.kind === 'skill') return !installedSkillNames.has(it.name.toLowerCase());
+    if (it.kind === 'plugin') return !installedPluginNames.has(it.name.toLowerCase());
     return !(it.identifier && it.ecosystem) || !installedCoords.has(coordKey(it.ecosystem, it.identifier));
   });
   const ctx: ScoreContext = { installedTokens, installedCoords, agents: [...agents], now };

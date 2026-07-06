@@ -347,10 +347,14 @@ async function main(argv: string[]): Promise<number> {
           : r.trust.level === 'unknown'
             ? `  · ${r.trust.reasons.join(', ')}`
             : '';
-      const servers = recs.filter((r) => r.item.kind !== 'skill').slice(0, 10);
+      const servers = recs.filter((r) => !r.item.kind || r.item.kind === 'mcp-server').slice(0, 10);
       const skills = diversifyByCategory(
         recs.filter((r) => r.item.kind === 'skill'),
         10,
+      );
+      const plugins = diversifyByCategory(
+        recs.filter((r) => r.item.kind === 'plugin'),
+        8,
       );
       process.stdout.write('\nNew / recommended MCP servers (not installed):\n');
       if (servers.length === 0) process.stdout.write('  (none)\n');
@@ -364,6 +368,14 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(
           `  ◆ [${r.item.category ?? 'other'}] ${r.item.name} — ${r.reasons.join('; ')}  ${r.item.url ?? ''}\n`,
         );
+      }
+      if (plugins.length > 0) {
+        process.stdout.write('\nRecommended plugins (from your registered marketplaces):\n');
+        for (const r of plugins) {
+          process.stdout.write(
+            `  ▣ [${r.item.category ?? 'other'}] ${r.item.name} — fleet plugin install ${r.item.identifier ?? r.item.name} --to claude-code\n`,
+          );
+        }
       }
       if (failures.length > 0) {
         process.stdout.write(

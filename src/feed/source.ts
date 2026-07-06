@@ -12,7 +12,7 @@ export interface FeedItem {
   /** which source produced it (e.g. 'mcp-registry', 'skills.sh', 'hub') */
   source: string;
   /** capability kind this item describes (default: 'mcp-server') */
-  kind?: 'mcp-server' | 'skill';
+  kind?: 'mcp-server' | 'skill' | 'plugin';
   /** category label (see feed/classify.ts) */
   category?: string;
   /** package coordinate used for matching (e.g. '@modelcontextprotocol/server-github') */
