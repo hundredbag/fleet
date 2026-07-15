@@ -76,7 +76,12 @@ test(
       ].join('\n'),
     );
 
-    const items = await new CodexAdapter(toml, join(dir, '_sk')).readInventory();
+    const items = await new CodexAdapter(
+      toml,
+      join(dir, '_sk'),
+      join(dir, '_r.md'),
+      join(dir, '_shared'),
+    ).readInventory();
     const byName = new Map(items.map((i) => [i.name, i as any]));
     assert.equal(items.length, 3);
     assert.equal(byName.get('local')?.spec.transport, 'stdio');

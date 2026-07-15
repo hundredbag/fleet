@@ -162,6 +162,9 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     private readonly configPath: string = DEFAULT_CODEX_TOML,
     private readonly skillsDir: string = DEFAULT_CODEX_SKILLS,
     private readonly rulesPath: string = DEFAULT_CODEX_RULES,
+    /** the cross-agent shared skills root Codex reads natively (agentskills.io
+     * convention; where `npx skills add` installs) */
+    private readonly sharedSkillsDir: string = join(homedir(), '.agents', 'skills'),
   ) {}
 
   async detect(): Promise<DetectedAgent> {
@@ -169,7 +172,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
       id: this.id,
       displayName: this.displayName,
       present: existsSync(this.configPath) || existsSync(this.skillsDir) || existsSync(this.rulesPath),
-      configPaths: [this.configPath, this.skillsDir, this.rulesPath],
+      configPaths: [this.configPath, this.skillsDir, this.rulesPath, this.sharedSkillsDir],
     };
   }
 
@@ -197,7 +200,13 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
         });
       }
     }
-    items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+    const ownSkills = await readSkillsInventory(this.id, this.skillsDir);
+    items.push(...ownSkills);
+    // shared ~/.agents/skills root (read natively by Codex) — own dir wins on
+    // a name collision so fleet-managed installs stay authoritative
+    const ownNames = new Set(ownSkills.map((s) => s.name));
+    const shared = await readSkillsInventory(this.id, this.sharedSkillsDir);
+    items.push(...shared.filter((s) => !ownNames.has(s.name)));
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
     items.push(...(await readCodexPermissions(this.id, this.configPath)));
     items.push(...(await readCodexPlugins(this.id, join(this.configPath, '..', 'plugins'))));

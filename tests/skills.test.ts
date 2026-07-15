@@ -235,7 +235,7 @@ test(
     const src = mkSkill(dir, 'mysk', 'payload');
     const adapters = [
       new ClaudeCodeAdapter(join(dir, '.claude.json'), claudeSkills),
-      new CodexAdapter(join(dir, 'config.toml'), codexSkills),
+      new CodexAdapter(join(dir, 'config.toml'), codexSkills, join(dir, '_r.md'), join(dir, '_shared')),
     ];
 
     const plan = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', [
@@ -264,3 +264,59 @@ test(
     assert.match(readFileSync(join(codexSkills, 'mysk', 'SKILL.md'), 'utf8'), /payload/);
   }),
 );
+
+// ── ~/.agents/skills interop (P2-3) ─────────────────────────────────────────
+import { CodexAdapter as CodexA } from '../src/adapters/codex.js';
+import { readSkillsInventory } from '../src/core/skills.js';
+
+test('interop: SYMLINKED skill dir (npx skills add pattern) is inventoried', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-interop-'));
+  try {
+    const sharedRoot = join(dir, 'agents-skills', 'tdd');
+    mkdirSync(sharedRoot, { recursive: true });
+    writeFileSync(join(sharedRoot, 'SKILL.md'), '---\ndescription: t\n---\n# tdd');
+    const claudeSkills = join(dir, 'claude-skills');
+    mkdirSync(claudeSkills, { recursive: true });
+    symlinkSync(join(dir, 'agents-skills', 'tdd'), join(claudeSkills, 'tdd')); // the Vercel CLI pattern
+    const items = await readSkillsInventory('claude-code', claudeSkills);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]!.name, 'tdd');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('interop: self-referential symlink does not hang (cycle guard)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-interop-'));
+  try {
+    const root = join(dir, 'skills');
+    mkdirSync(root, { recursive: true });
+    symlinkSync(root, join(root, 'loop'));
+    const items = await readSkillsInventory('x', root);
+    assert.deepEqual(items, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('interop: codex reads the shared ~/.agents/skills root; own dir wins on collision', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-interop-'));
+  try {
+    const own = join(dir, 'own-skills', 'dup');
+    const shared = join(dir, 'shared-skills');
+    mkdirSync(own, { recursive: true });
+    mkdirSync(join(shared, 'dup'), { recursive: true });
+    mkdirSync(join(shared, 'only-shared'), { recursive: true });
+    writeFileSync(join(own, 'SKILL.md'), '---\ndescription: own\n---');
+    writeFileSync(join(shared, 'dup', 'SKILL.md'), '---\ndescription: shared\n---');
+    writeFileSync(join(shared, 'only-shared', 'SKILL.md'), '# s');
+    const a = new CodexA(join(dir, 'config.toml'), join(dir, 'own-skills'), join(dir, '_r.md'), shared);
+    const items = (await a.readInventory()).filter((i) => i.kind === 'skill');
+    const names = items.map((i) => i.name).sort();
+    assert.deepEqual(names, ['dup', 'only-shared']);
+    const dup = items.find((i) => i.name === 'dup')!;
+    assert.equal((dup as { meta?: { description?: string } }).meta?.description, 'own'); // own dir wins
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

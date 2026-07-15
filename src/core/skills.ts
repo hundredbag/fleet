@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type { SkillCapability } from './types.js';
 import type { CapabilityRef, RenderResult, SkillSource } from './adapter.js';
@@ -41,19 +41,42 @@ export function parseSkillFrontmatter(text: string): SkillMeta {
 export async function listSkillDirs(root: string): Promise<{ name: string; path: string }[]> {
   if (!existsSync(root)) return [];
   const out: { name: string; path: string }[] = [];
+  const visited = new Set<string>(); // realpath cycle guard for symlinked dirs
   async function walk(dir: string): Promise<void> {
+    let real;
+    try {
+      real = await realpath(dir);
+    } catch {
+      return; // dangling symlink
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
-    if (entries.some((e) => e.isFile() && e.name === 'SKILL.md')) {
+    // SKILL.md may itself be a symlink (Vercel skills CLI plants links) — use
+    // a follow-stat check instead of dirent.isFile()
+    const hasSkillMd = existsSync(join(dir, 'SKILL.md'));
+    if (hasSkillMd) {
       out.push({ name: relative(root, dir).split(sep).join('/'), path: dir });
       return; // a skill dir — don't descend into it
     }
     for (const e of entries) {
-      if (e.isDirectory() && !e.name.startsWith('.')) await walk(join(dir, e.name));
+      if (e.name.startsWith('.')) continue;
+      if (e.isDirectory()) {
+        await walk(join(dir, e.name));
+      } else if (e.isSymbolicLink()) {
+        // npx skills add installs into ~/.agents/skills and SYMLINKS into the
+        // agent's skills dir — follow dir-links or those skills are invisible
+        try {
+          if ((await stat(join(dir, e.name))).isDirectory()) await walk(join(dir, e.name));
+        } catch {
+          /* dangling — skip */
+        }
+      }
     }
   }
   await walk(root);

@@ -19,7 +19,7 @@ function setup(dir: string) {
   // gemini intentionally absent
   const adapters = [
     new ClaudeCodeAdapter(claudeJson, join(dir, '_sk-claude')),
-    new CodexAdapter(codexToml, join(dir, '_sk-codex')),
+    new CodexAdapter(codexToml, join(dir, '_sk-codex'), join(dir, '_r.md'), join(dir, '_shared')),
     new GeminiAdapter(geminiJson),
   ];
   return { claudeJson, codexToml, geminiJson, adapters };

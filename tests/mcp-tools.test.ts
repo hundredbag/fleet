@@ -16,7 +16,7 @@ function setup(dir: string) {
   writeFileSync(codexToml, '# codex\n');
   const adapters = [
     new ClaudeCodeAdapter(claudeJson, join(dir, '_sk-claude')),
-    new CodexAdapter(codexToml, join(dir, '_sk-codex')),
+    new CodexAdapter(codexToml, join(dir, '_sk-codex'), join(dir, '_r-codex.md'), join(dir, '_shared')),
     new GeminiAdapter(geminiJson),
   ];
   const tools = buildTools(adapters, { fleetHome: join(dir, 'fleet-home') });

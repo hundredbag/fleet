@@ -22,7 +22,7 @@ function withTempDir(fn: (dir: string) => void | Promise<void>) {
 function adapters(dir: string, claudeRules: string, codexRules: string) {
   return [
     new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, '_sk-c'), claudeRules),
-    new CodexAdapter(join(dir, 'config.toml'), join(dir, '_sk-x'), codexRules),
+    new CodexAdapter(join(dir, 'config.toml'), join(dir, '_sk-x'), codexRules, join(dir, '_shared')),
   ];
 }
 
