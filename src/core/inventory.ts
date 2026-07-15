@@ -7,20 +7,33 @@ import type { Inventory, DetectedAgent, InstalledCapability } from './types.js';
  * degrades to a note instead of breaking the whole snapshot.
  */
 export async function buildInventory(adapters: AgentAdapter[]): Promise<Inventory> {
-  const agents: DetectedAgent[] = [];
-  const items: InstalledCapability[] = [];
-
-  for (const adapter of adapters) {
-    const detected = await adapter.detect();
-    if (detected.present) {
+  // adapters are independent — read them in PARALLEL, and isolate detect()
+  // failures too (a throwing detect used to abort the whole snapshot)
+  const per = await Promise.all(
+    adapters.map(async (adapter) => {
+      let detected: DetectedAgent;
       try {
-        items.push(...(await adapter.readInventory()));
+        detected = await adapter.detect();
+      } catch (err) {
+        return {
+          detected: {
+            id: adapter.id,
+            displayName: adapter.displayName,
+            present: false,
+            configPaths: [],
+            note: `detect error: ${err instanceof Error ? err.message : String(err)}`,
+          } satisfies DetectedAgent,
+          items: [] as InstalledCapability[],
+        };
+      }
+      if (!detected.present) return { detected, items: [] as InstalledCapability[] };
+      try {
+        return { detected, items: await adapter.readInventory() };
       } catch (err) {
         detected.note = `read error: ${err instanceof Error ? err.message : String(err)}`;
+        return { detected, items: [] as InstalledCapability[] };
       }
-    }
-    agents.push(detected);
-  }
-
-  return { agents, items };
+    }),
+  );
+  return { agents: per.map((p) => p.detected), items: per.flatMap((p) => p.items) };
 }

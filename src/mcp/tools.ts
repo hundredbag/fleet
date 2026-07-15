@@ -24,7 +24,8 @@ import { detectDrift } from '../core/drift.js';
 import { skillUpdatesFromLock } from '../core/skill-updates.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
-import { discover, updatesForInventory } from '../feed/feed.js';
+import { updatesForInventory } from '../feed/feed.js';
+import { cachedDiscover } from '../feed/cache.js';
 import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { planPluginAction, runDelegated } from '../core/delegate.js';
@@ -272,7 +273,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
       inputSchema: {},
       handler: async () => {
         const inv = await buildInventory(adapters);
-        const { items, failures } = await discover(defaultSources());
+        const { items, failures } = await cachedDiscover(defaultSources(), { fleetHome: opts.fleetHome });
         const { updates } = updatesForInventory(inv, items);
         const ranked = await recommend(inv, items); // uncapped; sliced per kind below
         const mixed = [

@@ -21,7 +21,8 @@ import {
 import { rollback, readAudit } from '../core/writer.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
-import { discover, updatesForInventory } from '../feed/feed.js';
+import { updatesForInventory } from '../feed/feed.js';
+import { cachedDiscover } from '../feed/cache.js';
 import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
@@ -73,7 +74,7 @@ Usage:
                                            Direct bind: --host <tailscale-ip> (auto-allows <ip>:<port>).
                                            Never bind 0.0.0.0; never expose via 'tailscale funnel'.
   fleet config                             Show effective config (~/.fleet/config.json) + its path
-  fleet whats-new                          New/updatable capabilities for your agents (heuristic)
+  fleet whats-new [--refresh]                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
   fleet rollback [<auditId>]               Undo the last (or a specific) change
   fleet help
@@ -351,7 +352,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'whats-new': {
       const inv = await buildInventory(adapters);
-      const { items, failures } = await discover(defaultSources());
+      const { items, failures, fromCache } = await cachedDiscover(defaultSources(), {
+        refresh: p.flags.refresh === true,
+      });
+      if (fromCache) process.stdout.write('(cached feed — use --refresh for live registries)\n');
       const { updates } = updatesForInventory(inv, items);
       const recs = await recommend(inv, items); // uncapped; sliced per section below
       process.stdout.write('Updates available (installed):\n');

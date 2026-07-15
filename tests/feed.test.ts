@@ -96,3 +96,53 @@ test('newRelevant filters out already-installed items', () => {
   assert.equal(rel.length, 1);
   assert.equal(rel[0]?.identifier, '@x/new');
 });
+
+// ── P2-6: feed cache ────────────────────────────────────────────────────────
+
+test('cachedDiscover: second call within TTL is served from cache; refresh bypasses', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-fc-'));
+  let calls = 0;
+  const src = {
+    id: 'fake',
+    list: async () => {
+      calls++;
+      return [{ name: 'x', source: 'fake' }];
+    },
+  };
+  try {
+    const a = await cachedDiscover([src], { fleetHome: dir });
+    assert.equal(a.fromCache, false);
+    const b = await cachedDiscover([src], { fleetHome: dir });
+    assert.equal(b.fromCache, true);
+    assert.equal(calls, 1); // network hit once
+    assert.deepEqual(
+      b.items.map((i) => i.name),
+      ['x'],
+    );
+    const c = await cachedDiscover([src], { fleetHome: dir, refresh: true });
+    assert.equal(c.fromCache, false);
+    assert.equal(calls, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cachedDiscover: corrupt cache file → live refetch, not a crash', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-fc-'));
+  try {
+    mkdirSync(join(dir, 'cache'), { recursive: true });
+    writeFileSync(join(dir, 'cache', 'feed.json'), '{broken');
+    const r = await cachedDiscover([{ id: 'f', list: async () => [] }], { fleetHome: dir });
+    assert.equal(r.fromCache, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
