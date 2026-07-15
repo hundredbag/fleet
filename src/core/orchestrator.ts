@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { extractCoordinate } from './coords.js';
 import { updateLockFromApplied, type CapabilityOrigin } from './lock.js';
+import { gateOrigin, gateSkillSource, type GateVerdict } from './trustgate.js';
+import { loadConfig } from './config.js';
 import { readFile } from 'node:fs/promises';
 import type { AgentAdapter, AgentWriter, RuleWriter, SkillSource, SkillWriter } from './adapter.js';
 import type { AgentId, McpServerSpec, RuleCapability, Scope } from './types.js';
@@ -32,6 +34,8 @@ export interface Plan {
   skips: PlanSkip[];
   /** provenance for the lock file — set by planners that know where the bytes came from */
   origin?: CapabilityOrigin;
+  /** install-time trust verdict (recorded in the lock; enforced per trustPolicy) */
+  trust?: GateVerdict;
 }
 
 type WriterAdapter = AgentAdapter & AgentWriter;
@@ -75,6 +79,28 @@ export async function resolveTargets(adapters: AgentAdapter[], target: string): 
   return [...new Set(ids)];
 }
 
+/** Apply the trust policy to a finished plan: warn → annotate every change;
+ * block → convert changes into 'protected' skips. Never touches ok verdicts. */
+function applyTrustPolicy(plan: Plan, verdict: GateVerdict, policy: 'warn' | 'block'): Plan {
+  if (verdict.level === 'ok') return { ...plan, trust: verdict };
+  if (policy === 'block') {
+    const skips = [
+      ...plan.skips,
+      ...plan.changes.map((c) => ({
+        agent: c.agent,
+        kind: 'protected' as const,
+        reason: `trust policy is 'block': ${verdict.reasons.join('; ')}`,
+      })),
+    ];
+    return { changes: [], skips, trust: verdict };
+  }
+  const changes = plan.changes.map((c) => ({
+    ...c,
+    warnings: [...(c.warnings ?? []), ...verdict.reasons.map((r) => `trust: ${r}`)],
+  }));
+  return { ...plan, changes, trust: verdict };
+}
+
 async function isNoop(file: string, newContent: string): Promise<boolean> {
   if (!existsSync(file)) return false;
   try {
@@ -91,6 +117,7 @@ export async function planInstall(
   name: string,
   scope: Scope,
   targetIds: AgentId[],
+  opts?: { trustPolicy?: 'warn' | 'block' },
 ): Promise<Plan> {
   const coord = extractCoordinate(spec);
   // registry-grammar check before PERSISTING as provenance — extractCoordinate
@@ -134,7 +161,8 @@ export async function planInstall(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips, origin: origin };
+  const policy = opts?.trustPolicy ?? loadConfig().trustPolicy;
+  return applyTrustPolicy({ changes, skips, origin }, gateOrigin(origin), policy);
 }
 
 /** Plan removing a server from each target agent. */
@@ -214,6 +242,7 @@ export async function planInstallSkill(
   source: SkillSource,
   name: string,
   targetIds: AgentId[],
+  opts?: { trustPolicy?: 'warn' | 'block' },
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
@@ -239,7 +268,13 @@ export async function planInstallSkill(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips, origin: { type: 'dir', path: resolve(source.dir) } };
+  const policy = opts?.trustPolicy ?? loadConfig().trustPolicy;
+  const verdict = await gateSkillSource(source.dir);
+  return applyTrustPolicy(
+    { changes, skips, origin: { type: 'dir', path: resolve(source.dir) } },
+    verdict,
+    policy,
+  );
 }
 
 /** Plan removing a skill from each target agent. */
@@ -466,7 +501,7 @@ export async function execute(
   const foldLock = async (applied: ApplyResult[]): Promise<string | undefined> => {
     if (applied.length === 0) return undefined;
     try {
-      await updateLockFromApplied(applied, plan.origin ?? { type: 'manual' }, opts.fleetHome);
+      await updateLockFromApplied(applied, plan.origin ?? { type: 'manual' }, opts.fleetHome, plan.trust);
       return undefined;
     } catch (e) {
       return `applied, but fleet.lock update failed: ${msg(e)}`;

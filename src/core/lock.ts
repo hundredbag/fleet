@@ -25,6 +25,8 @@ export interface LockEntry {
   agent: string;
   scope?: string;
   origin: CapabilityOrigin;
+  /** install-time trust verdict (static facts; see core/trustgate.ts) */
+  trust?: { level: 'ok' | 'caution'; reasons: string[] };
   /** skills: dir manifest hash; file kinds: sha256 of the canonical spec/body */
   contentHash?: string;
   installedAt: string;
@@ -118,6 +120,7 @@ export async function updateLockFromApplied(
   applied: ApplyResult[],
   origin: CapabilityOrigin,
   fleetHome?: string,
+  trust?: { level: 'ok' | 'caution'; reasons: string[] },
 ): Promise<void> {
   if (applied.length === 0) return;
   const lock = await readLock(fleetHome);
@@ -138,6 +141,7 @@ export async function updateLockFromApplied(
       installedAt: new Date().toISOString(),
       auditId: r.auditId,
       op: r.backup ? 'update' : 'install',
+      ...(trust ? { trust } : {}),
     };
   }
   await writeLock(lock, fleetHome);

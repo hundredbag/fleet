@@ -21,6 +21,8 @@ export interface FleetConfig {
   feedSources: string[] | null;
   /** third-party adapter module specifiers to load (bring your own agent) */
   adapterModules: string[];
+  /** trust gate enforcement: 'warn' surfaces caution as warnings (default); 'block' refuses caution-level plans */
+  trustPolicy: 'warn' | 'block';
 }
 
 export const DEFAULT_CONFIG: FleetConfig = {
@@ -28,6 +30,7 @@ export const DEFAULT_CONFIG: FleetConfig = {
   allowHosts: [],
   agents: null,
   hubUrl: null,
+  trustPolicy: 'warn',
   feedSources: null,
   adapterModules: [],
 };
@@ -70,6 +73,7 @@ export function normalizeConfig(parsed: unknown): FleetConfig {
   const agents = strArray(p.agents);
   if (agents && agents.length) c.agents = agents;
   if (typeof p.hubUrl === 'string' && p.hubUrl && isHubUrl(p.hubUrl)) c.hubUrl = p.hubUrl;
+  if (p.trustPolicy === 'block' || p.trustPolicy === 'warn') c.trustPolicy = p.trustPolicy;
   const sources = strArray(p.feedSources);
   if (sources && sources.length) c.feedSources = sources;
   const adapterModules = strArray(p.adapterModules);
