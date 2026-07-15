@@ -119,8 +119,94 @@ test('lock: corrupt lock file degrades to empty (metadata, not a gate)', async (
     assert.deepEqual(lock.entries, {});
     // and a subsequent write replaces it cleanly
     await updateLockForPlugin('install', 'codex', 'omo@sisyphuslabs', dir);
-    assert.ok(JSON.parse(readFileSync(join(dir, 'fleet.lock'), 'utf8')).entries['plugin:omo@codex']);
+    assert.ok(
+      JSON.parse(readFileSync(join(dir, 'fleet.lock'), 'utf8')).entries[lockKey('plugin', 'omo', 'codex')],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── dual-review round fixes ─────────────────────────────────────────────────
+
+test('lock: @scope/name selectors do not collide (last-@ parsing)', async () => {
+  const dir = tmp();
+  try {
+    await updateLockForPlugin('install', 'claude-code', '@acme/one@market', dir);
+    await updateLockForPlugin('install', 'claude-code', '@acme/two@market', dir);
+    const lock = await readLock(dir);
+    assert.ok(lock.entries[lockKey('plugin', '@acme/one', 'claude-code')]);
+    assert.ok(lock.entries[lockKey('plugin', '@acme/two', 'claude-code')]);
+    await updateLockForPlugin('remove', 'claude-code', '@acme/one@market', dir);
+    const after = await readLock(dir);
+    assert.equal(after.entries[lockKey('plugin', '@acme/one', 'claude-code')], undefined);
+    assert.ok(after.entries[lockKey('plugin', '@acme/two', 'claude-code')]); // survivor intact
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: rollback removes the stale entry (install → rollback)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    const plan = await planInstall(
+      [a],
+      { transport: 'stdio', command: 'npx', args: ['-y', 'thing'] },
+      'thing',
+      'user',
+      ['claude-code'],
+    );
+    await execute([a], plan, { commit: true, fleetHome: home });
+    assert.ok((await readLock(home)).entries[lockKey('mcp-server', 'thing', 'claude-code')]);
+    const { rollback } = await import('../src/core/writer.js');
+    const r = await rollback({ fleetHome: home });
+    assert.equal(r.action, 'restored'); // config file existed before → restored
+    assert.equal(
+      (await readLock(home)).entries[lockKey('mcp-server', 'thing', 'claude-code')],
+      undefined, // no stale provenance claim
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: write failure degrades to lockWarning, apply still succeeds', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(join(home, 'fleet.lock'), { recursive: true }); // rename onto a DIR fails
+    const a = hermeticClaude(dir);
+    const plan = await planInstall(
+      [a],
+      { transport: 'stdio', command: 'npx', args: ['-y', 'x'] },
+      'x',
+      'user',
+      ['claude-code'],
+    );
+    const res = await execute([a], plan, { commit: true, fleetHome: home });
+    assert.equal(res.applied.length, 1); // the install happened
+    assert.match(res.lockWarning ?? '', /fleet.lock update failed/);
+    assert.equal(res.error, undefined); // and is NOT reported as a failure
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: entries:null degrades to empty instead of crashing consumers', async () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'fleet.lock'), '{"version":1,"entries":null}');
+    const lock = await readLock(dir);
+    assert.deepEqual(lock.entries, {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: specHash is key-order independent', async () => {
+  const { specHash } = await import('../src/core/lock.js');
+  assert.equal(specHash({ a: 1, b: { c: 2, d: 3 } }), specHash({ b: { d: 3, c: 2 }, a: 1 }));
+  assert.notEqual(specHash({ a: 1 }), specHash({ a: 2 }));
 });

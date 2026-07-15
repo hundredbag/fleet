@@ -7,6 +7,7 @@ import type { AgentId, Scope } from './types.js';
 import type { RenderResult } from './adapter.js';
 import { sha256 } from './hash.js';
 import { copyDir, hashDir, removeDir } from './fsutil.js';
+import { removeLockEntry } from './lock.js';
 
 export type WriteOp = 'install' | 'remove' | 'update';
 
@@ -45,6 +46,8 @@ interface AuditRecord {
   op: WriteOp | 'rollback';
   agent: string;
   name: string;
+  /** capability kind — lets rollback clean the fleet.lock entry */
+  kind?: string;
   file: string;
   scope?: string;
   backup: string;
@@ -264,6 +267,7 @@ async function applyFileChange(
       op: change.op,
       agent: change.agent,
       name: change.name,
+      kind: change.kind ?? 'mcp-server',
       file: change.file,
       scope: change.scope,
       backup,
@@ -375,6 +379,7 @@ async function applyDirChange(
       op: change.op,
       agent: change.agent,
       name: change.name,
+      kind: change.kind ?? 'skill',
       file: target,
       scope: change.scope,
       backup,
@@ -551,6 +556,15 @@ export async function rollback(
         `fleet: rollback of ${target.file} SUCCEEDED (${action}) but recording it failed — ` +
           `do NOT re-run this rollback; audit error: ${msg(err)}`,
       );
+    }
+
+    if (action !== 'skipped' && target.kind) {
+      try {
+        // fleet no longer knows the provenance of what rollback left behind
+        await removeLockEntry(target.kind, target.name, target.agent, home);
+      } catch {
+        /* lock is metadata — never fail a completed rollback over it */
+      }
     }
 
     return { file: target.file, action, reason };

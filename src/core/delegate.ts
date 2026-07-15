@@ -52,6 +52,7 @@ export function planPluginAction(agent: string, op: PluginOp, selector: string):
 }
 
 export interface DelegatedResult {
+  lockWarning?: string;
   status: 'preview' | 'applied' | 'failed';
   agent: string;
   command: string;
@@ -128,11 +129,13 @@ export async function runDelegated(
       '\n',
     'utf8',
   );
+  let lockWarning: string | undefined;
   if (exitCode === 0) {
     try {
       await updateLockForPlugin(plan.op, plan.agent, plan.selector, opts.fleetHome);
-    } catch {
-      /* lock is metadata — the vendor CLI already succeeded */
+    } catch (e) {
+      // lock is metadata — the vendor CLI already succeeded; still SAY so
+      lockWarning = `applied, but fleet.lock update failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
   return {
@@ -142,5 +145,6 @@ export async function runDelegated(
     undoCommand,
     exitCode,
     outputTail,
+    ...(lockWarning ? { lockWarning } : {}),
   };
 }

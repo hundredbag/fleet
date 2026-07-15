@@ -136,5 +136,6 @@ export function summarizeResult(r: ExecuteResult) {
     })),
     skips: r.skips,
     ...(r.error ? { error: r.error, failedAfter: r.failedAfter } : {}),
+    ...(r.lockWarning ? { lockWarning: scrubSecrets(r.lockWarning) } : {}),
   };
 }

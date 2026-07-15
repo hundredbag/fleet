@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { extractCoordinate } from './coords.js';
 import { updateLockFromApplied, type CapabilityOrigin } from './lock.js';
 import { readFile } from 'node:fs/promises';
@@ -92,8 +93,19 @@ export async function planInstall(
   targetIds: AgentId[],
 ): Promise<Plan> {
   const coord = extractCoordinate(spec);
+  // registry-grammar check before PERSISTING as provenance — extractCoordinate
+  // is match-oriented and would happily classify a credentialed URL as an id
+  const NPM_ID = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+  const PYPI_ID = /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+  const idOk =
+    coord &&
+    (coord.ecosystem === 'npm'
+      ? NPM_ID.test(coord.id)
+      : coord.ecosystem === 'pypi'
+        ? PYPI_ID.test(coord.id)
+        : false);
   const origin: CapabilityOrigin =
-    coord?.confidence === 'high' && (coord.ecosystem === 'npm' || coord.ecosystem === 'pypi')
+    coord?.confidence === 'high' && idOk && (coord.ecosystem === 'npm' || coord.ecosystem === 'pypi')
       ? { type: coord.ecosystem, id: coord.id, ...(coord.version ? { version: coord.version } : {}) }
       : { type: 'manual' };
   const changes: PlannedChange[] = [];
@@ -227,7 +239,7 @@ export async function planInstallSkill(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips, origin: { type: 'dir', path: source.dir } };
+  return { changes, skips, origin: { type: 'dir', path: resolve(source.dir) } };
 }
 
 /** Plan removing a skill from each target agent. */
@@ -414,6 +426,8 @@ export function makeValidator(adapters: AgentAdapter[]): ChangeValidator {
   };
 }
 
+/** LOW-LEVEL: applies without folding fleet.lock — use execute() unless you
+ * are the engine. (kept exported for tests and advanced embedding) */
 export async function applyPlan(
   adapters: AgentAdapter[],
   plan: Plan,

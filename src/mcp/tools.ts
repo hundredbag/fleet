@@ -247,7 +247,11 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
       description:
         'Provenance of everything fleet installed (fleet.lock): origin (npm/pypi/dir/marketplace), content hash, when, per agent. Read-only.',
       inputSchema: {},
-      handler: async () => readLock(),
+      handler: async () => {
+        const lock = await readLock(opts.fleetHome);
+        // origins can carry paths/selectors from local state — scrub the projection
+        return JSON.parse(scrubSecrets(JSON.stringify(lock)));
+      },
     },
     {
       name: 'whats_new',

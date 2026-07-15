@@ -164,6 +164,9 @@ async function runPlan(adapters: AgentAdapter[], plan: Plan, commit: boolean): P
     }
     throw new Error(result.error);
   }
+  if (result.lockWarning) {
+    process.stdout.write(`\n⚠ ${result.lockWarning}\n`);
+  }
   if (result.applied.length > 0) {
     process.stdout.write(`\n✓ applied ${result.applied.length} change(s). Undo with: fleet rollback\n`);
   }

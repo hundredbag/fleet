@@ -39,8 +39,9 @@ export interface LockFile {
 
 const EMPTY: LockFile = { version: 1, entries: {} };
 
+/** Self-delimiting key — names/agents may contain ':' or '@'. */
 export function lockKey(kind: string, name: string, agent: string): string {
-  return `${kind}:${name}@${agent}`;
+  return JSON.stringify([kind, name, agent]);
 }
 
 function lockPath(fleetHome?: string): string {
@@ -53,7 +54,14 @@ export async function readLock(fleetHome?: string): Promise<LockFile> {
   if (!existsSync(p)) return structuredClone(EMPTY);
   try {
     const doc = JSON.parse(await readFile(p, 'utf8'));
-    if (doc && typeof doc === 'object' && doc.version === 1 && typeof doc.entries === 'object') {
+    if (
+      doc &&
+      typeof doc === 'object' &&
+      doc.version === 1 &&
+      doc.entries &&
+      typeof doc.entries === 'object' &&
+      !Array.isArray(doc.entries)
+    ) {
       return doc as LockFile;
     }
     return structuredClone(EMPTY);
@@ -81,17 +89,30 @@ async function writeLock(lock: LockFile, fleetHome?: string): Promise<void> {
   }
 }
 
-/** Canonical hash for a file-kind capability: the entry itself, not the whole
- * file (unrelated edits to a shared config must not read as capability drift). */
+function sortKeysDeep(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(sortKeysDeep);
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+      out[k] = sortKeysDeep((v as Record<string, unknown>)[k]);
+    }
+    return out;
+  }
+  return v;
+}
+
+/** Canonical hash for a file-kind capability: the entry itself (keys sorted —
+ * insertion order must not read as drift), not the whole file. */
 export function specHash(after: unknown): string | undefined {
   if (after === undefined) return undefined;
-  return sha256(JSON.stringify(after));
+  return sha256(JSON.stringify(sortKeysDeep(after)));
 }
 
 /**
- * Fold a batch of applied changes into the lock. Installs/updates upsert;
- * removes delete. `origins` maps agent id → origin for this operation (one
- * logical install can fan out to several agents with the same origin).
+ * Fold a batch of applied changes into the lock (one shared origin — a single
+ * logical install fans out to several agents). Installs/updates upsert;
+ * removes delete. op records what actually happened: a write over an existing
+ * target (backup captured) is an update regardless of how it was planned.
  */
 export async function updateLockFromApplied(
   applied: ApplyResult[],
@@ -116,9 +137,24 @@ export async function updateLockFromApplied(
       contentHash: c.fsKind === 'dir' ? r.wroteHash : specHash(c.after),
       installedAt: new Date().toISOString(),
       auditId: r.auditId,
-      op: c.op,
+      op: r.backup ? 'update' : 'install',
     };
   }
+  await writeLock(lock, fleetHome);
+}
+
+/** Best-effort removal after a successful rollback: fleet no longer knows the
+ * provenance of whatever bytes rollback restored — an honest lock has no entry. */
+export async function removeLockEntry(
+  kind: string,
+  name: string,
+  agent: string,
+  fleetHome?: string,
+): Promise<void> {
+  const lock = await readLock(fleetHome);
+  const key = lockKey(kind, name, agent);
+  if (!(key in lock.entries)) return;
+  delete lock.entries[key];
   await writeLock(lock, fleetHome);
 }
 
@@ -129,7 +165,10 @@ export async function updateLockForPlugin(
   selector: string,
   fleetHome?: string,
 ): Promise<void> {
-  const name = selector.split('@')[0] ?? selector;
+  // '@scope/name@market' — the MARKETPLACE suffix is the LAST '@' (never index
+  // 0, which is a scope marker)
+  const at = selector.lastIndexOf('@');
+  const name = at > 0 ? selector.slice(0, at) : selector;
   const lock = await readLock(fleetHome);
   const key = lockKey('plugin', name, agent);
   if (action === 'remove') {
