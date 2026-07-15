@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { parse as parseToml } from 'smol-toml';
 import type {
@@ -19,6 +19,7 @@ import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../c
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
 import { readCodexPermissions } from '../core/permissions.js';
 import { readCodexPlugins } from '../core/agent-plugins.js';
+import { readCodexSubagents } from '../core/subagents.js';
 
 const DEFAULT_CODEX_TOML = join(homedir(), '.codex', 'config.toml');
 const DEFAULT_CODEX_SKILLS = join(homedir(), '.codex', 'skills');
@@ -200,15 +201,35 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
         });
       }
     }
-    const ownSkills = await readSkillsInventory(this.id, this.skillsDir);
+    const ownSkills = await readSkillsInventory(this.id, this.skillsDir, {
+      allowedRoots: [this.sharedSkillsDir],
+    });
     items.push(...ownSkills);
     // shared ~/.agents/skills root (read natively by Codex) — own dir wins on
-    // a name collision so fleet-managed installs stay authoritative
+    // a name collision so fleet-managed installs stay authoritative; also
+    // dedupe by PHYSICAL identity (an own link b → shared/a/b is one skill)
     const ownNames = new Set(ownSkills.map((s) => s.name));
+    const ownReal = new Set<string>();
+    for (const sk of ownSkills) {
+      try {
+        ownReal.add(await realpath(sk.path));
+      } catch {
+        /* dangling */
+      }
+    }
     const shared = await readSkillsInventory(this.id, this.sharedSkillsDir);
-    items.push(...shared.filter((s) => !ownNames.has(s.name)));
+    for (const sk of shared) {
+      if (ownNames.has(sk.name)) continue;
+      try {
+        if (ownReal.has(await realpath(sk.path))) continue;
+      } catch {
+        /* keep */
+      }
+      items.push(sk);
+    }
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
     items.push(...(await readCodexPermissions(this.id, this.configPath)));
+    items.push(...(await readCodexSubagents(this.id, join(this.configPath, '..', 'agents'))));
     items.push(...(await readCodexPlugins(this.id, join(this.configPath, '..', 'plugins'))));
     return items;
   }

@@ -94,6 +94,7 @@ export function renderPage(): string {
   .chip.rule       { color:var(--green);  border-color:color-mix(in srgb, var(--green) 40%, transparent);  background:color-mix(in srgb, var(--green) 10%, transparent); }
   .chip.permission { color:var(--orange); border-color:color-mix(in srgb, var(--orange) 40%, transparent); background:color-mix(in srgb, var(--orange) 10%, transparent); }
   .chip.plugin     { color:var(--pink);   border-color:color-mix(in srgb, var(--pink) 40%, transparent);   background:color-mix(in srgb, var(--pink) 10%, transparent); }
+  .chip.subagent   { color:var(--blue);   border-color:color-mix(in srgb, var(--blue) 40%, transparent);   background:color-mix(in srgb, var(--blue) 6%, transparent); }
   .chip.other      { color:var(--text-2); border-color:var(--border); background:var(--hover); }
   .dot { display:inline-block; width:8px; height:8px; border-radius:99px; background:var(--green); box-shadow:0 0 6px rgba(76,195,138,.5); }
   .dot.off { background:var(--border); box-shadow:none; }
@@ -295,7 +296,7 @@ async function get(path){
 function el(tag, cls, txt){ const e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; }
 function stat(id, n){ document.getElementById(id).textContent = String(n); }
 
-const KINDS = ['mcp','skill','rule','permission','plugin'];
+const KINDS = ['mcp','skill','rule','permission','plugin','subagent'];
 function kindChip(kind){
   return el('span','chip ' + (KINDS.indexOf(kind) >= 0 ? kind : 'other'), kind);
 }
@@ -414,7 +415,7 @@ function openDetail(kind, name){
   if(first.target) kv(bar, T('dRuns'), first.target);
   if(first.version || (first.meta && first.meta.version)) kv(bar, T('dVer'), first.version || first.meta.version);
   if(first.marketplace) kv(bar, T('dMarket'), first.marketplace);
-  if(first.tokensEst) kv(bar, T('dTokens'), '~' + first.tokensEst + ' tokens' + (kind === 'rule' ? ' · always-on' : ''));
+  if(first.tokensEst != null) kv(bar, T('dTokens'), '~' + first.tokensEst + ' tokens' + (kind === 'rule' ? ' · always-on' : ''));
   bar.appendChild(el('div','dsect', T('dStatus')));
   const canAct = kind === 'mcp';
   const haveAgents = found.map(function(x){ return x.agent; });
@@ -480,6 +481,7 @@ function renderInventory(inv){
   inv.rules.forEach(function(s){ add('rule', s); });
   (inv.permissions||[]).forEach(function(s){ add('permission', s); });
   (inv.plugins||[]).forEach(function(s){ add('plugin', s); });
+  (inv.subagents||[]).forEach(function(s){ add('subagent', s); });
   const box = document.getElementById('inventory'); box.innerHTML='';
   const keys = Object.keys(rows);
   if(keys.length===0){ box.appendChild(el('p','empty',T('emptyInv'))); return; }

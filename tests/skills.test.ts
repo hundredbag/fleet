@@ -278,7 +278,9 @@ test('interop: SYMLINKED skill dir (npx skills add pattern) is inventoried', asy
     const claudeSkills = join(dir, 'claude-skills');
     mkdirSync(claudeSkills, { recursive: true });
     symlinkSync(join(dir, 'agents-skills', 'tdd'), join(claudeSkills, 'tdd')); // the Vercel CLI pattern
-    const items = await readSkillsInventory('claude-code', claudeSkills);
+    const items = await readSkillsInventory('claude-code', claudeSkills, {
+      allowedRoots: [join(dir, 'agents-skills')], // containment: only sanctioned shared roots
+    });
     assert.equal(items.length, 1);
     assert.equal(items[0]!.name, 'tdd');
   } finally {
@@ -335,6 +337,41 @@ test('context-cost lens: skills and rules carry tokensEst (~bytes/4)', async () 
     writeFileSync(f, '<!-- fleet:rule:r1 -->\n' + 'y'.repeat(400) + '\n<!-- /fleet:rule:r1 -->\n');
     const rules = await readRulesInventory('claude-code', f);
     assert.equal(rules[0]!.tokensEst, 100);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('context-cost lens: BYTES not chars (multibyte Korean) and present-zero', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-lens2-'));
+  try {
+    const f = join(dir, 'CLAUDE.md');
+    const { readRulesInventory } = await import('../src/core/rules.js');
+    writeFileSync(f, '<!-- fleet:rule:k -->\n' + '한'.repeat(100) + '\n<!-- /fleet:rule:k -->\n');
+    const rules = await readRulesInventory('claude-code', f);
+    assert.equal(rules[0]!.tokensEst, 75); // 300 UTF-8 bytes / 4 — fails if chars/4
+
+    const root = join(dir, 'skills', 'empty');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'SKILL.md'), '');
+    const items = await readSkillsInventory('x', join(dir, 'skills'));
+    assert.equal(items[0]!.tokensEst, 0); // present zero ≠ absent
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('containment: symlink to an UNSANCTIONED outside dir is not walked', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-esc-'));
+  try {
+    const outside = join(dir, 'outside', 'victim');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'SKILL.md'), 'secret');
+    const root = join(dir, 'skills');
+    mkdirSync(root, { recursive: true });
+    symlinkSync(join(dir, 'outside'), join(root, 'escape')); // NOT in allowedRoots
+    const items = await readSkillsInventory('x', root); // no allowed roots
+    assert.deepEqual(items, []); // outside tree never read
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

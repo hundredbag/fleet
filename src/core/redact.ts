@@ -5,6 +5,7 @@ import type {
   PluginCapability,
   RuleCapability,
   SkillCapability,
+  SubagentCapability,
 } from './types.js';
 import type { ExecuteResult } from './orchestrator.js';
 
@@ -100,6 +101,17 @@ export function summarizeInventory(inv: Inventory) {
   const plugins = inv.items
     .filter((i): i is PluginCapability => i.kind === 'plugin')
     .map((i) => ({ name: i.name, agent: i.agent, marketplace: i.marketplace, description: i.description }));
+  const subagents = inv.items
+    .filter((i): i is SubagentCapability => i.kind === 'subagent')
+    .map((i) => ({
+      name: i.name,
+      agent: i.agent,
+      scope: i.scope,
+      description: i.description,
+      tools: i.tools,
+      model: i.model,
+      tokensEst: i.tokensEst,
+    }));
   return {
     agents: inv.agents.map((a) => ({ id: a.id, present: a.present, note: a.note })),
     servers,
@@ -107,6 +119,7 @@ export function summarizeInventory(inv: Inventory) {
     rules,
     permissions,
     plugins,
+    subagents,
   };
 }
 

@@ -56,6 +56,14 @@ export function renderInventory(inv: Inventory): string {
   out.push('');
   out.push(
     renderSection(
+      'Subagents (read-only)',
+      inv.items.filter((i) => i.kind === 'subagent'),
+      present,
+    ),
+  );
+  out.push('');
+  out.push(
+    renderSection(
       'Permissions (read-only)',
       inv.items.filter((i) => i.kind === 'permission'),
       present,

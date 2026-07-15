@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type {
@@ -14,6 +14,7 @@ import type {
 import type { DetectedAgent, InstalledCapability, McpServerSpec, Scope } from '../core/types.js';
 import { asStringArray, asStringRecord } from '../core/coerce.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
+import { readClaudeSubagents } from '../core/subagents.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
 import { readClaudePermissions } from '../core/permissions.js';
 import { readClaudePlugins } from '../core/agent-plugins.js';
@@ -121,9 +122,14 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     };
 
     if (!existsSync(this.claudeJsonPath)) {
-      items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+      items.push(
+        ...(await readSkillsInventory(this.id, this.skillsDir, {
+          allowedRoots: [join(homedir(), '.agents', 'skills')],
+        })),
+      );
       items.push(...(await readRulesInventory(this.id, this.rulesPath)));
       items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
+      items.push(...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'))));
       items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
       return items;
     }
@@ -156,9 +162,14 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
         }
       }
     }
-    items.push(...(await readSkillsInventory(this.id, this.skillsDir)));
+    items.push(
+      ...(await readSkillsInventory(this.id, this.skillsDir, {
+        allowedRoots: [join(homedir(), '.agents', 'skills')],
+      })),
+    );
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
     items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
+    items.push(...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'))));
     items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
     return items;
   }

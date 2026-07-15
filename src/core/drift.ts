@@ -1,6 +1,8 @@
 import type { Inventory, McpServerCapability, RuleCapability, SkillCapability } from './types.js';
 import { readLock, specHash, lockKey, type LockEntry } from './lock.js';
 import { hashDir } from './fsutil.js';
+import { lstat, readlink } from 'node:fs/promises';
+import { sha256 } from './hash.js';
 
 /**
  * Drift/tamper detection: diff LIVE agent state against fleet.lock's recorded
@@ -47,8 +49,19 @@ function liveItemFor(inv: Inventory, e: LockEntry) {
 
 async function currentHash(item: Inventory['items'][number]): Promise<string | undefined> {
   switch (item.kind) {
-    case 'skill':
-      return hashDir((item as SkillCapability).path);
+    case 'skill': {
+      // a skill DIR silently replaced by a symlink must not read intact —
+      // hashDir follows the link and would match the target's bytes
+      const p = (item as SkillCapability).path;
+      try {
+        if ((await lstat(p)).isSymbolicLink()) {
+          return sha256('symlink:' + (await readlink(p)));
+        }
+      } catch {
+        /* fall through to hashDir (absent handled by caller) */
+      }
+      return hashDir(p);
+    }
     case 'mcp-server':
       return specHash((item as McpServerCapability).spec);
     case 'rule':
@@ -131,7 +144,7 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
   const claimsAny = (i: { kind: string; name: string; agent: string }) =>
     keyed.has(lockKey(i.kind, i.name, i.agent, '*'));
   const unmanaged = inv.items
-    .filter((i) => i.kind === 'mcp-server' || i.kind === 'plugin')
+    .filter((i) => i.kind === 'mcp-server' || i.kind === 'plugin' || i.kind === 'skill') // skills: injection surface too (noise accepted)
     .filter((i) => !keyed.has(lockKey(i.kind, i.name, i.agent, i.scope)) && !claimsAny(i))
     .map((i) => ({ kind: i.kind, name: i.name, agent: i.agent, scope: i.scope }));
 

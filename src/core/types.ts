@@ -85,6 +85,18 @@ export interface RuleCapability extends BaseCapability {
   tokensEst?: number;
 }
 
+export interface SubagentCapability extends BaseCapability {
+  kind: 'subagent';
+  /** the definition file on disk (.md for Claude, .toml for Codex) */
+  path: string;
+  description?: string;
+  /** declared tool access — security-relevant, shown in inventory */
+  tools?: string[];
+  model?: string;
+  /** rough system-prompt cost when this subagent is engaged (bytes/4) */
+  tokensEst?: number;
+}
+
 /**
  * A permission / approval rule an agent enforces. READ-ONLY in fleet: it is
  * surfaced in the inventory but never written or translated across agents —
@@ -115,7 +127,12 @@ export interface PluginCapability extends BaseCapability {
  * A capability instance found installed on one agent. Discriminated on `kind`.
  */
 export type InstalledCapability =
-  McpServerCapability | SkillCapability | RuleCapability | PermissionCapability | PluginCapability;
+  | McpServerCapability
+  | SkillCapability
+  | RuleCapability
+  | PermissionCapability
+  | PluginCapability
+  | SubagentCapability;
 
 /**
  * Whether a capability is ALWAYS-ON (in context every turn — where opposing
