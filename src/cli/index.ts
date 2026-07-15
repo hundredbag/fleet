@@ -27,7 +27,7 @@ import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
 import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.js';
-import { redactUrl } from '../core/redact.js';
+import { redactUrl, summarizeInventory } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
@@ -188,7 +188,12 @@ async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case 'inventory': {
       const inv = await buildInventory(adapters);
-      process.stdout.write((p.flags.json ? JSON.stringify(inv, null, 2) : renderInventory(inv)) + '\n');
+      // --json emits the SUMMARY: raw specs carry env/headers (secrets) and
+      // subagent prompts — json output gets piped into other tools far too
+      // easily to ship those. (Shape change is deliberate and documented.)
+      process.stdout.write(
+        (p.flags.json ? JSON.stringify(summarizeInventory(inv), null, 2) : renderInventory(inv)) + '\n',
+      );
       return 0;
     }
     case 'install': {

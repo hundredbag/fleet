@@ -84,7 +84,9 @@ export async function listSkillDirs(
     // SKILL.md must be a REGULAR file (a FIFO here would block inventory forever)
     let hasSkillMd = false;
     try {
-      hasSkillMd = existsSync(join(dir, 'SKILL.md')) && (await stat(join(dir, 'SKILL.md'))).isFile();
+      // lstat: a TERMINAL SKILL.md symlink could point outside containment —
+      // require a real regular file (dir-level links are the interop path)
+      hasSkillMd = (await lstat(join(dir, 'SKILL.md'))).isFile();
     } catch {
       hasSkillMd = false;
     }

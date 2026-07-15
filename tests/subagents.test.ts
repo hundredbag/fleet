@@ -74,3 +74,47 @@ test('claude adapter inventories subagents from <settings dir>/agents (hermetic 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('SECURITY: subagent prompts never cross summarize (sentinel absent)', async () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{}}');
+    mkdirSync(join(dir, 'agents'), { recursive: true });
+    writeFileSync(
+      join(dir, 'agents', 'sec.md'),
+      '---\ndescription: d\ntools: [Read, "Grep"]\n---\nSENTINEL_PROMPT_XYZZY',
+    );
+    const a = new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      join(dir, 'skills'),
+      join(dir, 'CLAUDE.md'),
+      join(dir, 'settings.json'),
+      join(dir, 'plugins'),
+    );
+    const { buildInventory } = await import('../src/core/inventory.js');
+    const { summarizeInventory } = await import('../src/core/redact.js');
+    const summary = JSON.stringify(summarizeInventory(await buildInventory([a])));
+    assert.ok(!summary.includes('XYZZY'), 'prompt leaked through summarize');
+    assert.ok(summary.includes('"tools":["Read","Grep"]'.replace(/"/g, '"')) || summary.includes('Grep')); // flow list parsed
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('frontmatter: quoted scalars and flow lists parse cleanly', async () => {
+  const dir = tmp();
+  try {
+    const agents = join(dir, 'agents');
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(
+      join(agents, 'q.md'),
+      '---\nname: "quoted-name"\ndescription: has: colon inside\ntools: [Read, "Write", Bash]\n---\nbody',
+    );
+    const items = await readClaudeSubagents('claude-code', agents);
+    assert.equal(items[0]!.name, 'quoted-name'); // quotes stripped
+    assert.deepEqual(items[0]!.tools, ['Read', 'Write', 'Bash']); // flow list, quotes stripped
+    assert.match(items[0]!.description ?? '', /colon inside/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

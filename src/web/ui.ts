@@ -391,7 +391,7 @@ function pickAgentsThen(cb){
 function itemsOf(kind, name){
   const inv = cache.inv; if(!inv) return [];
   const src = kind==='mcp' ? inv.servers : kind==='skill' ? inv.skills : kind==='rule' ? inv.rules
-    : kind==='permission' ? (inv.permissions||[]) : (inv.plugins||[]);
+    : kind==='permission' ? (inv.permissions||[]) : kind==='subagent' ? (inv.subagents||[]) : (inv.plugins||[]);
   return src.filter(function(x){ return x.name === name; });
 }
 function kv(box, label, value){
@@ -415,6 +415,8 @@ function openDetail(kind, name){
   if(first.target) kv(bar, T('dRuns'), first.target);
   if(first.version || (first.meta && first.meta.version)) kv(bar, T('dVer'), first.version || first.meta.version);
   if(first.marketplace) kv(bar, T('dMarket'), first.marketplace);
+  if(first.tools && first.tools.length) kv(bar, 'tools', first.tools.join(', '));
+  if(first.model) kv(bar, 'model', first.model);
   if(first.tokensEst != null) kv(bar, T('dTokens'), '~' + first.tokensEst + ' tokens' + (kind === 'rule' ? ' · always-on' : ''));
   bar.appendChild(el('div','dsect', T('dStatus')));
   const canAct = kind === 'mcp';
