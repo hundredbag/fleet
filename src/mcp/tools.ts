@@ -269,11 +269,14 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
     {
       name: 'whats_new',
       description:
-        "New & recommended capabilities for the user's agents, plus updates to installed ones. Heuristic ranking (novelty + popularity + relevance to what they use); public-registry data only; verify before installing.",
-      inputSchema: {},
-      handler: async () => {
+        "New & recommended capabilities for the user's agents, plus updates to installed ones. Heuristic ranking (novelty + popularity + relevance to what they use); public-registry data only; verify before installing. Served from a 15-min cache; pass refresh=true for live registries.",
+      inputSchema: { refresh: z.boolean().optional() },
+      handler: async (a) => {
         const inv = await buildInventory(adapters);
-        const { items, failures } = await cachedDiscover(defaultSources(), { fleetHome: opts.fleetHome });
+        const { items, failures } = await cachedDiscover(defaultSources(), {
+          fleetHome: opts.fleetHome,
+          refresh: a.refresh === true,
+        });
         const { updates } = updatesForInventory(inv, items);
         const ranked = await recommend(inv, items); // uncapped; sliced per kind below
         const mixed = [

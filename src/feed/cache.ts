@@ -19,6 +19,9 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000;
 
 interface CachedFeed {
   time: number;
+  /** which source set produced this (a default-sources cache must not satisfy
+   * injected/custom sources, or vice versa) */
+  sourceKey: string;
   items: FeedItem[];
   failures: SourceFailure[];
 }
@@ -33,6 +36,10 @@ export async function cachedDiscover(
 ): Promise<{ items: FeedItem[]; failures: SourceFailure[]; fromCache: boolean }> {
   const p = cachePath(opts.fleetHome);
   const ttl = opts.ttlMs ?? DEFAULT_TTL_MS;
+  const sourceKey = sources
+    .map((s) => s.id)
+    .sort()
+    .join(',');
 
   if (!opts.refresh && existsSync(p)) {
     try {
@@ -40,6 +47,7 @@ export async function cachedDiscover(
       if (
         doc &&
         typeof doc.time === 'number' &&
+        doc.sourceKey === sourceKey &&
         Array.isArray(doc.items) &&
         Array.isArray(doc.failures) &&
         Date.now() - doc.time < ttl
@@ -52,14 +60,14 @@ export async function cachedDiscover(
   }
 
   const live = await discover(sources);
-  const doc: CachedFeed = { time: Date.now(), items: live.items, failures: live.failures };
+  const doc: CachedFeed = { time: Date.now(), sourceKey, items: live.items, failures: live.failures };
+  const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
   try {
     await mkdir(dirname(p), { recursive: true });
-    const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
     await writeFile(tmp, JSON.stringify(doc), 'utf8');
     await rename(tmp, p);
   } catch {
-    await rm(`${p}.tmp-${process.pid}-*`, { force: true }).catch(() => {});
+    await rm(tmp, { force: true }).catch(() => {}); // exact path — no glob in rm()
     /* cache write failure is not a feed failure */
   }
   return { items: live.items, failures: live.failures, fromCache: false };

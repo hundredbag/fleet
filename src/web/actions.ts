@@ -12,6 +12,7 @@ import {
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { summarizeResult, redactUrl } from '../core/redact.js';
+import { invalidateInventoryCache } from './api.js';
 
 /**
  * The dashboard's mutation service: a server-enforced preview→confirm two-step.

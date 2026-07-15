@@ -100,12 +100,13 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
     const allow = opts.allowHosts ?? [];
     if (!checkHost(req.headers.host, port, allow)) return sendJson(res, 403, { error: 'bad host' });
 
-    const path = new URL(req.url ?? '/', `http://127.0.0.1:${port}`).pathname;
+    const reqUrl = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
+    const path = reqUrl.pathname;
 
     if (req.method === 'GET') {
       if (!checkOrigin(req.headers.origin, port, allow)) return sendJson(res, 403, { error: 'bad origin' });
       if (!tokenMatches(tokenFromReq(req, port), token)) return sendJson(res, 401, { error: 'unauthorized' });
-      return handleGet(res, path);
+      return handleGet(res, path, reqUrl);
     }
 
     if (req.method === 'POST') {
@@ -132,7 +133,7 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
     return sendJson(res, 405, { error: 'method not allowed' });
   }
 
-  function handleGet(res: ServerResponse, path: string): Promise<void> | void {
+  function handleGet(res: ServerResponse, path: string, reqUrl?: URL): Promise<void> | void {
     switch (path) {
       case '/':
         res.writeHead(200, {
@@ -146,7 +147,9 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
       case '/api/inventory':
         return apiInventory(adapters).then((r) => sendJson(res, 200, r));
       case '/api/feed':
-        return apiFeed(adapters, opts.sources).then((r) => sendJson(res, 200, r));
+        return apiFeed(adapters, opts.sources, { refresh: reqUrl?.searchParams.get('refresh') === '1' }).then(
+          (r) => sendJson(res, 200, r),
+        );
       case '/api/conflicts':
         return apiConflicts(adapters).then((r) => sendJson(res, 200, r));
       default:

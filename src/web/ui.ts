@@ -528,8 +528,8 @@ function addBadges(t, badges){
   badges.forEach(function(b){ t.appendChild(el('span','badge '+b[0], b[1])); });
 }
 
-async function loadFeed(){
-  cache.feed = await get('/api/feed');
+async function loadFeed(live){
+  cache.feed = await get('/api/feed' + (live ? '?refresh=1' : ''));
   renderFeed(cache.feed);
 }
 function renderFeed(feed){
@@ -634,10 +634,10 @@ function renderConflicts(c){
 }
 
 async function refresh(){
-  try { await Promise.all([loadInventory(), loadFeed(), loadConflicts()]); document.getElementById('err').textContent=''; }
+  try { await Promise.all([loadInventory(), loadFeed(refresh._live === true), loadConflicts()]); document.getElementById('err').textContent=''; }
   catch(e){ setErr(e); }
 }
-document.getElementById('refresh').addEventListener('click', refresh);
+document.getElementById('refresh').addEventListener('click', function(){ refresh._live = true; refresh().finally(function(){ refresh._live = false; }); });
 document.getElementById('rollback').addEventListener('click', doRollback);
 document.getElementById('theme').addEventListener('click', function(){
   theme = theme === 'dark' ? 'light' : 'dark'; applyTheme(); applyStatic(); sSet(localStorage, 'fleet_theme', theme);
