@@ -113,7 +113,13 @@ export type ExecuteStatus = 'preview' | 'applied' | 'nothing-to-do' | 'refused' 
 
 function computeStatus(r: ExecuteResult): ExecuteStatus {
   if (r.error) return 'failed';
-  if (!r.committed) return r.changes.length > 0 ? 'preview' : 'nothing-to-do';
+  if (!r.committed) {
+    if (r.changes.length > 0) return 'preview';
+    // a fully-blocked plan must SAY it was refused even in dry-run — otherwise
+    // the user reads 'nothing-to-do' and never learns the gate fired
+    if (r.skips.some((s) => s.kind === 'protected')) return 'refused';
+    return 'nothing-to-do';
+  }
   if (r.applied.length > 0) return 'applied';
   if (r.skips.some((s) => s.kind === 'error')) return 'failed';
   if (r.skips.some((s) => s.kind === 'protected')) return 'refused';

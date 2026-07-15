@@ -17,6 +17,9 @@ export interface PlannedChange extends RenderResult {
   op: WriteOp;
   name: string;
   scope: Scope;
+  /** agent-independent canonical form (the SPEC/body, not the native rendering)
+   * — what fleet.lock hashes, so drift can compare against live inventory */
+  canonical?: unknown;
 }
 
 export interface ApplyResult {

@@ -162,7 +162,8 @@ export async function planInstall(
     }
   }
   const policy = opts?.trustPolicy ?? loadConfig().trustPolicy;
-  return applyTrustPolicy({ changes, skips, origin }, gateOrigin(origin), policy);
+  const withCanonical = changes.map((c) => ({ ...c, canonical: spec }));
+  return applyTrustPolicy({ changes: withCanonical, skips, origin }, gateOrigin(origin), policy);
 }
 
 /** Plan removing a server from each target agent. */
@@ -393,7 +394,8 @@ export async function planInstallRule(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips, origin: { type: 'manual' } };
+  const withBody = changes.map((c) => ({ ...c, canonical: c.after }));
+  return { changes: withBody, skips, origin: { type: 'manual' } };
 }
 
 /** Plan removing a rule block from each target agent. */

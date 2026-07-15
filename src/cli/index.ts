@@ -30,6 +30,7 @@ import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.
 import { redactUrl } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
+import { detectDrift } from '../core/drift.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -37,6 +38,7 @@ Usage:
   fleet inventory [--json]                 Show installed capabilities (all agents)
   fleet doctor                             Health checks (adapters/state/config); exit 0/1/2
   fleet lock [--json]                      Provenance of fleet-installed capabilities
+  fleet drift [--json]                     Diff live agent state against fleet.lock (tamper check)
 
   fleet install <name> --to <ids|all> \\
         (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
@@ -439,6 +441,28 @@ async function main(argv: string[]): Promise<number> {
         );
       }
       return 0;
+    }
+    case 'drift': {
+      const inv = await buildInventory(adapters);
+      const report = await detectDrift(inv);
+      if (p.flags.json === true) {
+        process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+        return report.findings.length > 0 ? 1 : 0;
+      }
+      process.stdout.write(`checked ${report.checked} fleet-installed capabilities\n`);
+      if (report.findings.length === 0) {
+        process.stdout.write('  \u2713 everything matches what fleet installed\n');
+      }
+      for (const f of report.findings) {
+        process.stdout.write(
+          `  \u26a0 ${f.kind} ${f.name} @${f.agent}: ${f.state}${f.detail ? ' — ' + f.detail : ''}\n`,
+        );
+      }
+      if (report.unmanaged.length > 0) {
+        process.stdout.write(`\n  not installed by fleet (${report.unmanaged.length}):\n`);
+        for (const u of report.unmanaged) process.stdout.write(`    · ${u.kind} ${u.name} @${u.agent}\n`);
+      }
+      return report.findings.length > 0 ? 1 : 0;
     }
     case 'doctor': {
       const report = await runDoctor({ adapters }); // reuse — don't load BYO factories twice

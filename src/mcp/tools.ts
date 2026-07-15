@@ -20,6 +20,7 @@ import { rollback } from '../core/writer.js';
 import { summarizeInventory, summarizeResult, scrubSecrets } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
+import { detectDrift } from '../core/drift.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
@@ -241,6 +242,13 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           findings: report.findings.map((f) => ({ ...f, message: scrubSecrets(f.message) })),
         };
       },
+    },
+    {
+      name: 'drift_check',
+      description:
+        "Diff live agent state against fleet.lock: 'modified' = content differs from what fleet installed (edited outside fleet or tampered); 'missing' = fleet installed it, gone now; plus capabilities fleet never installed. Read-only.",
+      inputSchema: {},
+      handler: async () => detectDrift(await buildInventory(adapters), opts.fleetHome),
     },
     {
       name: 'lock_status',

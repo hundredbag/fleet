@@ -137,7 +137,7 @@ export async function updateLockFromApplied(
       agent: c.agent,
       scope: c.scope,
       origin,
-      contentHash: c.fsKind === 'dir' ? r.wroteHash : specHash(c.after),
+      contentHash: c.fsKind === 'dir' ? r.wroteHash : specHash(c.canonical ?? c.after),
       installedAt: new Date().toISOString(),
       auditId: r.auditId,
       op: r.backup ? 'update' : 'install',
