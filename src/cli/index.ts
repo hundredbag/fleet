@@ -33,6 +33,7 @@ import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
 import { skillUpdatesFromLock } from '../core/skill-updates.js';
+import { exportProfile, readProfile, resolveSecretRefs } from '../core/profile.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -41,6 +42,8 @@ Usage:
   fleet doctor                             Health checks (adapters/state/config); exit 0/1/2
   fleet lock [--json]                      Provenance of fleet-installed capabilities
   fleet drift [--json]                     Diff live agent state against fleet.lock (tamper check)
+  fleet export --to <dir>                  Portable profile (secret VALUES never written) for dotfiles
+  fleet import --from <dir> [--to ids|all] Plan-install a profile (dry-run; --commit to apply)
 
   fleet install <name> --to <ids|all> \\
         (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
@@ -485,6 +488,60 @@ async function main(argv: string[]): Promise<number> {
         for (const u of report.unmanaged) process.stdout.write(`    · ${u.kind} ${u.name} @${u.agent}\n`);
       }
       return report.findings.length > 0 ? 1 : 0;
+    }
+    case 'export': {
+      const dir = str(p.flags.to);
+      if (!dir) throw new Error('export: --to <dir> is required (your dotfiles repo)');
+      const inv = await buildInventory(adapters);
+      const profile = await exportProfile(inv, dir);
+      process.stdout.write(
+        `exported to ${dir}: ${profile.servers.length} MCP servers (secrets as refs), ` +
+          `${profile.rules.length} rules, ${profile.skills.length} skills\n` +
+          `  secret VALUES are never written — commit the dir to git safely.\n`,
+      );
+      return 0;
+    }
+    case 'import': {
+      const dir = str(p.flags.from);
+      if (!dir) throw new Error('import: --from <dir> is required');
+      const profile = await readProfile(dir);
+      const targets = await resolveTargets(adapters, str(p.flags.to) ?? 'all');
+      let rc = 0;
+      for (const srv of profile.servers) {
+        const { spec, missing } = resolveSecretRefs(srv.spec);
+        if (missing.length > 0) {
+          process.stdout.write(
+            `\u2717 ${srv.name}: missing secrets on this machine: ${missing.join(', ')} — export them as env vars and re-run\n`,
+          );
+          rc = 1;
+          continue;
+        }
+        const code = await runPlan(
+          adapters,
+          await planInstall(adapters, spec, srv.name, 'user', targets),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      for (const rule of profile.rules) {
+        const code = await runPlan(
+          adapters,
+          await planInstallRule(adapters, rule.name, rule.body, targets),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      for (const name of profile.skills) {
+        const code = await runPlan(
+          adapters,
+          await planInstallSkill(adapters, { name, dir: `${dir}/skills/${name}` }, name, targets),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      if (!commit)
+        process.stdout.write('\n(dry-run — add --commit to apply; the trust gate re-scans everything)\n');
+      return rc;
     }
     case 'doctor': {
       const report = await runDoctor({ adapters }); // reuse — don't load BYO factories twice
