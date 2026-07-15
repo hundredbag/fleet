@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { readdir, readFile, mkdir, copyFile, rm, stat, lstat, readlink, symlink } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute, sep, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -8,23 +8,15 @@ import { createHash } from 'node:crypto';
  * dependency-free; the engine (writer.ts) adds the safety (backup/atomic/rollback).
  */
 
-/** Deepest existing ancestor of `p` (including `p` itself), resolved physically. */
-function realExistingAncestor(p: string): string {
-  let cur = p;
-  while (!existsSync(cur)) {
-    const parent = dirname(cur);
-    if (parent === cur) break; // filesystem root
-    cur = parent;
-  }
-  return realpathSync(cur);
-}
-
 /**
  * Join `name` under `root`, refusing names that escape it. Two layers:
  * lexical (no absolute names, no `..` resolution outside root) and PHYSICAL —
- * the deepest existing ancestor of the target must resolve (through symlinks)
- * to somewhere under the real root, so a symlinked subdirectory can't redirect
- * writes outside the tree.
+ * NO component strictly below the root may be a symlink (lstat, no-follow, so
+ * dangling links count too: a link to a not-yet-existing outside dir would
+ * otherwise redirect the write once its referent appears). The root itself may
+ * be a symlink (users legitimately symlink their skills dir).
+ * ponytail: checked at plan time; a link planted between plan and apply is a
+ * local-user TOCTOU that only fd-relative no-follow ops would close.
  */
 export function safeJoin(root: string, name: string): string {
   if (!name || isAbsolute(name)) throw new Error(`fleet: invalid name "${name}"`);
@@ -33,11 +25,17 @@ export function safeJoin(root: string, name: string): string {
   if (target !== base && !target.startsWith(base + sep)) {
     throw new Error(`fleet: name "${name}" escapes the target root`);
   }
-  if (existsSync(base)) {
-    const realBase = realpathSync(base);
-    const realAnc = realExistingAncestor(target);
-    if (realAnc !== realBase && !realAnc.startsWith(realBase + sep)) {
-      throw new Error(`fleet: name "${name}" resolves outside the target root (symlink)`);
+  // collect target and every ancestor strictly below base, then check each
+  const components: string[] = [];
+  for (let cur = target; cur !== base; cur = dirname(cur)) components.push(cur);
+  for (const p of components.reverse()) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) {
+        throw new Error(`fleet: name "${name}" resolves outside the target root (symlink)`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') break; // nothing deeper exists yet
+      throw err;
     }
   }
   return target;
@@ -90,17 +88,20 @@ export async function hashDir(dir: string): Promise<string> {
     for (const e of entries) {
       const full = join(d, e.name);
       const rel = relative(dir, full);
+      // JSON-encoded fields — a filename containing \n or a crafted "L x -> y"
+      // suffix cannot collide with another tree's manifest
       if (e.isSymbolicLink()) {
-        lines.push(`L ${rel} -> ${await readlink(full)}`);
+        lines.push(JSON.stringify(['L', rel, await readlink(full)]));
       } else if (e.isDirectory()) {
-        lines.push(`D ${rel}`);
+        const mode = ((await lstat(full)).mode & 0o7777).toString(8);
+        lines.push(JSON.stringify(['D', rel, mode]));
         await walk(full);
       } else if (e.isFile()) {
         const mode = ((await lstat(full)).mode & 0o7777).toString(8);
         const digest = createHash('sha256')
           .update(await readFile(full))
           .digest('hex');
-        lines.push(`F ${rel} ${mode} ${digest}`);
+        lines.push(JSON.stringify(['F', rel, mode, digest]));
       }
     }
   }

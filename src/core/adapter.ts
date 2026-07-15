@@ -46,6 +46,8 @@ export interface RenderResult {
   newContent: string;
   /** dir-install: copy the skill tree from here into `file` */
   sourceDir?: string;
+  /** hash of sourceDir at plan time — apply refuses if the staged copy differs */
+  sourceHash?: string;
   /** dir kind: which directory operation */
   dirOp?: 'install' | 'remove';
   /** the entry as it was, for the diff view */

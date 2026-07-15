@@ -82,7 +82,7 @@ export function renderJson(
     newContent: JSON.stringify(doc, null, indent) + '\n',
     before,
     after,
-    baseHash: text ? sha256(text) : undefined,
+    baseHash: text !== undefined ? sha256(text) : undefined, // '' is an EXISTING (empty) file
     warnings: warnings.length ? warnings : undefined,
   };
 }

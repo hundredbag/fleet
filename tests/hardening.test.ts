@@ -210,3 +210,108 @@ test('renderRuleInstall: internal blank lines and trailing spaces in human text 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── dual-review round-2 regressions ─────────────────────────────────────────
+
+test('scrubSecrets: Bearer header VALUE and compound env keys are redacted', () => {
+  const dirty = [
+    'Authorization: Bearer my.super.secret.token',
+    'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI1234567890',
+    'OPENAI_API_KEY: sk-live-abcdef',
+    'export GITHUB_TOKEN=hunter2hunter2',
+  ].join('\n');
+  const clean = scrubSecrets(dirty);
+  for (const leak of ['my.super.secret.token', 'wJalrXUtnFEMI', 'sk-live-abcdef', 'hunter2'])
+    assert.ok(!clean.includes(leak), `leaked: ${leak}`);
+});
+
+test('rollback: pre-existing file DELETED by the user is not resurrected', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const f = join(dir, 'cfg.json');
+    writeFileSync(f, '{"a":1}');
+    await applyChanges([fileChange(f, '{"a":2}', sha256('{"a":1}'))], noValidate, { fleetHome: home });
+    rmSync(f); // user deliberately deletes the file after fleet wrote it
+    const r = await rollback({ fleetHome: home });
+    assert.equal(r.action, 'skipped');
+    assert.equal(existsSync(f), false); // NOT resurrected
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply: dir REMOVE without baseHash against an existing target is refused', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const target = join(dir, 'skill');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, 'SKILL.md'), 'x');
+    const change: PlannedChange = {
+      agent: 'claude-code',
+      op: 'remove',
+      name: 'skill',
+      scope: 'user',
+      kind: 'skill',
+      fsKind: 'dir',
+      dirOp: 'remove',
+      file: target,
+      newContent: '',
+    };
+    await assert.rejects(applyChanges([change], noValidate, { fleetHome: home }), /created after the plan/);
+    assert.ok(existsSync(join(target, 'SKILL.md'))); // untouched
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('safeJoin: DANGLING symlink below the root is rejected (no-follow)', () => {
+  const dir = tmp();
+  try {
+    const root = join(dir, 'skills');
+    mkdirSync(root, { recursive: true });
+    symlinkSync(join(dir, 'does-not-exist-yet'), join(root, 'ghost'));
+    assert.throws(() => safeJoin(root, 'ghost/payload'), /resolves outside/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('hashDir: crafted filename cannot collide with a different tree (unambiguous manifest)', async () => {
+  const dir = tmp();
+  try {
+    const a = join(dir, 'a');
+    const b = join(dir, 'b');
+    // tree A: one empty dir with a hostile name embedding a fake manifest line
+    mkdirSync(join(a, 'x\nL y -> z'), { recursive: true });
+    // tree B: empty dir "x" + symlink y -> z (what the hostile name spoofs)
+    mkdirSync(join(b, 'x'), { recursive: true });
+    symlinkSync('z', join(b, 'y'));
+    assert.notEqual(await hashDir(a), await hashDir(b));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply: skill source edited between plan and apply is refused (sourceHash pin)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const src = join(dir, 'src-skill');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'SKILL.md'), 'planned content');
+    const { renderSkillInstall } = await import('../src/core/skills.js');
+    const r = await renderSkillInstall(
+      join(dir, 'root'),
+      { dir: src },
+      { name: 'sk', kind: 'skill', scope: 'user' },
+    );
+    writeFileSync(join(src, 'SKILL.md'), 'TAMPERED after preview');
+    const change: PlannedChange = { ...r, agent: 'claude-code', op: 'install', name: 'sk', scope: 'user' };
+    await assert.rejects(applyChanges([change], noValidate, { fleetHome: home }), /changed since the plan/);
+    assert.equal(existsSync(join(dir, 'root', 'sk')), false); // nothing installed
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

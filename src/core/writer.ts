@@ -103,8 +103,11 @@ async function writeFileAtomic(file: string, content: string): Promise<void> {
   }
   const tmp = join(dir, `.fleet-tmp-${process.pid}-${randomUUID()}`);
   try {
-    const fh = mode === undefined ? await open(tmp, 'w') : await open(tmp, 'w', mode);
+    const fh = await open(tmp, 'w');
     try {
+      // chmod to the EXACT recorded mode — passing mode to open() gets masked
+      // by the process umask (0664 would silently lose group-write under 022)
+      if (mode !== undefined) await fh.chmod(mode);
       await fh.writeFile(content, 'utf8');
       await fh.sync();
     } finally {
@@ -248,6 +251,9 @@ async function applyFileChange(
   }
 
   const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  // push BEFORE the audit append: if the append fails the mutation still
+  // happened, and err.applied (set by applyChanges) must reflect reality
+  results.push({ change, auditId: id, backup });
   try {
     await appendAudit(home, {
       id,
@@ -268,7 +274,6 @@ async function applyFileChange(
         `(automatic rollback unavailable; backup at ${backup || '(none — file was new)'}): ${msg(err)}`,
     );
   }
-  results.push({ change, auditId: id, backup });
 }
 
 /**
@@ -288,8 +293,10 @@ async function applyDirChange(
   let backup = '';
 
   if (existedBefore) {
-    // same absent-at-plan race guard as files (renderers set baseHash iff present)
-    if (!force && change.baseHash === undefined && change.dirOp !== 'remove') {
+    // same absent-at-plan race guard as files — remove included: deleting a
+    // target the plan never saw is exactly the clobber this guard exists for
+    // (renderers set baseHash iff the target existed at plan time)
+    if (!force && change.baseHash === undefined) {
       throw new Error(`fleet: ${target} was created after the plan was made; re-plan (or pass force)`);
     }
     if (!force && change.baseHash !== undefined && (await hashDir(target)) !== change.baseHash) {
@@ -318,6 +325,12 @@ async function applyDirChange(
     if (!existsSync(join(stage, 'SKILL.md'))) {
       await removeDir(stage);
       throw new Error(`fleet: skill source ${change.sourceDir} has no SKILL.md`);
+    }
+    // the preview showed the source AS PLANNED — refuse to install bytes the
+    // user never saw (source edited between plan and apply)
+    if (change.sourceHash !== undefined && (await hashDir(stage)) !== change.sourceHash) {
+      await removeDir(stage);
+      throw new Error(`fleet: skill source ${change.sourceDir} changed since the plan was made; re-plan`);
     }
     // 2) swap via two atomic renames so the old tree stays live until the new
     //    one is named (no window where the target is simply gone).
@@ -350,6 +363,7 @@ async function applyDirChange(
   }
 
   const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  results.push({ change, auditId: id, backup }); // before append — see applyFileChange
   try {
     await appendAudit(home, {
       id,
@@ -370,7 +384,6 @@ async function applyDirChange(
         `(automatic rollback unavailable; backup at ${backup || '(none — dir was new)'}): ${msg(err)}`,
     );
   }
-  results.push({ change, auditId: id, backup });
 }
 
 /** Read all audit records (oldest first), skipping any corrupt lines. */
@@ -427,15 +440,24 @@ export async function rollback(
     let reason: string | undefined;
 
     // divergence guard for EVERY restore/remove: fleet only undoes its own
-    // write. wroteHash is what fleet left behind; if the target no longer
-    // matches it, someone else touched the file since — skip, don't clobber.
+    // write, so the target must still be in the exact state fleet left it in.
+    // For a dir-remove the recorded end-state is "absent"; for everything else
+    // it's wroteHash. Anything different (including a user deleting the file,
+    // or a file/dir type swap) is divergence — skip, don't clobber/resurrect.
     const divergence = async (): Promise<'diverged' | 'unverifiable' | null> => {
-      if (!existsSync(target.file)) return null; // absent can't diverge
+      const expectedAbsent = Boolean(target.isDir) && target.op === 'remove';
+      const existsNow = existsSync(target.file);
+      if (expectedAbsent) return existsNow ? 'diverged' : null;
+      if (!existsNow) return 'diverged'; // fleet left content; user deleted it since
       if (!target.wroteHash) return 'unverifiable'; // old record → safe direction is skip
-      const currentHash = target.isDir
-        ? await hashDir(target.file)
-        : sha256(await readFile(target.file, 'utf8'));
-      return currentHash === target.wroteHash ? null : 'diverged';
+      try {
+        const currentHash = target.isDir
+          ? await hashDir(target.file)
+          : sha256(await readFile(target.file, 'utf8'));
+        return currentHash === target.wroteHash ? null : 'diverged';
+      } catch {
+        return 'diverged'; // unreadable / type-swapped (file where dir was, …)
+      }
     };
 
     if (target.existedBefore) {
@@ -450,7 +472,10 @@ export async function rollback(
             ? `${target.isDir ? 'dir' : 'file'} diverged since fleet wrote it; not restoring (backup kept at ${target.backup})`
             : `no recorded write-hash to verify against; not restoring (backup kept at ${target.backup})`;
       } else if (target.isDir) {
-        // restore via stage + rename swap so the target never simply vanishes
+        // restore via stage + rename swap so the target never simply vanishes.
+        // Only the swap itself can fail the restore — post-swap cleanup is
+        // best-effort (a leftover .fleet-old-* must not turn success into a
+        // reported failure with no rollback record).
         const stage = `${target.file}.fleet-restore-${process.pid}-${randomUUID()}`;
         let oldTmp = '';
         try {
@@ -460,8 +485,6 @@ export async function rollback(
             await rename(target.file, oldTmp);
           }
           await rename(stage, target.file);
-          await fsyncPath(dirname(target.file));
-          if (oldTmp) await removeDir(oldTmp);
         } catch (restoreErr) {
           await removeDir(stage);
           if (oldTmp && existsSync(oldTmp) && !existsSync(target.file)) {
@@ -471,6 +494,14 @@ export async function rollback(
             `fleet: rollback restore failed for ${target.file}; ` +
               `backup at ${target.backup}: ${msg(restoreErr)}`,
           );
+        }
+        await fsyncPath(dirname(target.file)); // best-effort (swallows internally)
+        if (oldTmp) {
+          try {
+            await removeDir(oldTmp);
+          } catch {
+            reason = `restored; stale ${oldTmp} left behind (cleanup failed)`;
+          }
         }
         action = 'restored';
       } else {
@@ -497,19 +528,26 @@ export async function rollback(
       }
     }
 
-    await appendAudit(home, {
-      id: `${Date.now()}-${process.pid}-${randomUUID()}`,
-      ts: Date.now(),
-      op: 'rollback',
-      agent: target.agent,
-      name: target.name,
-      file: target.file,
-      scope: target.scope,
-      backup: '',
-      existedBefore: target.existedBefore,
-      wroteHash: target.wroteHash,
-      rolledBackFrom: target.id,
-    });
+    try {
+      await appendAudit(home, {
+        id: `${Date.now()}-${process.pid}-${randomUUID()}`,
+        ts: Date.now(),
+        op: 'rollback',
+        agent: target.agent,
+        name: target.name,
+        file: target.file,
+        scope: target.scope,
+        backup: '',
+        existedBefore: target.existedBefore,
+        wroteHash: target.wroteHash,
+        rolledBackFrom: target.id,
+      });
+    } catch (err) {
+      throw new Error(
+        `fleet: rollback of ${target.file} SUCCEEDED (${action}) but recording it failed — ` +
+          `do NOT re-run this rollback; audit error: ${msg(err)}`,
+      );
+    }
 
     return { file: target.file, action, reason };
   } finally {

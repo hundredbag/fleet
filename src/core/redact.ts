@@ -43,9 +43,14 @@ export function redactUrl(url: string): string {
  * messages) before it reaches a ledger, an AI face or a browser. Boring,
  * high-precision patterns only — no entropy guessing.
  */
-const SECRET_TEXT_PATTERNS: RegExp[] = [
-  /:\/\/[^/\s@]+@/g, // URL userinfo
-  /\b(api[_-]?key|token|secret|password|passwd|authorization|bearer)\b(\s*[=:]\s*)\S+/gi, // key=value
+// key names match ANYWHERE in a compound identifier (AWS_SECRET_ACCESS_KEY,
+// OPENAI_API_KEY, GITHUB_TOKEN…) — a plain \b(secret)\b can't see past the `_`.
+// [ \t] only — \s would cross a newline and swallow the NEXT line's key name,
+// leaving that line's value unprotected
+const KEY_VALUE_RE =
+  /([\w-]*(?:api[_-]?key|token|secret|password|passwd|credential|authorization)[\w-]*[ \t]*[=:][ \t]*)\S+([ \t]+\S+)?/gi;
+const BEARER_RE = /\b(bearer)[ \t]+[A-Za-z0-9._~+/=-]{6,}/gi;
+const TOKEN_SHAPES: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, // JWT
   /\bsk-[A-Za-z0-9_-]{20,}\b/g, // OpenAI-style keys
   /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, // GitHub tokens
@@ -55,10 +60,12 @@ const SECRET_TEXT_PATTERNS: RegExp[] = [
 ];
 
 export function scrubSecrets(text: string): string {
-  let out = text;
-  out = out.replace(SECRET_TEXT_PATTERNS[0]!, '://REDACTED@');
-  out = out.replace(SECRET_TEXT_PATTERNS[1]!, '$1$2REDACTED');
-  for (const re of SECRET_TEXT_PATTERNS.slice(2)) out = out.replace(re, 'REDACTED');
+  let out = text.replace(/:\/\/[^/\s@]+@/g, '://REDACTED@'); // URL userinfo
+  // "Authorization: Bearer <tok>" — redact the VALUE (up to two tokens, so the
+  // scheme word can't shield the credential that follows it)
+  out = out.replace(KEY_VALUE_RE, '$1REDACTED');
+  out = out.replace(BEARER_RE, '$1 REDACTED');
+  for (const re of TOKEN_SHAPES) out = out.replace(re, 'REDACTED');
   return out;
 }
 

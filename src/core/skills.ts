@@ -102,6 +102,7 @@ export async function renderSkillInstall(
     fsKind: 'dir',
     dirOp: 'install',
     sourceDir: source.dir,
+    sourceHash: await hashDir(source.dir), // pin the bytes the preview showed
     newContent: '', // unused for dir kind
     before: exists ? ref.name : undefined,
     after: ref.name,

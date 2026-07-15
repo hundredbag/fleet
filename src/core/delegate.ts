@@ -112,7 +112,9 @@ export async function runDelegated(
   const { exitCode, output } = await (opts.runner ?? defaultRunner)(plan.argv);
   // structured secret scrub (URL userinfo, key=value, JWT/vendor token shapes)
   // before the tail reaches the ledger / an AI face
-  const outputTail = scrubSecrets(output.slice(-2000));
+  // scrub the WHOLE output first — slicing first could cut a token's prefix
+  // and leave an unrecognizable (unredactable) suffix in the tail
+  const outputTail = scrubSecrets(output).slice(-2000);
   const home = opts.fleetHome ?? join(homedir(), '.fleet');
   await mkdir(home, { recursive: true });
   await appendFile(
