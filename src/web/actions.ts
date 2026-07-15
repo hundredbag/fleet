@@ -106,7 +106,7 @@ export class ActionService {
         const spec = specFromCoordinate(body.coordinate);
         runs = describeSpec(spec);
         const targets = await resolveTargets(this.adapters, toTargets(body.to));
-        plan = await planInstall(this.adapters, spec, name, 'user', targets);
+        plan = await planInstall(this.adapters, spec, name, 'user', targets, { fleetHome: this.fleetHome });
         break;
       }
       case 'update': {
@@ -119,7 +119,9 @@ export class ActionService {
         const spec = bumpVersion(existing.spec, String(body.coordinate?.version ?? ''));
         runs = describeSpec(spec);
         const targets = await resolveTargets(this.adapters, agent);
-        plan = await planInstall(this.adapters, spec, name, existing.scope, targets);
+        plan = await planInstall(this.adapters, spec, name, existing.scope, targets, {
+          fleetHome: this.fleetHome,
+        });
         break;
       }
       case 'sync': {

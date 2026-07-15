@@ -281,11 +281,17 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
         newContent = `${text}${sep}\n${block}\n`;
       }
     }
+    // canonical = OUR reader's parse of the exact block we wrote (empty
+    // args/env/headers are elided by TOML serialization — round-trip captures it)
+    const parsedBack = (parseToml(block) as { mcp_servers?: Record<string, unknown> }).mcp_servers?.[
+      ref.name
+    ];
     return {
       file: this.configPath,
       newContent,
       before,
       after: block,
+      canonical: parsedBack !== undefined ? parseCodexEntry(parsedBack) : undefined,
       baseHash: text !== undefined ? sha256(text) : undefined,
       warnings: warnings.length ? warnings : undefined,
     };

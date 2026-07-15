@@ -95,7 +95,9 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
       handler: async (a) => {
         const spec = specFromArgs(a);
         const targets = await resolveTargets(adapters, targetArg(a.to));
-        const plan = await planInstall(adapters, spec, String(a.name), 'user', targets);
+        const plan = await planInstall(adapters, spec, String(a.name), 'user', targets, {
+          fleetHome: opts.fleetHome,
+        });
         return summarizeResult(await run(plan, a.commit));
       },
     },
@@ -166,6 +168,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
           { name: String(a.name), dir: String(a.fromDir) },
           String(a.name),
           targets,
+          { fleetHome: opts.fleetHome },
         );
         return summarizeResult(await run(plan, a.commit));
       },

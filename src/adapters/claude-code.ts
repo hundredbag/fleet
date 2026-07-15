@@ -198,7 +198,9 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     const before = servers[ref.name];
     const after = mergePreservingUnmanaged(before, toClaudeEntry(spec), MANAGED_JSON_KEYS);
     doc.mcpServers = { ...servers, [ref.name]: after };
-    return renderJson(this.claudeJsonPath, doc, text, before, after, warnings);
+    const r = renderJson(this.claudeJsonPath, doc, text, before, after, warnings);
+    // canonical = what OUR reader will parse back (bearerTokenEnvVar drops etc.)
+    return { ...r, canonical: parseMcpEntry(after) };
   }
 
   async renderRemove(ref: CapabilityRef): Promise<RenderResult> {

@@ -48,6 +48,10 @@ export interface RenderResult {
   sourceDir?: string;
   /** hash of sourceDir at plan time — apply refuses if the staged copy differs */
   sourceHash?: string;
+  /** agent-independent ROUND-TRIPPED form of what will be written (the spec as
+   * this adapter's reader will parse it back) — what fleet.lock hashes, so
+   * drift never false-positives on render/parse asymmetries */
+  canonical?: unknown;
   /** dir kind: which directory operation */
   dirOp?: 'install' | 'remove';
   /** the entry as it was, for the diff view */

@@ -564,7 +564,7 @@ export async function rollback(
     if (action !== 'skipped' && target.kind) {
       try {
         // fleet no longer knows the provenance of what rollback left behind
-        await removeLockEntry(target.kind, target.name, target.agent, home);
+        await removeLockEntry(target.kind, target.name, target.agent, home, target.scope ?? 'user');
       } catch {
         /* lock is metadata — never fail a completed rollback over it */
       }

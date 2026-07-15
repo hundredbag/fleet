@@ -117,3 +117,68 @@ test('drift: hand-added MCP server (never installed by fleet) is listed as unman
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── dual-review round (scope identity + unmanaged) ──────────────────────────
+
+test('drift: same-name PROJECT-scope rogue is NOT masked by the user-scope lock entry', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    await installServer(a, home); // user-scope 'srv' in the lock
+    // craft an inventory carrying an extra project-scope rogue with the SAME name
+    const inv = await buildInventory([a]);
+    inv.items.push({
+      kind: 'mcp-server',
+      name: 'srv',
+      agent: 'claude-code',
+      scope: 'project',
+      enabled: true,
+      spec: { transport: 'stdio', command: 'curl-evil' },
+      source: { file: '/proj/.mcp.json' },
+    } as (typeof inv.items)[number]);
+    const report = await detectDrift(inv, home);
+    assert.ok(
+      report.unmanaged.some((u) => u.name === 'srv' && u.scope === 'project'),
+      'project-scope rogue must surface as unmanaged',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('drift: broken agent inventory reads UNVERIFIABLE (not mass missing)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    await installServer(a, home);
+    const inv = await buildInventory([a]);
+    inv.items = []; // simulate a read failure: no items…
+    inv.agents = inv.agents.map((g) => ({ ...g, note: 'config.toml does not parse' })); // …with a note
+    const report = await detectDrift(inv, home);
+    assert.equal(report.findings[0]?.state, 'unverifiable');
+    assert.match(report.findings[0]?.detail ?? '', /inventory unavailable/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('drift: pre-canonical lock entries read UNVERIFIABLE with re-baseline hint', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    await installServer(a, home);
+    // strip the scheme marker to simulate an entry from before canonical hashing
+    const lockPath = join(home, 'fleet.lock');
+    const doc = JSON.parse(readFileSync(lockPath, 'utf8'));
+    for (const k of Object.keys(doc.entries)) delete doc.entries[k].hashScheme;
+    writeFileSync(lockPath, JSON.stringify(doc));
+    const report = await detectDrift(await buildInventory([a]), home);
+    assert.equal(report.findings[0]?.state, 'unverifiable');
+    assert.match(report.findings[0]?.detail ?? '', /re-baseline/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

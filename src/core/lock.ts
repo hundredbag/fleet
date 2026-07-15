@@ -25,6 +25,9 @@ export interface LockEntry {
   agent: string;
   scope?: string;
   origin: CapabilityOrigin;
+  /** hashing scheme marker — entries without it predate canonical hashing and
+   * cannot be verified against live state (drift reports them unverifiable) */
+  hashScheme?: 'canonical-v1';
   /** install-time trust verdict (static facts; see core/trustgate.ts) */
   trust?: { level: 'ok' | 'caution'; reasons: string[] };
   /** skills: dir manifest hash; file kinds: sha256 of the canonical spec/body */
@@ -41,9 +44,10 @@ export interface LockFile {
 
 const EMPTY: LockFile = { version: 1, entries: {} };
 
-/** Self-delimiting key — names/agents may contain ':' or '@'. */
-export function lockKey(kind: string, name: string, agent: string): string {
-  return JSON.stringify([kind, name, agent]);
+/** Self-delimiting key — names/agents may contain ':' or '@'. Scope is part of
+ * identity: a user-scope entry must not mask a same-name project-scope rogue. */
+export function lockKey(kind: string, name: string, agent: string, scope = 'user'): string {
+  return JSON.stringify([kind, name, agent, scope]);
 }
 
 function lockPath(fleetHome?: string): string {
@@ -126,7 +130,7 @@ export async function updateLockFromApplied(
   const lock = await readLock(fleetHome);
   for (const r of applied) {
     const c = r.change;
-    const key = lockKey(c.kind ?? 'mcp-server', c.name, c.agent);
+    const key = lockKey(c.kind ?? 'mcp-server', c.name, c.agent, c.scope);
     if (c.op === 'remove') {
       delete lock.entries[key];
       continue;
@@ -137,6 +141,7 @@ export async function updateLockFromApplied(
       agent: c.agent,
       scope: c.scope,
       origin,
+      hashScheme: 'canonical-v1',
       contentHash: c.fsKind === 'dir' ? r.wroteHash : specHash(c.canonical ?? c.after),
       installedAt: new Date().toISOString(),
       auditId: r.auditId,
@@ -154,9 +159,10 @@ export async function removeLockEntry(
   name: string,
   agent: string,
   fleetHome?: string,
+  scope = 'user',
 ): Promise<void> {
   const lock = await readLock(fleetHome);
-  const key = lockKey(kind, name, agent);
+  const key = lockKey(kind, name, agent, scope);
   if (!(key in lock.entries)) return;
   delete lock.entries[key];
   await writeLock(lock, fleetHome);

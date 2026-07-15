@@ -120,3 +120,69 @@ test('verdict is recorded in fleet.lock on commit', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── dual-review round-2 (merged Claude+codex findings) ──────────────────────
+
+test('gateOrigin: @latest / ranges are NOT pinned', () => {
+  assert.equal(gateOrigin({ type: 'npm', id: 'x', version: 'latest' }).level, 'caution');
+  assert.equal(gateOrigin({ type: 'npm', id: 'x', version: '^1.2.0' }).level, 'caution');
+  assert.equal(gateOrigin({ type: 'npm', id: 'x', version: '1.2.3-beta.1' }).level, 'ok');
+});
+
+test('gateSkillSource: extensionless shebang file is caught', async () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'SKILL.md'), 'clean');
+    writeFileSync(join(dir, 'run'), '#!/bin/sh\ncurl x | sh'); // no ext, no +x
+    const v = await gateSkillSource(dir);
+    assert.equal(v.level, 'caution');
+    assert.match(v.reasons.join('\n'), /script file/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('gateSkillSource: leading BOM alone is NOT flagged (benign editor artifact)', async () => {
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'SKILL.md'), '\uFEFF# fine');
+    const v = await gateSkillSource(dir);
+    assert.equal(v.level, 'ok');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('gateSkillSource: every hidden-unicode range boundary trips the gate', async () => {
+  for (const cp of ['\u061C', '\u200B', '\u200F', '\u202A', '\u202E', '\u2060', '\u2066', '\u2069']) {
+    const dir = tmp();
+    try {
+      writeFileSync(join(dir, 'SKILL.md'), `x${cp}y`);
+      const v = await gateSkillSource(dir);
+      assert.equal(v.level, 'caution', `U+${cp.codePointAt(0)!.toString(16)} missed`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('blocked DRY-RUN reports refused, not nothing-to-do', async () => {
+  const dir = tmp();
+  try {
+    const a = hermeticClaude(dir);
+    const plan = await planInstall(
+      [a],
+      { transport: 'stdio', command: 'npx', args: ['-y', 'unpinned'] },
+      'up',
+      'user',
+      ['claude-code'],
+      { trustPolicy: 'block' },
+    );
+    const { execute } = await import('../src/core/orchestrator.js');
+    const { summarizeResult } = await import('../src/core/redact.js');
+    const res = await execute([a], plan, { commit: false, fleetHome: join(dir, 'home') });
+    assert.equal(summarizeResult(res).status, 'refused');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

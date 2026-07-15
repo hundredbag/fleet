@@ -92,7 +92,7 @@ function applyTrustPolicy(plan: Plan, verdict: GateVerdict, policy: 'warn' | 'bl
         reason: `trust policy is 'block': ${verdict.reasons.join('; ')}`,
       })),
     ];
-    return { changes: [], skips, trust: verdict };
+    return { ...plan, changes: [], skips, trust: verdict };
   }
   const changes = plan.changes.map((c) => ({
     ...c,
@@ -117,7 +117,7 @@ export async function planInstall(
   name: string,
   scope: Scope,
   targetIds: AgentId[],
-  opts?: { trustPolicy?: 'warn' | 'block' },
+  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string },
 ): Promise<Plan> {
   const coord = extractCoordinate(spec);
   // registry-grammar check before PERSISTING as provenance — extractCoordinate
@@ -161,8 +161,8 @@ export async function planInstall(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  const policy = opts?.trustPolicy ?? loadConfig().trustPolicy;
-  const withCanonical = changes.map((c) => ({ ...c, canonical: spec }));
+  const policy = opts?.trustPolicy ?? loadConfig(opts?.fleetHome).trustPolicy;
+  const withCanonical = changes.map((c) => ({ ...c, canonical: c.canonical ?? spec }));
   return applyTrustPolicy({ changes: withCanonical, skips, origin }, gateOrigin(origin), policy);
 }
 
@@ -243,7 +243,7 @@ export async function planInstallSkill(
   source: SkillSource,
   name: string,
   targetIds: AgentId[],
-  opts?: { trustPolicy?: 'warn' | 'block' },
+  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string },
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
@@ -269,8 +269,16 @@ export async function planInstallSkill(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  const policy = opts?.trustPolicy ?? loadConfig().trustPolicy;
+  const policy = opts?.trustPolicy ?? loadConfig(opts?.fleetHome).trustPolicy;
   const verdict = await gateSkillSource(source.dir);
+  // bind the verdict to the bytes: the tree we INSPECTED must be the tree the
+  // plan will install (renderers pinned sourceHash before the scan)
+  const postScan = await hashDir(source.dir);
+  for (const c of changes) {
+    if (c.sourceHash !== undefined && c.sourceHash !== postScan) {
+      throw new Error(`fleet: skill source ${source.dir} changed during trust inspection; re-plan`);
+    }
+  }
   return applyTrustPolicy(
     { changes, skips, origin: { type: 'dir', path: resolve(source.dir) } },
     verdict,

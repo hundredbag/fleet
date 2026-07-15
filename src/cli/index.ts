@@ -228,7 +228,10 @@ async function main(argv: string[]): Promise<number> {
         const targets = await resolveTargets(adapters, to);
         return runPlan(
           adapters,
-          await planInstallSkill(adapters, { name, dir: fromDir }, name, targets),
+          await planInstallSkill(adapters, { name, dir: fromDir }, name, targets, {
+            trustPolicy:
+              str(p.flags.trust) === 'block' ? 'block' : str(p.flags.trust) === 'warn' ? 'warn' : undefined,
+          }),
           commit,
         );
       }
