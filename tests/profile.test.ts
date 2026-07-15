@@ -35,11 +35,11 @@ test('export: secret VALUES never land in the profile; refs + required names do'
   try {
     const a = hermeticClaude(dir);
     const out = join(dir, 'dotfiles');
-    const profile = await exportProfile(await buildInventory([a]), out);
+    const { profile } = await exportProfile(await buildInventory([a]), out);
     const raw = readFileSync(join(out, 'profile.json'), 'utf8');
     assert.ok(!raw.includes('hunter2'), 'secret value leaked into profile');
-    assert.ok(raw.includes('${secret:API_TOKEN}'));
-    assert.deepEqual(profile.servers[0]!.requiredSecrets, ['API_TOKEN']);
+    assert.ok(raw.includes('${secret:S_SECRETIVE_ENV_API_TOKEN}'));
+    assert.deepEqual(profile.servers[0]!.requiredSecrets, ['S_SECRETIVE_ENV_API_TOKEN']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -54,10 +54,14 @@ test('import: missing secret refuses THAT server; present secret resolves', asyn
     const profile = await readProfile(out);
     const spec = profile.servers[0]!.spec;
 
-    const missing = resolveSecretRefs(spec, {});
-    assert.deepEqual(missing.missing, ['API_TOKEN']);
+    const missing = resolveSecretRefs(spec, {}, profile.servers[0]!.requiredSecrets);
+    assert.deepEqual(missing.missing, ['S_SECRETIVE_ENV_API_TOKEN']);
 
-    const ok = resolveSecretRefs(spec, { API_TOKEN: 'new-machine-value' });
+    const ok = resolveSecretRefs(
+      spec,
+      { S_SECRETIVE_ENV_API_TOKEN: 'new-machine-value' },
+      profile.servers[0]!.requiredSecrets,
+    );
     assert.deepEqual(ok.missing, []);
     assert.equal(ok.spec.transport === 'stdio' ? ok.spec.env?.API_TOKEN : undefined, 'new-machine-value');
   } finally {
@@ -87,7 +91,11 @@ test('round-trip: export machine A → import to fresh machine B (skills + serve
       join(dirB, 'plugins'),
     );
     const profile = await readProfile(out);
-    const { spec } = resolveSecretRefs(profile.servers[0]!.spec, { API_TOKEN: 'b-token' });
+    const { spec } = resolveSecretRefs(
+      profile.servers[0]!.spec,
+      { S_SECRETIVE_ENV_API_TOKEN: 'b-token' },
+      profile.servers[0]!.requiredSecrets,
+    );
     const plan = await planInstall([b], spec, profile.servers[0]!.name, 'user', ['claude-code'], {
       trustPolicy: 'warn',
     });

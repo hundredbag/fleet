@@ -233,6 +233,7 @@ const I18N = {
     emptyPl:'등록된 마켓에 추천할 플러그인이 없습니다.', fromMarket:'마켓에서 설치 가능',
     installHint:'설치: fleet plugin install {id} --to claude-code  (미리보기 확인 후 --commit)',
     sortRec:'추천순', sortNew:'최신순', sortPop:'인기순',
+    skillUp:'스킬 원본이 갱신됨 — 재설치로 업데이트', skillUpLocal:'원본 갱신 + 로컬 수정 있음 — 재설치 시 수정 덮어씀',
     foot:'추천·충돌은 휴리스틱입니다 — 적용 전에 직접 확인하세요. 피드가 비면 소스에 접속 못 했을 수 있습니다.',
     kind:'종류', cap:'이름', emptyInv:'아직 설치된 것이 없어요 — 아래 추천을 둘러보세요.',
     emptyUpd:'고정된 버전은 모두 최신입니다.', emptyCf:'충돌 후보가 없습니다.', emptyRec:'지금은 추천이 없습니다.', emptySk:'지금은 스킬 추천이 없습니다.',
@@ -260,6 +261,7 @@ const I18N = {
     emptyPl:'No plugin recommendations from registered marketplaces.', fromMarket:'in your marketplace',
     installHint:'install: fleet plugin install {id} --to claude-code  (preview first, then --commit)',
     sortRec:'Top', sortNew:'Newest', sortPop:'Popular',
+    skillUp:'skill source updated — reinstall to update', skillUpLocal:'source updated + LOCAL EDITS — reinstall overwrites them',
     foot:'Recommendations & conflicts are heuristic — verify before acting. An empty feed may mean sources were unreachable.',
     kind:'kind', cap:'capability', emptyInv:'Nothing installed yet — try the recommendations below.',
     emptyUpd:'Everything pinned is current.', emptyCf:'No likely conflicts found.', emptyRec:'No recommendations right now.', emptySk:'No skill recommendations right now.',
@@ -535,7 +537,26 @@ async function loadFeed(live){
 function renderFeed(feed){
   stat('st-upd', feed.updates.length);
   const up = document.getElementById('updates'); up.innerHTML='';
-  if(!feed.updates.length) up.appendChild(el('p','empty',T('emptyUpd')));
+  var totalUps = feed.updates.length + ((feed.skillUpdates||[]).length);
+  if(!totalUps) up.appendChild(el('p','empty',T('emptyUpd')));
+  (feed.skillUpdates||[]).forEach(function(u){
+    var d = el('div','item');
+    var body = el('div','body');
+    var t = titleRow(u.name, '['+u.agent+']');
+    body.appendChild(t);
+    var m = el('div','meta');
+    if(u.state === 'update+local-edits'){
+      m.appendChild(el('span','warn','\u26a0 ' + T('skillUpLocal')));
+    } else {
+      m.appendChild(el('span',null, T('skillUp')));
+    }
+    body.appendChild(m);
+    var hint = el('div','meta');
+    hint.appendChild(el('span','faint', u.applyHint));
+    body.appendChild(hint);
+    d.appendChild(body);
+    up.appendChild(d);
+  });
   feed.updates.forEach(function(u){
     const d = el('div','item');
     const body = el('div','body');

@@ -156,11 +156,15 @@ export class ActionService {
     const plan = this.plans.get(planId);
     if (!plan) throw new Error('unknown planId — preview again before applying');
     this.plans.delete(planId);
-    return summarizeResult(await execute(this.adapters, plan, { commit: true, fleetHome: this.fleetHome }));
+    const result = await execute(this.adapters, plan, { commit: true, fleetHome: this.fleetHome });
+    invalidateInventoryCache(); // a refresh right after apply must see the new state
+    return summarizeResult(result);
   }
 
   async rollback() {
-    return rollback({ fleetHome: this.fleetHome });
+    const r = await rollback({ fleetHome: this.fleetHome });
+    invalidateInventoryCache();
+    return r;
   }
 }
 

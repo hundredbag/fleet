@@ -8,7 +8,7 @@ import type {
   RuleCapability,
   SkillCapability,
 } from './types.js';
-import { copyDir } from './fsutil.js';
+import { copyDir, hashDir } from './fsutil.js';
 
 /**
  * Portable profile export/import — the "sync ~/.claude across machines" the
@@ -40,19 +40,31 @@ export interface Profile {
 
 const SECRET_REF = /^\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-function toSecretRefs(spec: McpServerSpec): { spec: McpServerSpec; required: string[] } {
+/** Collision-free ref id: S_<server>_<channel>_<key>, sanitized. Including the
+ * server name means two servers' API_KEYs never alias; the S_ prefix keeps
+ * digit-leading keys inside the ref grammar. Residual sanitize collisions get
+ * a numeric suffix. */
+function toSecretRefs(spec: McpServerSpec, serverName: string): { spec: McpServerSpec; required: string[] } {
   const required: string[] = [];
+  const used = new Set<string>();
   const clone: McpServerSpec = JSON.parse(JSON.stringify(spec));
-  const scrub = (obj: Record<string, string> | undefined, prefix: string): void => {
+  const mkRef = (channel: string, key: string): string => {
+    const base = `S_${serverName}_${channel}_${key}`.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+    let ref = base;
+    for (let i = 2; used.has(ref); i++) ref = `${base}_${i}`;
+    used.add(ref);
+    return ref;
+  };
+  const scrub = (obj: Record<string, string> | undefined, channel: string): void => {
     if (!obj) return;
     for (const k of Object.keys(obj)) {
-      const refName = `${prefix}${k}`.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+      const refName = mkRef(channel, k);
       obj[k] = `\${secret:${refName}}`;
       required.push(refName);
     }
   };
-  if (clone.transport === 'stdio') scrub(clone.env, '');
-  else scrub(clone.headers, 'HDR_');
+  if (clone.transport === 'stdio') scrub(clone.env, 'ENV');
+  else scrub(clone.headers, 'HDR');
   return { spec: clone, required };
 }
 
@@ -60,14 +72,19 @@ function toSecretRefs(spec: McpServerSpec): { spec: McpServerSpec; required: str
 export function resolveSecretRefs(
   spec: McpServerSpec,
   env: Record<string, string | undefined> = process.env,
+  requiredSecrets?: string[],
 ): { spec: McpServerSpec; missing: string[] } {
   const missing: string[] = [];
+  const declared = requiredSecrets ? new Set(requiredSecrets) : undefined;
   const clone: McpServerSpec = JSON.parse(JSON.stringify(spec));
   const fill = (obj: Record<string, string> | undefined): void => {
     if (!obj) return;
     for (const k of Object.keys(obj)) {
       const m = SECRET_REF.exec(obj[k] ?? '');
       if (!m) continue;
+      // only refs DECLARED by this server resolve — a literal value that merely
+      // looks like a ref (hand-edited profile) passes through untouched
+      if (declared && !declared.has(m[1]!)) continue;
       const v = env[m[1]!];
       if (v === undefined) missing.push(m[1]!);
       else obj[k] = v;
@@ -78,36 +95,75 @@ export function resolveSecretRefs(
   return { spec: clone, missing };
 }
 
-/** Export fleet-manageable capabilities of ONE agent's view into `dir`. */
-export async function exportProfile(inv: Inventory, dir: string): Promise<Profile> {
-  const seenServer = new Set<string>();
-  const servers: ProfileServer[] = [];
+export interface ExportConflict {
+  kind: string;
+  name: string;
+  agents: string[];
+}
+
+/** Export fleet-manageable capabilities into `dir`. Cross-agent dedupe keeps
+ * only IDENTICAL definitions; divergent same-name definitions are EXCLUDED
+ * and reported — silent first-wins would lose the other agent's config. */
+export async function exportProfile(
+  inv: Inventory,
+  dir: string,
+): Promise<{ profile: Profile; conflicts: ExportConflict[] }> {
+  const conflicts: ExportConflict[] = [];
+
+  const serverByName = new Map<string, McpServerCapability[]>();
   for (const i of inv.items) {
     if (i.kind !== 'mcp-server') continue;
     const cap = i as McpServerCapability;
-    if (seenServer.has(cap.name)) continue; // one entry per name (cross-agent dedupe)
-    seenServer.add(cap.name);
-    const { spec, required } = toSecretRefs(cap.spec);
-    servers.push({ name: cap.name, spec, requiredSecrets: required.sort() });
+    const list = serverByName.get(cap.name) ?? [];
+    list.push(cap);
+    serverByName.set(cap.name, list);
   }
-  const seenRule = new Set<string>();
-  const rules: { name: string; body: string }[] = [];
+  const servers: ProfileServer[] = [];
+  for (const [name, caps] of serverByName) {
+    // compare secret-SCRUBBED canonical shapes (values differ per machine)
+    const shapes = new Set(caps.map((c) => JSON.stringify(toSecretRefs(c.spec, name).spec)));
+    if (shapes.size > 1) {
+      conflicts.push({ kind: 'mcp-server', name, agents: caps.map((c) => c.agent) });
+      continue;
+    }
+    const { spec, required } = toSecretRefs(caps[0]!.spec, name);
+    servers.push({ name, spec, requiredSecrets: required.sort() });
+  }
+
+  const ruleByName = new Map<string, RuleCapability[]>();
   for (const i of inv.items) {
     if (i.kind !== 'rule') continue;
     const r = i as RuleCapability;
-    if (seenRule.has(r.name)) continue;
-    seenRule.add(r.name);
-    rules.push({ name: r.name, body: r.body });
+    const list = ruleByName.get(r.name) ?? [];
+    list.push(r);
+    ruleByName.set(r.name, list);
   }
-  const seenSkill = new Set<string>();
-  const skills: string[] = [];
+  const rules: { name: string; body: string }[] = [];
+  for (const [name, rs] of ruleByName) {
+    if (new Set(rs.map((r) => r.body)).size > 1) {
+      conflicts.push({ kind: 'rule', name, agents: rs.map((r) => r.agent) });
+      continue;
+    }
+    rules.push({ name, body: rs[0]!.body });
+  }
+  const skillByName = new Map<string, SkillCapability[]>();
   for (const i of inv.items) {
     if (i.kind !== 'skill') continue;
     const sk = i as SkillCapability;
-    if (seenSkill.has(sk.name) || sk.name.includes('/')) continue; // flat names only in v1
-    seenSkill.add(sk.name);
-    await copyDir(sk.path, join(dir, 'skills', sk.name));
-    skills.push(sk.name);
+    if (sk.name.includes('/')) continue; // flat names only in v1
+    const list = skillByName.get(sk.name) ?? [];
+    list.push(sk);
+    skillByName.set(sk.name, list);
+  }
+  const skills: string[] = [];
+  for (const [name, sks] of skillByName) {
+    const hashes = new Set(await Promise.all(sks.map((sk) => hashDir(sk.path))));
+    if (hashes.size > 1) {
+      conflicts.push({ kind: 'skill', name, agents: sks.map((sk) => sk.agent) });
+      continue;
+    }
+    await copyDir(sks[0]!.path, join(dir, 'skills', name));
+    skills.push(name);
   }
   // deterministic output → clean git diffs
   servers.sort((a, b) => a.name.localeCompare(b.name));
@@ -116,13 +172,20 @@ export async function exportProfile(inv: Inventory, dir: string): Promise<Profil
   const profile: Profile = { version: 1, exportedAt: new Date().toISOString(), servers, rules, skills };
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'profile.json'), JSON.stringify(profile, null, 2) + '\n', 'utf8');
-  return profile;
+  return { profile, conflicts };
 }
+
+const MAX_PROFILE_BYTES = 1024 * 1024;
+const MAX_ITEMS = 200;
 
 export async function readProfile(dir: string): Promise<Profile> {
   const p = join(dir, 'profile.json');
   if (!existsSync(p)) throw new Error(`fleet: no profile.json in ${dir}`);
-  const doc = JSON.parse(await readFile(p, 'utf8'));
+  const raw = await readFile(p, 'utf8');
+  if (Buffer.byteLength(raw, 'utf8') > MAX_PROFILE_BYTES) {
+    throw new Error(`fleet: ${p} exceeds 1 MiB — refusing to parse`);
+  }
+  const doc = JSON.parse(raw);
   if (
     !doc ||
     doc.version !== 1 ||
@@ -131,6 +194,9 @@ export async function readProfile(dir: string): Promise<Profile> {
     !Array.isArray(doc.skills)
   ) {
     throw new Error(`fleet: ${p} is not a valid fleet profile`);
+  }
+  if (doc.servers.length > MAX_ITEMS || doc.rules.length > MAX_ITEMS || doc.skills.length > MAX_ITEMS) {
+    throw new Error(`fleet: ${p} lists more than ${MAX_ITEMS} items of one kind — refusing`);
   }
   return doc as Profile;
 }

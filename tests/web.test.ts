@@ -354,3 +354,68 @@ test('web: update bumps version WITHOUT dropping env', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('web: inventory reflects an APPLY immediately (cache invalidated)', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { ClaudeCodeAdapter } = await import('../src/adapters/claude-code.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-webapply-'));
+  writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{}}');
+  const real = new ClaudeCodeAdapter(
+    join(dir, '.claude.json'),
+    join(dir, 'skills'),
+    join(dir, 'CLAUDE.md'),
+    join(dir, 'settings.json'),
+    join(dir, 'plugins'),
+  );
+  const { server } = createFleetServer([real], {
+    token: 't',
+    sources: fakeSources,
+    fleetHome: join(dir, 'home'),
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    // prime the inventory cache
+    await fetch(`http://127.0.0.1:${port}/api/inventory`, { headers: { authorization: 'Bearer t' } });
+    const planRes = await fetch(`http://127.0.0.1:${port}/api/plan`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer t',
+        'content-type': 'application/json',
+        origin: `http://127.0.0.1:${port}`,
+      },
+      body: JSON.stringify({
+        action: 'install',
+        name: 'fresh-one',
+        to: ['claude-code'],
+        coordinate: { ecosystem: 'npm', identifier: 'fresh-one-pkg' },
+      }),
+    });
+    const { planId } = (await planRes.json()) as { planId: string };
+    const applied = (await (
+      await fetch(`http://127.0.0.1:${port}/api/apply`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer t',
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${port}`,
+        },
+        body: JSON.stringify({ planId }),
+      })
+    ).json()) as { status: string };
+    assert.equal(applied.status, 'applied');
+    // immediate refresh must show the new server (no 3s stale window)
+    const inv = (await (
+      await fetch(`http://127.0.0.1:${port}/api/inventory`, { headers: { authorization: 'Bearer t' } })
+    ).json()) as { servers: { name: string }[] };
+    assert.ok(
+      inv.servers.some((s) => s.name === 'fresh-one'),
+      'apply not visible — cache not invalidated',
+    );
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

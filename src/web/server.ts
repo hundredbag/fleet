@@ -147,9 +147,10 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
       case '/api/inventory':
         return apiInventory(adapters).then((r) => sendJson(res, 200, r));
       case '/api/feed':
-        return apiFeed(adapters, opts.sources, { refresh: reqUrl?.searchParams.get('refresh') === '1' }).then(
-          (r) => sendJson(res, 200, r),
-        );
+        return apiFeed(adapters, opts.sources, {
+          refresh: reqUrl?.searchParams.get('refresh') === '1',
+          fleetHome: opts.fleetHome,
+        }).then((r) => sendJson(res, 200, r));
       case '/api/conflicts':
         return apiConflicts(adapters).then((r) => sendJson(res, 200, r));
       default:

@@ -6,15 +6,19 @@ import type { Inventory } from '../core/types.js';
 // one dashboard refresh fires three endpoints; each rebuilt the inventory.
 // A 3s micro-cache turns that into one scan without ever serving stale data
 // beyond a single refresh cycle.
-let invCache: { time: number; promise: Promise<Inventory> } | undefined;
+// keyed by the adapters ARRAY IDENTITY — each server passes its own array, so
+// two embedded servers can't cross-serve snapshots inside the TTL window
+const invCaches = new WeakMap<object, { time: number; epoch: number; promise: Promise<Inventory> }>();
+let invalidateEpoch = 0; // bumping forces every cache entry stale
 function snapshotInventory(adapters: Parameters<typeof buildInventory>[0]): Promise<Inventory> {
   // cache the IN-FLIGHT promise: the dashboard fires three endpoints
   // concurrently, and a completed-only cache would still triple-scan cold
-  if (invCache && Date.now() - invCache.time < 3000) return invCache.promise;
+  const hit = invCaches.get(adapters);
+  if (hit && hit.epoch === invalidateEpoch && Date.now() - hit.time < 3000) return hit.promise;
   const promise = buildInventory(adapters);
-  invCache = { time: Date.now(), promise };
+  invCaches.set(adapters, { time: Date.now(), epoch: invalidateEpoch, promise });
   promise.catch(() => {
-    invCache = undefined; // a failed scan must not be served for 3s
+    invCaches.delete(adapters); // a failed scan must not be served for 3s
   });
   return promise;
 }
@@ -22,7 +26,7 @@ function snapshotInventory(adapters: Parameters<typeof buildInventory>[0]): Prom
 /** Call after every successful mutation — a refresh right after APPLY must
  * never show pre-action inventory. */
 export function invalidateInventoryCache(): void {
-  invCache = undefined;
+  invalidateEpoch++;
 }
 import { summarizeInventory } from '../core/redact.js';
 import { analyzeConflicts } from '../core/conflicts.js';
@@ -52,14 +56,14 @@ export async function apiConflicts(adapters: AgentAdapter[]) {
 export async function apiFeed(
   adapters: AgentAdapter[],
   sources?: FeedSource[],
-  opts?: { refresh?: boolean },
+  opts?: { refresh?: boolean; fleetHome?: string },
 ) {
   const inv = await snapshotInventory(adapters);
   // INJECTED sources bypass the shared file cache entirely — a cache written
   // for the default set must never satisfy custom sources (and vice versa)
   const { items, failures, fromCache } = sources
     ? { ...(await discover(sources)), fromCache: false }
-    : await cachedDiscover(defaultSources(), { refresh: opts?.refresh });
+    : await cachedDiscover(defaultSources(), { refresh: opts?.refresh, fleetHome: opts?.fleetHome });
   const { updates } = updatesForInventory(inv, items);
   const ranked = await recommend(inv, items); // uncapped; sliced per kind below
   const mixed = [
@@ -88,5 +92,11 @@ export async function apiFeed(
     reasons: r.reasons,
     trust: r.trust,
   }));
-  return { updates, skillUpdates: await skillUpdatesFromLock(inv), recommendations, failures, fromCache };
+  return {
+    updates,
+    skillUpdates: await skillUpdatesFromLock(inv, opts?.fleetHome),
+    recommendations,
+    failures,
+    fromCache,
+  };
 }

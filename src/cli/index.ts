@@ -34,6 +34,7 @@ import { readLock } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
 import { skillUpdatesFromLock } from '../core/skill-updates.js';
 import { exportProfile, readProfile, resolveSecretRefs } from '../core/profile.js';
+import { readPack, readPackRuleBody, type RuleVariant } from '../core/pack.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -42,6 +43,8 @@ Usage:
   fleet doctor                             Health checks (adapters/state/config); exit 0/1/2
   fleet lock [--json]                      Provenance of fleet-installed capabilities
   fleet drift [--json]                     Diff live agent state against fleet.lock (tamper check)
+  fleet pack install --from-dir <dir> \\
+    --to <ids|all> [--variant full|mini|nano]  Install a capability pack (skills + variant rules)
   fleet export --to <dir>                  Portable profile (secret VALUES never written) for dotfiles
   fleet import --from <dir> [--to ids|all] Plan-install a profile (dry-run; --commit to apply)
 
@@ -489,17 +492,70 @@ async function main(argv: string[]): Promise<number> {
       }
       return report.findings.length > 0 ? 1 : 0;
     }
+    case 'pack': {
+      const sub = p.positionals[0];
+      if (sub !== 'install')
+        throw new Error(
+          'usage: fleet pack install --from-dir <dir> --to <ids|all> [--variant full|mini|nano]',
+        );
+      const dir = str(p.flags['from-dir']);
+      if (!dir) throw new Error('pack install: --from-dir <dir> is required (a git checkout of the pack)');
+      const variantFlag = str(p.flags.variant) ?? 'full';
+      if (variantFlag !== 'full' && variantFlag !== 'mini' && variantFlag !== 'nano') {
+        throw new Error(`--variant must be full|mini|nano (got '${variantFlag}')`);
+      }
+      const pack = await readPack(dir);
+      const targets = await resolveTargets(adapters, str(p.flags.to) ?? 'all');
+      process.stdout.write(
+        `pack "${pack.name}": ${pack.skills.length} skills, ${pack.rules.length} rules (variant: ${variantFlag})\n`,
+      );
+      let rc = 0;
+      for (const skillName of pack.skills) {
+        const code = await runPlan(
+          adapters,
+          await planInstallSkill(
+            adapters,
+            { name: skillName, dir: `${dir}/${skillName}` },
+            skillName,
+            targets,
+          ),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      for (const rule of pack.rules) {
+        const { body, usedVariant } = await readPackRuleBody(dir, rule, variantFlag as RuleVariant);
+        // namespaced '<pack>.<name>' — packs must not collide with user rules
+        const ruleName = `${pack.name}.${rule.name}`;
+        if (usedVariant !== variantFlag) {
+          process.stdout.write(`  (${rule.name}: '${variantFlag}' unavailable, using '${usedVariant}')\n`);
+        }
+        const code = await runPlan(
+          adapters,
+          await planInstallRule(adapters, ruleName, body, targets),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      if (!commit) process.stdout.write('\n(dry-run — add --commit to apply)\n');
+      return rc;
+    }
     case 'export': {
       const dir = str(p.flags.to);
       if (!dir) throw new Error('export: --to <dir> is required (your dotfiles repo)');
       const inv = await buildInventory(adapters);
-      const profile = await exportProfile(inv, dir);
+      const { profile, conflicts } = await exportProfile(inv, dir);
       process.stdout.write(
         `exported to ${dir}: ${profile.servers.length} MCP servers (secrets as refs), ` +
           `${profile.rules.length} rules, ${profile.skills.length} skills\n` +
           `  secret VALUES are never written — commit the dir to git safely.\n`,
       );
-      return 0;
+      for (const c of conflicts) {
+        process.stdout.write(
+          `  \u26a0 EXCLUDED ${c.kind} "${c.name}": definitions diverge across ${c.agents.join(', ')} — align and re-export\n`,
+        );
+      }
+      return conflicts.length > 0 ? 1 : 0;
     }
     case 'import': {
       const dir = str(p.flags.from);
@@ -507,8 +563,11 @@ async function main(argv: string[]): Promise<number> {
       const profile = await readProfile(dir);
       const targets = await resolveTargets(adapters, str(p.flags.to) ?? 'all');
       let rc = 0;
+      // resolve EVERYTHING before the first mutation — missing secrets abort a
+      // --commit up front instead of failing halfway through
+      const resolved: { name: string; spec: McpServerSpec }[] = [];
       for (const srv of profile.servers) {
-        const { spec, missing } = resolveSecretRefs(srv.spec);
+        const { spec, missing } = resolveSecretRefs(srv.spec, process.env, srv.requiredSecrets);
         if (missing.length > 0) {
           process.stdout.write(
             `\u2717 ${srv.name}: missing secrets on this machine: ${missing.join(', ')} — export them as env vars and re-run\n`,
@@ -516,17 +575,18 @@ async function main(argv: string[]): Promise<number> {
           rc = 1;
           continue;
         }
-        const code = await runPlan(
-          adapters,
-          await planInstall(adapters, spec, srv.name, 'user', targets),
-          commit,
-        );
-        rc = Math.max(rc, code);
+        resolved.push({ name: srv.name, spec });
       }
-      for (const rule of profile.rules) {
+      if (rc > 0 && commit) {
+        process.stdout.write(
+          'aborting --commit: resolve the missing secrets first (dry-run works without them)\n',
+        );
+        return 1;
+      }
+      for (const srv of resolved) {
         const code = await runPlan(
           adapters,
-          await planInstallRule(adapters, rule.name, rule.body, targets),
+          await planInstall(adapters, srv.spec, srv.name, 'user', targets),
           commit,
         );
         rc = Math.max(rc, code);
@@ -535,6 +595,15 @@ async function main(argv: string[]): Promise<number> {
         const code = await runPlan(
           adapters,
           await planInstallSkill(adapters, { name, dir: `${dir}/skills/${name}` }, name, targets),
+          commit,
+        );
+        rc = Math.max(rc, code);
+      }
+      // rules last: skills/servers they might reference land first
+      for (const rule of profile.rules) {
+        const code = await runPlan(
+          adapters,
+          await planInstallRule(adapters, rule.name, rule.body, targets),
           commit,
         );
         rc = Math.max(rc, code);

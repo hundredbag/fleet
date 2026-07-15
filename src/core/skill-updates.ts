@@ -47,7 +47,11 @@ export async function skillUpdatesFromLock(inv: Inventory, fleetHome?: string): 
       state = 'update+unverifiable'; // inventory didn't read — never call it clean
     } else {
       const live = inv.items.find(
-        (i): i is SkillCapability => i.kind === 'skill' && i.name === e.name && i.agent === e.agent,
+        (i): i is SkillCapability =>
+          i.kind === 'skill' &&
+          i.name === e.name &&
+          i.agent === e.agent &&
+          (e.scope === undefined || i.scope === e.scope),
       );
       if (!live) state = 'update+missing';
       else {
