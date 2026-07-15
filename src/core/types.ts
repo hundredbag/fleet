@@ -68,6 +68,9 @@ export interface SkillCapability extends BaseCapability {
   path: string;
   /** parsed from SKILL.md frontmatter */
   meta?: { description?: string; version?: string };
+  /** rough context cost when the skill loads (SKILL.md bytes/4 — nobody's
+   * inventory shows this; ~80 tokens extra at discovery time regardless) */
+  tokensEst?: number;
 }
 
 /**
@@ -78,6 +81,8 @@ export interface RuleCapability extends BaseCapability {
   kind: 'rule';
   /** the managed block body (the instruction text fleet manages) */
   body: string;
+  /** rough ALWAYS-ON context cost (body bytes/4, loaded every session) */
+  tokensEst?: number;
 }
 
 /**

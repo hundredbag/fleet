@@ -320,3 +320,22 @@ test('interop: codex reads the shared ~/.agents/skills root; own dir wins on col
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('context-cost lens: skills and rules carry tokensEst (~bytes/4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-lens-'));
+  try {
+    const root = join(dir, 'skills', 'big');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'SKILL.md'), 'x'.repeat(4000)); // ≈1000 tokens
+    const items = await readSkillsInventory('claude-code', join(dir, 'skills'));
+    assert.ok(items[0]!.tokensEst! >= 990 && items[0]!.tokensEst! <= 1010);
+
+    const { readRulesInventory } = await import('../src/core/rules.js');
+    const f = join(dir, 'CLAUDE.md');
+    writeFileSync(f, '<!-- fleet:rule:r1 -->\n' + 'y'.repeat(400) + '\n<!-- /fleet:rule:r1 -->\n');
+    const rules = await readRulesInventory('claude-code', f);
+    assert.equal(rules[0]!.tokensEst, 100);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

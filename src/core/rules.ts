@@ -105,6 +105,7 @@ export async function readRulesInventory(agent: string, instrPath: string): Prom
     scope: 'user',
     enabled: true,
     body: b.body,
+    tokensEst: Math.ceil(Buffer.byteLength(b.body, 'utf8') / 4),
     source: { file: instrPath },
   }));
 }

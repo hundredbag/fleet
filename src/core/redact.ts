@@ -89,10 +89,11 @@ export function summarizeInventory(inv: Inventory) {
       scope: i.scope,
       description: i.meta?.description,
       version: i.meta?.version,
+      tokensEst: i.tokensEst,
     }));
   const rules = inv.items
     .filter((i): i is RuleCapability => i.kind === 'rule')
-    .map((i) => ({ name: i.name, agent: i.agent, scope: i.scope }));
+    .map((i) => ({ name: i.name, agent: i.agent, scope: i.scope, tokensEst: i.tokensEst }));
   const permissions = inv.items
     .filter((i): i is PermissionCapability => i.kind === 'permission')
     .map((i) => ({ name: i.name, agent: i.agent, effect: i.effect }));

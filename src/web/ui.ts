@@ -221,7 +221,7 @@ const I18N = {
     sub:'크로스-에이전트 능력 관리자', rollback:'롤백', refresh:'새로고침',
     stAgents:'에이전트', stMcp:'MCP 서버', stSkill:'스킬', stRule:'룰', stPlugin:'플러그인', stUpd:'업데이트',
     invTitle:'인벤토리', invHint:'행을 클릭하면 상세 · 에이전트별 설치/제거',
-    dStatus:'에이전트별 상태', dDesc:'설명', dRuns:'실행 명령', dPath:'경로', dMarket:'마켓', dVer:'버전',
+    dStatus:'에이전트별 상태', dDesc:'설명', dRuns:'실행 명령', dPath:'경로', dMarket:'마켓', dVer:'버전', dTokens:'컨텍스트 비용(추정)',
     dInstalled:'설치됨', dNot:'없음', dInstallTo:'{a}에 설치', dRemoveFrom:'{a}에서 제거',
     dInfoOnly:'이 종류는 아직 조회만 지원해요 (설치/제거는 CLI: fleet '+'{k}'+' …)', close:'닫기',
     updTitle:'업데이트', updHint:'레지스트리에 새 버전이 있는 항목',
@@ -248,7 +248,7 @@ const I18N = {
     sub:'cross-agent capability manager', rollback:'Rollback', refresh:'Refresh',
     stAgents:'agents', stMcp:'MCP servers', stSkill:'skills', stRule:'rules', stPlugin:'plugins', stUpd:'updates',
     invTitle:'Inventory', invHint:'click a row for details · per-agent install/remove',
-    dStatus:'Status by agent', dDesc:'Description', dRuns:'Runs', dPath:'Path', dMarket:'Marketplace', dVer:'Version',
+    dStatus:'Status by agent', dDesc:'Description', dRuns:'Runs', dPath:'Path', dMarket:'Marketplace', dVer:'Version', dTokens:'Context cost (est.)',
     dInstalled:'installed', dNot:'not installed', dInstallTo:'Install to {a}', dRemoveFrom:'Remove from {a}',
     dInfoOnly:'This kind is read-only here for now (use the CLI: fleet {k} …)', close:'Close',
     updTitle:'Updates', updHint:'newer version on the registry',
@@ -414,6 +414,7 @@ function openDetail(kind, name){
   if(first.target) kv(bar, T('dRuns'), first.target);
   if(first.version || (first.meta && first.meta.version)) kv(bar, T('dVer'), first.version || first.meta.version);
   if(first.marketplace) kv(bar, T('dMarket'), first.marketplace);
+  if(first.tokensEst) kv(bar, T('dTokens'), '~' + first.tokensEst + ' tokens' + (kind === 'rule' ? ' · always-on' : ''));
   bar.appendChild(el('div','dsect', T('dStatus')));
   const canAct = kind === 'mcp';
   const haveAgents = found.map(function(x){ return x.agent; });

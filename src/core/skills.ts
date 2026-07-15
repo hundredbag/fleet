@@ -83,9 +83,11 @@ export async function listSkillDirs(root: string): Promise<{ name: string; path:
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function readSkillMeta(skillDir: string): Promise<SkillMeta> {
+export async function readSkillMeta(skillDir: string): Promise<SkillMeta & { tokensEst?: number }> {
   try {
-    return parseSkillFrontmatter(await readFile(join(skillDir, 'SKILL.md'), 'utf8'));
+    const text = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
+    // bytes/4 ≈ tokens — a deliberately rough, comparable number
+    return { ...parseSkillFrontmatter(text), tokensEst: Math.ceil(Buffer.byteLength(text, 'utf8') / 4) };
   } catch {
     return {};
   }
@@ -103,7 +105,10 @@ export async function readSkillsInventory(agent: string, skillsRoot: string): Pr
       scope: 'user',
       enabled: true,
       path: d.path,
-      meta: await readSkillMeta(d.path),
+      ...(await (async () => {
+        const { tokensEst, ...meta } = await readSkillMeta(d.path);
+        return { meta, ...(tokensEst !== undefined ? { tokensEst } : {}) };
+      })()),
       source: { file: d.path },
     });
   }
