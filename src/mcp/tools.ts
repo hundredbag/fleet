@@ -17,8 +17,9 @@ import {
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
-import { summarizeInventory, summarizeResult } from '../core/redact.js';
+import { summarizeInventory, summarizeResult, scrubSecrets } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
+import { readLock } from '../core/lock.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
@@ -232,7 +233,21 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
       description:
         "Health checks over fleet's dependencies: agent adapters (configs parse?), fleet state (audit/backups/lock/ledger), and config.json. Read-only; exitCode 0 healthy / 1 warnings / 2 errors.",
       inputSchema: {},
-      handler: async () => runDoctor({ adapters }),
+      handler: async () => {
+        const report = await runDoctor({ adapters, fleetHome: opts.fleetHome });
+        // BYO adapters can throw token-bearing errors — scrub before the AI face
+        return {
+          exitCode: report.exitCode,
+          findings: report.findings.map((f) => ({ ...f, message: scrubSecrets(f.message) })),
+        };
+      },
+    },
+    {
+      name: 'lock_status',
+      description:
+        'Provenance of everything fleet installed (fleet.lock): origin (npm/pypi/dir/marketplace), content hash, when, per agent. Read-only.',
+      inputSchema: {},
+      handler: async () => readLock(),
     },
     {
       name: 'whats_new',

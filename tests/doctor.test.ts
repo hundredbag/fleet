@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runDoctor } from '../src/core/doctor.js';
@@ -101,6 +101,69 @@ test('doctor: unknown config.agents id + missing adapter module → findings', a
     const msgs = r.findings.map((f) => f.message).join('\n');
     assert.match(msgs, /"ghost" is not a known adapter/);
     assert.match(msgs, /does not exist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── dual-review round fixes ─────────────────────────────────────────────────
+
+test('doctor: exact corrupt-line denominator (1 valid + 1 corrupt = 1/2)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      join(home, 'audit.jsonl'),
+      '{"id":"a","op":"install","backup":"","existedBefore":false}\n{corrupt\n',
+    );
+    const r = await runDoctor({ fleetHome: home, adapters: [], config: DEFAULT_CONFIG });
+    const f = r.findings.find((x) => x.message.includes('corrupt lines'));
+    assert.match(f?.message ?? '', /1\/2 corrupt lines/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor: unreadable audit file → error FINDING, not a crash', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'audit.jsonl'), '{}');
+    chmodSync(join(home, 'audit.jsonl'), 0o000);
+    const r = await runDoctor({ fleetHome: home, adapters: [], config: DEFAULT_CONFIG });
+    assert.equal(r.exitCode, 2);
+    assert.ok(r.findings.some((f) => f.level === 'error' && /audit log: check failed/.test(f.message)));
+  } finally {
+    chmodSync(join(dir, 'home', 'audit.jsonl'), 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor: broken config.json is reported (not silently healthy on defaults)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'config.json'), '{not json');
+    const r = await runDoctor({ fleetHome: home, adapters: [] }); // no injected config → real path
+    assert.ok(r.findings.some((f) => f.level === 'warn' && /invalid JSON/.test(f.message)));
+    assert.ok(r.exitCode >= 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor: fresh lock is informational (exit stays 0)', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, '.lock'), '1 1'); // fresh (mtime = now)
+    const r = await runDoctor({ fleetHome: home, adapters: [], config: DEFAULT_CONFIG });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.findings.some((f) => /operation appears to be in progress/.test(f.message)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
