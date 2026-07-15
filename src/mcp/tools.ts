@@ -21,6 +21,7 @@ import { summarizeInventory, summarizeResult, scrubSecrets } from '../core/redac
 import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
+import { skillUpdatesFromLock } from '../core/skill-updates.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
@@ -298,6 +299,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         }));
         return {
           updates,
+          skillUpdates: await skillUpdatesFromLock(inv),
           recommendations,
           failures,
           note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (not exhaustive); plugins come from locally-registered marketplace catalogs (install via plugin_install). Absence of results may just mean sources were unreachable (see failures).',

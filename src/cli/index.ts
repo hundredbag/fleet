@@ -31,6 +31,7 @@ import { redactUrl, summarizeInventory } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
 import { readLock } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
+import { skillUpdatesFromLock } from '../core/skill-updates.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
@@ -385,6 +386,15 @@ async function main(argv: string[]): Promise<number> {
         process.stdout.write(
           `  ◆ [${r.item.category ?? 'other'}] ${r.item.name} — ${r.reasons.join('; ')}  ${r.item.url ?? ''}\n`,
         );
+      }
+      const skillUps = await skillUpdatesFromLock(inv);
+      if (skillUps.length > 0) {
+        process.stdout.write('\nSkill updates (source dir changed since install):\n');
+        for (const u of skillUps) {
+          const mark =
+            u.state === 'update+local-edits' ? '\u26a0 LOCAL EDITS — reinstall overwrites them' : 'clean';
+          process.stdout.write(`  \u25b3 ${u.name} @${u.agent} (${mark})\n      ${u.applyHint}\n`);
+        }
       }
       if (plugins.length > 0) {
         process.stdout.write('\nRecommended plugins (from your registered marketplaces):\n');

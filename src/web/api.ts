@@ -5,6 +5,7 @@ import { summarizeInventory } from '../core/redact.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
+import { skillUpdatesFromLock } from '../core/skill-updates.js';
 import { recommend, diversifyByCategory } from '../feed/recommend.js';
 
 /**
@@ -55,5 +56,5 @@ export async function apiFeed(adapters: AgentAdapter[], sources: FeedSource[] = 
     reasons: r.reasons,
     trust: r.trust,
   }));
-  return { updates, recommendations, failures };
+  return { updates, skillUpdates: await skillUpdatesFromLock(inv), recommendations, failures };
 }

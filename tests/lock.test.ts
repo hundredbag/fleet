@@ -210,3 +210,41 @@ test('lock: specHash is key-order independent', async () => {
   assert.equal(specHash({ a: 1, b: { c: 2, d: 3 } }), specHash({ b: { d: 3, c: 2 }, a: 1 }));
   assert.notEqual(specHash({ a: 1 }), specHash({ a: 2 }));
 });
+
+// ── P2-5: skill update diff from provenance ─────────────────────────────────
+
+test('skill updates: origin dir changed → update; local edit → update+local-edits', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    const src = join(dir, 'src-skill');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'SKILL.md'), 'v1');
+    const plan = await planInstallSkill([a], { name: 'up', dir: src }, 'up', ['claude-code'], {
+      trustPolicy: 'warn',
+    });
+    await execute([a], plan, { commit: true, fleetHome: home });
+
+    const { skillUpdatesFromLock } = await import('../src/core/skill-updates.js');
+    const { buildInventory } = await import('../src/core/inventory.js');
+
+    // unchanged origin → no updates
+    let ups = await skillUpdatesFromLock(await buildInventory([a]), home);
+    assert.deepEqual(ups, []);
+
+    // upstream (origin dir) changes → clean update
+    writeFileSync(join(src, 'SKILL.md'), 'v2 improved');
+    ups = await skillUpdatesFromLock(await buildInventory([a]), home);
+    assert.equal(ups.length, 1);
+    assert.equal(ups[0]!.state, 'update');
+    assert.match(ups[0]!.applyHint, /fleet skill install up/);
+
+    // AND the installed copy was edited locally → flagged so reinstall doesn't silently clobber
+    writeFileSync(join(dir, 'skills', 'up', 'SKILL.md'), 'my local tweak');
+    ups = await skillUpdatesFromLock(await buildInventory([a]), home);
+    assert.equal(ups[0]!.state, 'update+local-edits');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
