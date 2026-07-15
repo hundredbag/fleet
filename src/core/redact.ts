@@ -14,9 +14,13 @@ import type { ExecuteResult } from './orchestrator.js';
  * (env/headers/raw/url-creds) must never cross to an AI or a browser.
  */
 
-const SECRET_QUERY_KEY = /(token|key|secret|auth|sig|password|pwd|access)/i;
+const SECRET_QUERY_KEY = /(token|key|secret|auth|sig|password|pwd|access|credential|session|bearer)/i;
 
-/** Strip credentials embedded in a URL (userinfo + sensitive query params). */
+/**
+ * Strip credentials embedded in a URL (userinfo + sensitive query params +
+ * fragment). FAIL CLOSED: a string that doesn't parse as a URL may still carry
+ * a secret we can't locate, so it is replaced wholesale rather than passed on.
+ */
 export function redactUrl(url: string): string {
   try {
     const u = new URL(url);
@@ -27,10 +31,35 @@ export function redactUrl(url: string): string {
     for (const k of [...u.searchParams.keys()]) {
       if (SECRET_QUERY_KEY.test(k)) u.searchParams.set(k, 'REDACTED');
     }
+    u.hash = ''; // fragments can carry tokens and are never needed for display
     return u.toString();
   } catch {
-    return url;
+    return '[unparseable-url REDACTED]';
   }
+}
+
+/**
+ * Scrub common secret shapes out of free-form text (vendor-CLI output, error
+ * messages) before it reaches a ledger, an AI face or a browser. Boring,
+ * high-precision patterns only — no entropy guessing.
+ */
+const SECRET_TEXT_PATTERNS: RegExp[] = [
+  /:\/\/[^/\s@]+@/g, // URL userinfo
+  /\b(api[_-]?key|token|secret|password|passwd|authorization|bearer)\b(\s*[=:]\s*)\S+/gi, // key=value
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, // JWT
+  /\bsk-[A-Za-z0-9_-]{20,}\b/g, // OpenAI-style keys
+  /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, // GitHub tokens
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
+  /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key ids
+];
+
+export function scrubSecrets(text: string): string {
+  let out = text;
+  out = out.replace(SECRET_TEXT_PATTERNS[0]!, '://REDACTED@');
+  out = out.replace(SECRET_TEXT_PATTERNS[1]!, '$1$2REDACTED');
+  for (const re of SECRET_TEXT_PATTERNS.slice(2)) out = out.replace(re, 'REDACTED');
+  return out;
 }
 
 /** Inventory summary with NO secrets (env/headers/raw dropped; URL creds redacted). */

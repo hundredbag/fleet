@@ -3,6 +3,7 @@ import { appendFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { scrubSecrets } from './redact.js';
 
 /**
  * Delegated plugin install/remove: fleet never writes vendor plugin dirs — it
@@ -109,8 +110,9 @@ export async function runDelegated(
   if (!opts.commit) return { status: 'preview', agent: plan.agent, command, undoCommand };
 
   const { exitCode, output } = await (opts.runner ?? defaultRunner)(plan.argv);
-  // scrub creds-in-URL userinfo before the tail reaches the ledger / an AI face
-  const outputTail = output.slice(-2000).replace(/:\/\/[^/\s@]+@/g, '://REDACTED@');
+  // structured secret scrub (URL userinfo, key=value, JWT/vendor token shapes)
+  // before the tail reaches the ledger / an AI face
+  const outputTail = scrubSecrets(output.slice(-2000));
   const home = opts.fleetHome ?? join(homedir(), '.fleet');
   await mkdir(home, { recursive: true });
   await appendFile(

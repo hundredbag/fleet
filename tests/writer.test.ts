@@ -12,6 +12,7 @@ import {
   type ChangeValidator,
   type PlannedChange,
 } from '../src/core/writer.js';
+import { sha256 } from '../src/core/hash.js';
 
 function withTempDir(fn: (dir: string) => void | Promise<void>) {
   return async () => {
@@ -120,6 +121,7 @@ test(
       scope: 'user',
       file: target,
       newContent: JSON.stringify({ mcpServers: {} }, null, 2) + '\n',
+      baseHash: sha256('{ this is : not json'), // plan saw the (broken) file
     };
     await assert.rejects(applyChanges([change], jsonValidate, { fleetHome: home }), /does not parse/);
     assert.equal(readFileSync(target, 'utf8'), '{ this is : not json'); // untouched
@@ -165,6 +167,7 @@ test(
       scope: 'user',
       file: claudeJson,
       newContent: 'NOT JSON',
+      baseHash: sha256(readFileSync(claudeJson, 'utf8')), // plan saw the seeded file
     };
     await assert.rejects(applyChanges([bad], jsonValidate, { fleetHome: home }), /validation failed/);
     const doc = JSON.parse(readFileSync(claudeJson, 'utf8'));

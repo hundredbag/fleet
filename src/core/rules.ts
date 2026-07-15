@@ -59,18 +59,26 @@ export function removeRuleBlock(text: string, name: string): string {
     `^<!-- fleet:rule:${esc(name)} -->[ \\t]*\\r?\\n[\\s\\S]*?\\r?\\n<!-- /fleet:rule:${esc(name)} -->[ \\t]*\\r?\\n?`,
     'm',
   );
-  return text.replace(re, '').replace(/\n{3,}/g, '\n\n');
+  // remove ONLY the block; never reflow human content (a global newline
+  // collapse would silently rewrite human-authored spacing anywhere in the file)
+  return text.replace(re, '');
 }
 
-/** The file with every fleet block stripped, reduced to its non-blank content
- * lines — the part fleet must never change. */
+/** Every fleet block (incl. its trailing newline) stripped — matches what
+ * removeRuleBlock/upsertRuleBlock actually touch. */
+function stripFleetBlocks(text: string): string {
+  return text.replace(
+    /^<!-- fleet:rule:([A-Za-z0-9._-]+) -->[ \t]*\r?\n[\s\S]*?\r?\n<!-- \/fleet:rule:\1 -->[ \t]*\r?\n?/gm,
+    '',
+  );
+}
+
+/** The file with every fleet block stripped — BYTE-EXACT except for trailing
+ * whitespace at EOF (where fleet legitimately adds/removes block separators).
+ * This is the part fleet must never change: internal blank lines and trailing
+ * spaces in human content are preserved and therefore protected. */
 function humanRemainder(text: string): string {
-  return text
-    .replace(allBlocksRe(), '')
-    .split(/\r?\n/)
-    .map((l) => l.replace(/\s+$/, ''))
-    .filter((l) => l !== '')
-    .join('\n');
+  return stripFleetBlocks(text).replace(/\s+$/, '');
 }
 
 /** Refuse any change that would alter human-authored (non-fleet) content. */
