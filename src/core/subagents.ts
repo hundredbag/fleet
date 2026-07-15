@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, basename, extname } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import type { SubagentCapability } from './types.js';
@@ -64,8 +64,15 @@ export async function readClaudeSubagents(agent: string, dir: string): Promise<S
     return [];
   }
   for (const e of entries) {
-    if (!e.isFile() || extname(e.name) !== '.md') continue;
+    if (extname(e.name) !== '.md') continue;
     const path = join(dir, e.name);
+    // dotfiles layouts symlink definitions in — follow, but require a REGULAR
+    // file (stat follows; a FIFO/dir named *.md is rejected)
+    try {
+      if (!(await stat(path)).isFile()) continue;
+    } catch {
+      continue; // dangling
+    }
     try {
       const { meta, body } = parseFrontmatter(await readFile(path, 'utf8'));
       out.push({
@@ -104,8 +111,13 @@ export async function readCodexSubagents(agent: string, dir: string): Promise<Su
     return [];
   }
   for (const e of entries) {
-    if (!e.isFile() || extname(e.name) !== '.toml') continue;
+    if (extname(e.name) !== '.toml') continue;
     const path = join(dir, e.name);
+    try {
+      if (!(await stat(path)).isFile()) continue;
+    } catch {
+      continue; // dangling
+    }
     try {
       const doc = parseToml(await readFile(path, 'utf8')) as Record<string, unknown>;
       const instructions = typeof doc.developer_instructions === 'string' ? doc.developer_instructions : '';

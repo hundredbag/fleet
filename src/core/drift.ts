@@ -144,7 +144,9 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
   const claimsAny = (i: { kind: string; name: string; agent: string }) =>
     keyed.has(lockKey(i.kind, i.name, i.agent, '*'));
   const unmanaged = inv.items
-    .filter((i) => i.kind === 'mcp-server' || i.kind === 'plugin' || i.kind === 'skill') // skills: injection surface too (noise accepted)
+    .filter(
+      (i) => i.kind === 'mcp-server' || i.kind === 'plugin' || i.kind === 'skill' || i.kind === 'subagent',
+    ) // skills: injection surface too (noise accepted)
     .filter((i) => !keyed.has(lockKey(i.kind, i.name, i.agent, i.scope)) && !claimsAny(i))
     .map((i) => ({ kind: i.kind, name: i.name, agent: i.agent, scope: i.scope }));
 

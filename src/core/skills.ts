@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile, realpath, stat, lstat } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { join, relative, sep, resolve } from 'node:path';
 import type { SkillCapability } from './types.js';
 import type { CapabilityRef, RenderResult, SkillSource } from './adapter.js';
 import { hashDir, safeJoin } from './fsutil.js';
@@ -174,9 +174,15 @@ export async function renderSkillInstall(
 
 export async function renderSkillRemove(skillsRoot: string, ref: CapabilityRef): Promise<RenderResult> {
   // a symlinked skill was planted by an external tool (npx skills add) — say
-  // so instead of the hostile-shaped safeJoin rejection
+  // so instead of the hostile-shaped safeJoin rejection. Lexical containment
+  // FIRST: a traversal name must never reach the probe (or the friendly error
+  // would name an arbitrary out-of-root path).
   try {
-    const direct = join(skillsRoot, ref.name);
+    const base = resolve(skillsRoot);
+    const direct = resolve(base, ref.name);
+    if (direct !== base && !direct.startsWith(base + sep)) {
+      throw new Error(`fleet: invalid name "${ref.name}"`);
+    }
     const st = await lstat(direct);
     if (st.isSymbolicLink()) {
       throw new Error(

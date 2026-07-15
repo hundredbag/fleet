@@ -300,7 +300,7 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         }));
         return {
           updates,
-          skillUpdates: await skillUpdatesFromLock(inv),
+          skillUpdates: await skillUpdatesFromLock(inv, opts.fleetHome),
           recommendations,
           failures,
           note: 'Heuristic (novelty+popularity+relevance); verify before installing. Skills are SAMPLED from skill registries (not exhaustive); plugins come from locally-registered marketplace catalogs (install via plugin_install). Absence of results may just mean sources were unreachable (see failures).',
