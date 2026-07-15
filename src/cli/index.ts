@@ -28,11 +28,13 @@ import { startFleetServer } from '../web/server.js';
 import { loadConfig, configPath } from '../core/config.js';
 import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.js';
 import { redactUrl } from '../core/redact.js';
+import { runDoctor } from '../core/doctor.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
 Usage:
   fleet inventory [--json]                 Show installed capabilities (all agents)
+  fleet doctor                             Health checks (adapters/state/config); exit 0/1/2
 
   fleet install <name> --to <ids|all> \\
         (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
@@ -406,6 +408,22 @@ async function main(argv: string[]): Promise<number> {
       const allowHosts = flagHosts.length ? flagHosts : cfg.allowHosts;
       startFleetServer(adapters, { port, host, allowHosts });
       return 0; // the listening server keeps the process alive
+    }
+    case 'doctor': {
+      const report = await runDoctor();
+      const icon = { ok: '\u2713', warn: '\u26a0', error: '\u2717' } as const;
+      let cat = '';
+      for (const f of report.findings) {
+        if (f.category !== cat) {
+          cat = f.category;
+          process.stdout.write(`\n[${cat}]\n`);
+        }
+        process.stdout.write(`  ${icon[f.level]} ${f.message}\n`);
+      }
+      process.stdout.write(
+        `\n${report.exitCode === 0 ? 'healthy' : report.exitCode === 1 ? 'warnings — see above' : 'ERRORS — see above'}\n`,
+      );
+      return report.exitCode;
     }
     case 'config': {
       const cfg = loadConfig();

@@ -304,7 +304,7 @@ test('apply: skill source edited between plan and apply is refused (sourceHash p
     const { renderSkillInstall } = await import('../src/core/skills.js');
     const r = await renderSkillInstall(
       join(dir, 'root'),
-      { dir: src },
+      { name: 'sk', dir: src },
       { name: 'sk', kind: 'skill', scope: 'user' },
     );
     writeFileSync(join(src, 'SKILL.md'), 'TAMPERED after preview');

@@ -18,6 +18,7 @@ import {
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { summarizeInventory, summarizeResult } from '../core/redact.js';
+import { runDoctor } from '../core/doctor.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { defaultSources } from '../feed/index.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
@@ -225,6 +226,13 @@ export function buildTools(adapters: AgentAdapter[], opts: { fleetHome?: string 
         const targets = await resolveTargets(adapters, targetArg(a.from));
         return summarizeResult(await run(await planRemoveRule(adapters, String(a.name), targets), a.commit));
       },
+    },
+    {
+      name: 'doctor',
+      description:
+        "Health checks over fleet's dependencies: agent adapters (configs parse?), fleet state (audit/backups/lock/ledger), and config.json. Read-only; exitCode 0 healthy / 1 warnings / 2 errors.",
+      inputSchema: {},
+      handler: async () => runDoctor({ adapters }),
     },
     {
       name: 'whats_new',
