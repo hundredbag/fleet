@@ -77,3 +77,21 @@ test('pack: variant path traversal and symlinks are rejected; in-pack file works
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test('pack: INTERMEDIATE symlinked dir cannot smuggle outside content (safeJoin reuse)', async () => {
+  const { symlinkSync } = await import('node:fs');
+  const dir = tmp();
+  const outside = mkdtempSync(join(tmpdir(), 'fleet-out2-'));
+  try {
+    writeFileSync(join(outside, 'bashrc.md'), 'OUTSIDE CONTENT');
+    symlinkSync(outside, join(dir, 'sub')); // dir-level symlink INSIDE the pack
+    writeFileSync(join(dir, 'safe.md'), 'SAFE');
+    const rule = { name: 'r', variants: { full: 'sub/bashrc.md', nano: 'safe.md' } };
+    const r = await readPackRuleBody(dir, rule, 'full');
+    assert.equal(r.body, 'SAFE'); // intermediate-symlink variant skipped
+    assert.equal(r.usedVariant, 'nano');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

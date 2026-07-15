@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   Inventory,
@@ -33,7 +33,6 @@ export interface ProfileServer {
 
 export interface Profile {
   version: 1;
-  exportedAt: string;
   servers: ProfileServer[];
   rules: { name: string; body: string }[];
   /** skill dir names copied under <profile>/skills/ */
@@ -164,6 +163,7 @@ export async function exportProfile(
       conflicts.push({ kind: 'skill', name, agents: sks.map((sk) => sk.agent) });
       continue;
     }
+    await rm(join(dir, 'skills', name), { recursive: true, force: true }); // no stale-file accretion on re-export
     await copyDir(sks[0]!.path, join(dir, 'skills', name));
     skills.push(name);
   }
@@ -171,7 +171,8 @@ export async function exportProfile(
   servers.sort((a, b) => a.name.localeCompare(b.name));
   rules.sort((a, b) => a.name.localeCompare(b.name));
   skills.sort();
-  const profile: Profile = { version: 1, exportedAt: new Date().toISOString(), servers, rules, skills };
+  // no timestamp field: an unchanged re-export must be a zero-diff for git
+  const profile: Profile = { version: 1, servers, rules, skills };
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'profile.json'), JSON.stringify(profile, null, 2) + '\n', 'utf8');
   return { profile, conflicts };
@@ -196,6 +197,17 @@ export async function readProfile(dir: string): Promise<Profile> {
     !Array.isArray(doc.skills)
   ) {
     throw new Error(`fleet: ${p} is not a valid fleet profile`);
+  }
+  for (const srv of doc.servers) {
+    if (
+      !srv ||
+      typeof srv !== 'object' ||
+      typeof srv.name !== 'string' ||
+      !srv.spec ||
+      typeof srv.spec !== 'object'
+    ) {
+      throw new Error(`fleet: ${p} has a malformed server entry${srv?.name ? ` ("${srv.name}")` : ''}`);
+    }
   }
   if (doc.servers.length > MAX_ITEMS || doc.rules.length > MAX_ITEMS || doc.skills.length > MAX_ITEMS) {
     throw new Error(`fleet: ${p} lists more than ${MAX_ITEMS} items of one kind — refusing`);

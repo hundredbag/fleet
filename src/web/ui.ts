@@ -535,7 +535,7 @@ async function loadFeed(live){
   renderFeed(cache.feed);
 }
 function renderFeed(feed){
-  stat('st-upd', feed.updates.length);
+  stat('st-upd', feed.updates.length + ((feed.skillUpdates||[]).length));
   const up = document.getElementById('updates'); up.innerHTML='';
   var totalUps = feed.updates.length + ((feed.skillUpdates||[]).length);
   if(!totalUps) up.appendChild(el('p','empty',T('emptyUpd')));

@@ -550,6 +550,11 @@ async function main(argv: string[]): Promise<number> {
           `${profile.rules.length} rules, ${profile.skills.length} skills\n` +
           `  secret VALUES are never written — commit the dir to git safely.\n`,
       );
+      if (conflicts.length > 0) {
+        process.stdout.write(
+          `  profile written WITHOUT the ${conflicts.length} excluded item(s) below (exit 1):\n`,
+        );
+      }
       for (const c of conflicts) {
         process.stdout.write(
           `  \u26a0 EXCLUDED ${c.kind} "${c.name}": definitions diverge across ${c.agents.join(', ')} — align and re-export\n`,
@@ -574,6 +579,11 @@ async function main(argv: string[]): Promise<number> {
           );
           rc = 1;
           continue;
+        }
+        if (spec.transport !== 'stdio' && spec.bearerTokenEnvVar && !process.env[spec.bearerTokenEnvVar]) {
+          process.stdout.write(
+            `\u26a0 ${srv.name}: bearerTokenEnvVar '${spec.bearerTokenEnvVar}' is not set on this machine — the server will land configured but broken\n`,
+          );
         }
         resolved.push({ name: srv.name, spec });
       }

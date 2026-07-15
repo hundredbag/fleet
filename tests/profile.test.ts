@@ -115,3 +115,27 @@ test('secretRefName: injective across sanitize aliases and deterministic', () =>
   assert.notEqual(secretRefName('s', 'ENV', 'A-B'), secretRefName('s', 'ENV', 'A_B'));
   assert.equal(secretRefName('s', 'ENV', 'K'), secretRefName('s', 'ENV', 'K')); // stable
 });
+
+test('export: divergent same-name definitions are EXCLUDED and reported (no silent loss)', async () => {
+  const dir = tmp();
+  try {
+    const a = hermeticClaude(dir); // has 'secretive' with API_TOKEN env
+    const inv = await buildInventory([a]);
+    // fabricate a second agent carrying a DIVERGENT spec under the same name
+    inv.items.push({
+      kind: 'mcp-server',
+      name: 'secretive',
+      agent: 'codex',
+      scope: 'user',
+      enabled: true,
+      spec: { transport: 'stdio', command: 'uvx', args: ['other-pkg'] },
+      source: { file: 'x' },
+    } as (typeof inv.items)[number]);
+    const { profile, conflicts } = await exportProfile(inv, join(dir, 'out'));
+    assert.equal(profile.servers.length, 0); // excluded, not first-wins
+    assert.equal(conflicts.length, 1);
+    assert.deepEqual(conflicts[0]!.agents.sort(), ['claude-code', 'codex']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

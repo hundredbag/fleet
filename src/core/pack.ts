@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { readFile, lstat, stat } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { join } from 'node:path';
 import { listSkillDirs } from './skills.js';
+import { safeJoin } from './fsutil.js';
 
 /**
  * Packs — curated capability bundles installed through the existing engines
@@ -98,16 +99,20 @@ export async function readPackRuleBody(
       : variant === 'mini'
         ? ['mini', 'nano', 'full']
         : ['full', 'mini', 'nano'];
-  const base = resolve(dir);
   for (const v of order) {
     const rel = rule.variants[v];
     if (!rel) continue;
-    // CONTAINMENT: '../outside' or a symlink must not install arbitrary local
-    // file contents as an always-on rule
-    const p = resolve(base, rel);
-    if (p !== base && !p.startsWith(base + sep)) continue;
+    // CONTAINMENT: safeJoin rejects traversal AND any symlink component below
+    // the pack root (an intermediate dir-symlink was the last bypass) — a
+    // non-contained variant is skipped so the fallback chain continues
+    let p: string;
     try {
-      if (!(await lstat(p)).isFile()) continue; // no symlinks, no FIFOs
+      p = safeJoin(dir, rel);
+    } catch {
+      continue;
+    }
+    try {
+      if (!(await lstat(p)).isFile()) continue; // no leaf symlinks, no FIFOs
     } catch {
       continue;
     }
