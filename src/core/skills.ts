@@ -99,6 +99,7 @@ export async function renderSkillInstall(
   const exists = existsSync(target);
   return {
     file: target,
+    kind: 'skill',
     fsKind: 'dir',
     dirOp: 'install',
     sourceDir: source.dir,
@@ -115,6 +116,7 @@ export async function renderSkillRemove(skillsRoot: string, ref: CapabilityRef):
   if (!existsSync(target)) throw new Error(`skill "${ref.name}" is not installed`);
   return {
     file: target,
+    kind: 'skill',
     fsKind: 'dir',
     dirOp: 'remove',
     newContent: '', // unused for dir kind

@@ -8,6 +8,8 @@ import { planPluginAction, runDelegated } from '../src/core/delegate.js';
 test('planPluginAction: vendor argv table + undo', () => {
   assert.deepEqual(planPluginAction('claude-code', 'install', 'figma@official'), {
     agent: 'claude-code',
+    op: 'install',
+    selector: 'figma@official',
     argv: ['claude', 'plugin', 'install', 'figma@official'],
     undoArgv: ['claude', 'plugin', 'uninstall', 'figma@official'],
   });

@@ -23,6 +23,8 @@ export interface ApplyResult {
   auditId: string;
   /** backup path, or '' if the file did not exist before */
   backup: string;
+  /** what fleet left behind (file: sha256 of content; dir: manifest hash; '' for dir removes) */
+  wroteHash: string;
 }
 
 /** Validate written content for a change; throw to refuse/trigger restore. */
@@ -251,9 +253,10 @@ async function applyFileChange(
   }
 
   const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  const wroteHash = sha256(change.newContent);
   // push BEFORE the audit append: if the append fails the mutation still
   // happened, and err.applied (set by applyChanges) must reflect reality
-  results.push({ change, auditId: id, backup });
+  results.push({ change, auditId: id, backup, wroteHash });
   try {
     await appendAudit(home, {
       id,
@@ -265,7 +268,7 @@ async function applyFileChange(
       scope: change.scope,
       backup,
       existedBefore,
-      wroteHash: sha256(change.newContent),
+      wroteHash,
     });
   } catch (err) {
     // the mutation already happened — say so explicitly and point at the backup
@@ -363,7 +366,8 @@ async function applyDirChange(
   }
 
   const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
-  results.push({ change, auditId: id, backup }); // before append — see applyFileChange
+  const wroteHash = change.dirOp === 'remove' ? '' : await hashDir(target);
+  results.push({ change, auditId: id, backup, wroteHash }); // before append — see applyFileChange
   try {
     await appendAudit(home, {
       id,
@@ -375,7 +379,7 @@ async function applyDirChange(
       scope: change.scope,
       backup,
       existedBefore,
-      wroteHash: change.dirOp === 'remove' ? '' : await hashDir(target),
+      wroteHash,
       isDir: true,
     });
   } catch (err) {

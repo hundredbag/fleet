@@ -29,12 +29,14 @@ import { loadConfig, configPath } from '../core/config.js';
 import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.js';
 import { redactUrl } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
+import { readLock } from '../core/lock.js';
 
 const HELP = `fleet — unified cross-agent capability manager (v0)
 
 Usage:
   fleet inventory [--json]                 Show installed capabilities (all agents)
   fleet doctor                             Health checks (adapters/state/config); exit 0/1/2
+  fleet lock [--json]                      Provenance of fleet-installed capabilities
 
   fleet install <name> --to <ids|all> \\
         (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
@@ -409,8 +411,34 @@ async function main(argv: string[]): Promise<number> {
       startFleetServer(adapters, { port, host, allowHosts });
       return 0; // the listening server keeps the process alive
     }
+    case 'lock': {
+      const lock = await readLock();
+      const entries = Object.values(lock.entries);
+      if (p.flags.json === true) {
+        process.stdout.write(JSON.stringify(lock, null, 2) + '\n');
+        return 0;
+      }
+      if (entries.length === 0) {
+        process.stdout.write('fleet.lock: no fleet-installed capabilities recorded yet\n');
+        return 0;
+      }
+      for (const e of entries) {
+        const org =
+          e.origin.type === 'npm' || e.origin.type === 'pypi'
+            ? `${e.origin.type}:${e.origin.id}${e.origin.version ? '@' + e.origin.version : ''}`
+            : e.origin.type === 'dir'
+              ? `dir:${e.origin.path}`
+              : e.origin.type === 'marketplace'
+                ? `marketplace:${e.origin.selector}`
+                : 'manual';
+        process.stdout.write(
+          `  ${e.kind.padEnd(10)} ${e.name.padEnd(24)} ${e.agent.padEnd(12)} ${org}  (${e.installedAt.slice(0, 10)})\n`,
+        );
+      }
+      return 0;
+    }
     case 'doctor': {
-      const report = await runDoctor();
+      const report = await runDoctor({ adapters }); // reuse — don't load BYO factories twice
       const icon = { ok: '\u2713', warn: '\u26a0', error: '\u2717' } as const;
       let cat = '';
       for (const f of report.findings) {

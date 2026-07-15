@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { McpServerSpec } from '../core/types.js';
+import type { McpServerSpec } from './types.js';
 
 /**
  * A package coordinate extracted from an installed MCP server's spec, used to

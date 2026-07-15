@@ -1,4 +1,6 @@
 import { existsSync } from 'node:fs';
+import { extractCoordinate } from './coords.js';
+import { updateLockFromApplied, type CapabilityOrigin } from './lock.js';
 import { readFile } from 'node:fs/promises';
 import type { AgentAdapter, AgentWriter, RuleWriter, SkillSource, SkillWriter } from './adapter.js';
 import type { AgentId, McpServerSpec, RuleCapability, Scope } from './types.js';
@@ -27,6 +29,8 @@ export interface PlanSkip {
 export interface Plan {
   changes: PlannedChange[];
   skips: PlanSkip[];
+  /** provenance for the lock file — set by planners that know where the bytes came from */
+  origin?: CapabilityOrigin;
 }
 
 type WriterAdapter = AgentAdapter & AgentWriter;
@@ -87,6 +91,11 @@ export async function planInstall(
   scope: Scope,
   targetIds: AgentId[],
 ): Promise<Plan> {
+  const coord = extractCoordinate(spec);
+  const origin: CapabilityOrigin =
+    coord?.confidence === 'high' && (coord.ecosystem === 'npm' || coord.ecosystem === 'pypi')
+      ? { type: coord.ecosystem, id: coord.id, ...(coord.version ? { version: coord.version } : {}) }
+      : { type: 'manual' };
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   for (const a of writerAdapters(adapters)) {
@@ -113,7 +122,7 @@ export async function planInstall(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips };
+  return { changes, skips, origin: origin };
 }
 
 /** Plan removing a server from each target agent. */
@@ -218,7 +227,7 @@ export async function planInstallSkill(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips };
+  return { changes, skips, origin: { type: 'dir', path: source.dir } };
 }
 
 /** Plan removing a skill from each target agent. */
@@ -337,7 +346,7 @@ export async function planInstallRule(
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  return { changes, skips };
+  return { changes, skips, origin: { type: 'manual' } };
 }
 
 /** Plan removing a rule block from each target agent. */
@@ -422,6 +431,8 @@ export interface ExecuteResult {
   /** set when a commit failed partway: how many changes were applied first */
   failedAfter?: number;
   error?: string;
+  /** the change applied but recording provenance in fleet.lock failed */
+  lockWarning?: string;
 }
 
 /**
@@ -437,11 +448,30 @@ export async function execute(
   const base = { changes: plan.changes, skips: plan.skips };
   if (!opts.commit) return { ...base, committed: false, applied: [] };
   if (plan.changes.length === 0) return { ...base, committed: true, applied: [] };
+  // the lock is metadata — its failure must never mask a successful apply
+  const foldLock = async (applied: ApplyResult[]): Promise<string | undefined> => {
+    if (applied.length === 0) return undefined;
+    try {
+      await updateLockFromApplied(applied, plan.origin ?? { type: 'manual' }, opts.fleetHome);
+      return undefined;
+    } catch (e) {
+      return `applied, but fleet.lock update failed: ${msg(e)}`;
+    }
+  };
   try {
     const applied = await applyPlan(adapters, plan, { fleetHome: opts.fleetHome });
-    return { ...base, committed: true, applied };
+    const lockWarning = await foldLock(applied);
+    return { ...base, committed: true, applied, ...(lockWarning ? { lockWarning } : {}) };
   } catch (err) {
     const applied = (err as { applied?: ApplyResult[] }).applied ?? [];
-    return { ...base, committed: true, applied, failedAfter: applied.length, error: msg(err) };
+    const lockWarning = await foldLock(applied);
+    return {
+      ...base,
+      committed: true,
+      applied,
+      failedAfter: applied.length,
+      error: msg(err),
+      ...(lockWarning ? { lockWarning } : {}),
+    };
   }
 }

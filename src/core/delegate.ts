@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { scrubSecrets } from './redact.js';
+import { updateLockForPlugin } from './lock.js';
 
 /**
  * Delegated plugin install/remove: fleet never writes vendor plugin dirs — it
@@ -22,6 +23,8 @@ export type PluginOp = 'install' | 'remove';
 
 export interface DelegatedPlan {
   agent: string;
+  op: PluginOp;
+  selector: string;
   argv: string[];
   undoArgv?: string[];
 }
@@ -41,6 +44,8 @@ export function planPluginAction(agent: string, op: PluginOp, selector: string):
   if (!cmds) throw new Error(`agent '${agent}' has no plugin CLI support (built-ins: claude-code, codex)`);
   return {
     agent,
+    op,
+    selector,
     argv: [...cmds[op], selector],
     undoArgv: op === 'install' ? [...cmds.remove, selector] : undefined,
   };
@@ -123,6 +128,13 @@ export async function runDelegated(
       '\n',
     'utf8',
   );
+  if (exitCode === 0) {
+    try {
+      await updateLockForPlugin(plan.op, plan.agent, plan.selector, opts.fleetHome);
+    } catch {
+      /* lock is metadata — the vendor CLI already succeeded */
+    }
+  }
   return {
     status: exitCode === 0 ? 'applied' : 'failed',
     agent: plan.agent,
