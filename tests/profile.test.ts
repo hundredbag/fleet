@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { buildInventory } from '../src/core/inventory.js';
-import { exportProfile, readProfile, resolveSecretRefs } from '../src/core/profile.js';
+import { exportProfile, readProfile, resolveSecretRefs, secretRefName } from '../src/core/profile.js';
 import { planInstall, execute } from '../src/core/orchestrator.js';
 
 function tmp(): string {
@@ -38,8 +38,9 @@ test('export: secret VALUES never land in the profile; refs + required names do'
     const { profile } = await exportProfile(await buildInventory([a]), out);
     const raw = readFileSync(join(out, 'profile.json'), 'utf8');
     assert.ok(!raw.includes('hunter2'), 'secret value leaked into profile');
-    assert.ok(raw.includes('${secret:S_SECRETIVE_ENV_API_TOKEN}'));
-    assert.deepEqual(profile.servers[0]!.requiredSecrets, ['S_SECRETIVE_ENV_API_TOKEN']);
+    const REF = secretRefName('secretive', 'ENV', 'API_TOKEN');
+    assert.ok(raw.includes('${secret:' + REF + '}'));
+    assert.deepEqual(profile.servers[0]!.requiredSecrets, [REF]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -55,11 +56,11 @@ test('import: missing secret refuses THAT server; present secret resolves', asyn
     const spec = profile.servers[0]!.spec;
 
     const missing = resolveSecretRefs(spec, {}, profile.servers[0]!.requiredSecrets);
-    assert.deepEqual(missing.missing, ['S_SECRETIVE_ENV_API_TOKEN']);
+    assert.deepEqual(missing.missing, [secretRefName('secretive', 'ENV', 'API_TOKEN')]);
 
     const ok = resolveSecretRefs(
       spec,
-      { S_SECRETIVE_ENV_API_TOKEN: 'new-machine-value' },
+      { [secretRefName('secretive', 'ENV', 'API_TOKEN')]: 'new-machine-value' },
       profile.servers[0]!.requiredSecrets,
     );
     assert.deepEqual(ok.missing, []);
@@ -93,7 +94,7 @@ test('round-trip: export machine A → import to fresh machine B (skills + serve
     const profile = await readProfile(out);
     const { spec } = resolveSecretRefs(
       profile.servers[0]!.spec,
-      { S_SECRETIVE_ENV_API_TOKEN: 'b-token' },
+      { [secretRefName('secretive', 'ENV', 'API_TOKEN')]: 'b-token' },
       profile.servers[0]!.requiredSecrets,
     );
     const plan = await planInstall([b], spec, profile.servers[0]!.name, 'user', ['claude-code'], {
@@ -107,4 +108,10 @@ test('round-trip: export machine A → import to fresh machine B (skills + serve
     rmSync(dirA, { recursive: true, force: true });
     rmSync(dirB, { recursive: true, force: true });
   }
+});
+
+test('secretRefName: injective across sanitize aliases and deterministic', () => {
+  assert.notEqual(secretRefName('foo-bar', 'ENV', 'KEY'), secretRefName('foo_bar', 'ENV', 'KEY'));
+  assert.notEqual(secretRefName('s', 'ENV', 'A-B'), secretRefName('s', 'ENV', 'A_B'));
+  assert.equal(secretRefName('s', 'ENV', 'K'), secretRefName('s', 'ENV', 'K')); // stable
 });

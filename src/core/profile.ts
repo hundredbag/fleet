@@ -9,6 +9,8 @@ import type {
   SkillCapability,
 } from './types.js';
 import { copyDir, hashDir } from './fsutil.js';
+import { sha256 } from './hash.js';
+import { specHash } from './lock.js';
 
 /**
  * Portable profile export/import — the "sync ~/.claude across machines" the
@@ -40,21 +42,21 @@ export interface Profile {
 
 const SECRET_REF = /^\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-/** Collision-free ref id: S_<server>_<channel>_<key>, sanitized. Including the
- * server name means two servers' API_KEYs never alias; the S_ prefix keeps
- * digit-leading keys inside the ref grammar. Residual sanitize collisions get
- * a numeric suffix. */
+/** Injective + DETERMINISTIC ref id: a readable sanitized prefix plus a hash
+ * of the raw (server, channel, key) tuple. The hash makes the mapping stable
+ * under key reordering and collision-free across sanitize aliases ('foo-bar'
+ * vs 'foo_bar', 'A-B' vs 'A_B') — an order-dependent counter could silently
+ * bind an existing env value to the WRONG key. */
+export function secretRefName(serverName: string, channel: string, key: string): string {
+  const readable = `${serverName}_${channel}_${key}`.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+  const digest = sha256(`${serverName}\u0000${channel}\u0000${key}`).slice(0, 6).toUpperCase();
+  return `S_${readable}_${digest}`;
+}
+
 function toSecretRefs(spec: McpServerSpec, serverName: string): { spec: McpServerSpec; required: string[] } {
   const required: string[] = [];
-  const used = new Set<string>();
   const clone: McpServerSpec = JSON.parse(JSON.stringify(spec));
-  const mkRef = (channel: string, key: string): string => {
-    const base = `S_${serverName}_${channel}_${key}`.replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
-    let ref = base;
-    for (let i = 2; used.has(ref); i++) ref = `${base}_${i}`;
-    used.add(ref);
-    return ref;
-  };
+  const mkRef = (channel: string, key: string): string => secretRefName(serverName, channel, key);
   const scrub = (obj: Record<string, string> | undefined, channel: string): void => {
     if (!obj) return;
     for (const k of Object.keys(obj)) {
@@ -121,7 +123,7 @@ export async function exportProfile(
   const servers: ProfileServer[] = [];
   for (const [name, caps] of serverByName) {
     // compare secret-SCRUBBED canonical shapes (values differ per machine)
-    const shapes = new Set(caps.map((c) => JSON.stringify(toSecretRefs(c.spec, name).spec)));
+    const shapes = new Set(caps.map((c) => specHash(toSecretRefs(c.spec, name).spec)));
     if (shapes.size > 1) {
       conflicts.push({ kind: 'mcp-server', name, agents: caps.map((c) => c.agent) });
       continue;

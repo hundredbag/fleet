@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, lstat, stat } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { listSkillDirs } from './skills.js';
 
 /**
@@ -36,16 +36,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /** Read a pack from a directory: manifest if present, else scan for skills. */
+const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_ITEMS = 200;
+// flat or nested dir names; no absolute paths, no '..' segments
+const SAFE_NAME = /^[A-Za-z0-9][\w.-]*(\/[A-Za-z0-9][\w.-]*)*$/;
+
 export async function readPack(dir: string): Promise<Pack> {
   const manifestPath = join(dir, 'pack.json');
   if (existsSync(manifestPath)) {
+    if ((await stat(manifestPath)).size > MAX_MANIFEST_BYTES) {
+      throw new Error(`fleet: ${manifestPath} exceeds 1 MiB — refusing to parse`);
+    }
     const doc = JSON.parse(await readFile(manifestPath, 'utf8'));
     if (!isRecord(doc) || typeof doc.name !== 'string' || !doc.name) {
       throw new Error(`fleet: ${manifestPath} is not a valid pack manifest (needs "name")`);
     }
     const skills = Array.isArray(doc.skills)
-      ? doc.skills.filter((s): s is string => typeof s === 'string')
+      ? doc.skills
+          .filter((s): s is string => typeof s === 'string')
+          .filter((s) => SAFE_NAME.test(s) && !s.split('/').includes('..'))
       : [];
+    if (skills.length > MAX_ITEMS || (Array.isArray(doc.rules) && doc.rules.length > MAX_ITEMS)) {
+      throw new Error(`fleet: ${manifestPath} lists more than ${MAX_ITEMS} items of one kind — refusing`);
+    }
     const rules: PackRule[] = [];
     if (Array.isArray(doc.rules)) {
       for (const r of doc.rules) {
@@ -85,11 +98,19 @@ export async function readPackRuleBody(
       : variant === 'mini'
         ? ['mini', 'nano', 'full']
         : ['full', 'mini', 'nano'];
+  const base = resolve(dir);
   for (const v of order) {
     const rel = rule.variants[v];
     if (!rel) continue;
-    const p = join(dir, rel);
-    if (!existsSync(p)) continue;
+    // CONTAINMENT: '../outside' or a symlink must not install arbitrary local
+    // file contents as an always-on rule
+    const p = resolve(base, rel);
+    if (p !== base && !p.startsWith(base + sep)) continue;
+    try {
+      if (!(await lstat(p)).isFile()) continue; // no symlinks, no FIFOs
+    } catch {
+      continue;
+    }
     return { body: await readFile(p, 'utf8'), usedVariant: v };
   }
   throw new Error(`fleet: pack rule "${rule.name}" has no readable variant file`);

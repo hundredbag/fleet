@@ -52,3 +52,28 @@ test('pack: manifest-less skills monorepo checkout — every skill dir is conten
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('pack: variant path traversal and symlinks are rejected; in-pack file works', async () => {
+  const { symlinkSync } = await import('node:fs');
+  const dir = tmp();
+  const outside = mkdtempSync(join(tmpdir(), 'fleet-outside-'));
+  try {
+    writeFileSync(join(outside, 'evil.md'), 'EVIL ALWAYS-ON RULE');
+    writeFileSync(join(dir, 'good.md'), 'GOOD');
+    symlinkSync(join(outside, 'evil.md'), join(dir, 'link.md'));
+    const rule = {
+      name: 'r',
+      variants: {
+        full: '../' + outside.split('/').pop()! + '/evil.md', // traversal
+        mini: 'link.md', // symlink
+        nano: 'good.md', // legit
+      },
+    };
+    const r = await readPackRuleBody(dir, rule, 'full');
+    assert.equal(r.body, 'GOOD'); // traversal AND symlink skipped → nano fallback
+    assert.equal(r.usedVariant, 'nano');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
