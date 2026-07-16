@@ -419,3 +419,56 @@ test('web: inventory reflects an APPLY immediately (cache invalidated)', async (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('web actions: skill sync (claude→codex) plans through the skill engine, not MCP', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { ClaudeCodeAdapter } = await import('../src/adapters/claude-code.js');
+  const { CodexAdapter } = await import('../src/adapters/codex.js');
+  const { ActionService } = await import('../src/web/actions.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-wact-'));
+  try {
+    // claude has skill 'demo'; codex has none
+    writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{}}');
+    mkdirSync(join(dir, 'cskills', 'demo'), { recursive: true });
+    writeFileSync(join(dir, 'cskills', 'demo', 'SKILL.md'), '# demo');
+    const claude = new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      join(dir, 'cskills'),
+      join(dir, 'CLAUDE.md'),
+      join(dir, 'settings.json'),
+      join(dir, 'plugins'),
+    );
+    const codex = new CodexAdapter(
+      join(dir, 'config.toml'),
+      join(dir, 'xskills'),
+      join(dir, 'AGENTS.md'),
+      join(dir, '_shared'),
+    );
+    const svc = new ActionService([claude, codex], join(dir, 'home'));
+    const { planId, preview } = await svc.plan({
+      action: 'sync',
+      kind: 'skill',
+      name: 'demo',
+      from: 'claude-code',
+      to: ['codex'],
+    });
+    assert.equal(preview.changes.length, 1);
+    assert.equal(preview.changes[0]!.agent, 'codex');
+    await svc.apply({ planId });
+    const { existsSync } = await import('node:fs');
+    assert.ok(existsSync(join(dir, 'xskills', 'demo', 'SKILL.md'))); // landed on codex
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web actions: plugin selector is validated (no shell injection via marketplace)', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const svc = new ActionService([], undefined);
+  await assert.rejects(
+    svc.plan({ action: 'install', kind: 'plugin', name: 'x', to: ['codex'], marketplace: 'm; rm -rf /' }),
+    /unsafe plugin selector/,
+  );
+});

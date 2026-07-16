@@ -223,8 +223,8 @@ const I18N = {
     stAgents:'에이전트', stMcp:'MCP 서버', stSkill:'스킬', stRule:'룰', stPlugin:'플러그인', stUpd:'업데이트',
     invTitle:'인벤토리', invHint:'행을 클릭하면 상세 · 에이전트별 설치/제거',
     dStatus:'에이전트별 상태', dDesc:'설명', dRuns:'실행 명령', dPath:'경로', dMarket:'마켓', dVer:'버전', dTokens:'컨텍스트 비용(추정)',
-    dInstalled:'설치됨', dNot:'없음', dInstallTo:'{a}에 설치', dRemoveFrom:'{a}에서 제거',
-    dInfoOnly:'이 종류는 아직 조회만 지원해요 (설치/제거는 CLI: fleet '+'{k}'+' …)', close:'닫기',
+    dInstalled:'설치됨', dNot:'없음', dInstallTo:'{a}에 설치', dRemoveFrom:'{a}에서 제거', dInstallAllMissing:'없는 에이전트 모두에 설치',
+    dInfoOnly:'이 종류({k})는 읽기 전용이에요 — fleet은 조회만 하고 변경하지 않아요.', close:'닫기',
     updTitle:'업데이트', updHint:'레지스트리에 새 버전이 있는 항목',
     cfTitle:'충돌', cfHint:'상시 룰 간 상충 · 휴리스틱',
     recTitle:'추천 MCP 서버', recHint:'내 설정 기준 추천 · 휴리스틱',
@@ -251,8 +251,8 @@ const I18N = {
     stAgents:'agents', stMcp:'MCP servers', stSkill:'skills', stRule:'rules', stPlugin:'plugins', stUpd:'updates',
     invTitle:'Inventory', invHint:'click a row for details · per-agent install/remove',
     dStatus:'Status by agent', dDesc:'Description', dRuns:'Runs', dPath:'Path', dMarket:'Marketplace', dVer:'Version', dTokens:'Context cost (est.)',
-    dInstalled:'installed', dNot:'not installed', dInstallTo:'Install to {a}', dRemoveFrom:'Remove from {a}',
-    dInfoOnly:'This kind is read-only here for now (use the CLI: fleet {k} …)', close:'Close',
+    dInstalled:'installed', dNot:'not installed', dInstallTo:'Install to {a}', dRemoveFrom:'Remove from {a}', dInstallAllMissing:'Install to all missing agents',
+    dInfoOnly:'{k} is read-only — fleet inventories it but never changes it.', close:'Close',
     updTitle:'Updates', updHint:'newer version on the registry',
     cfTitle:'Conflicts', cfHint:'opposing always-on rules · heuristic',
     recTitle:'Recommended MCP servers', recHint:'for your setup · heuristic',
@@ -421,7 +421,10 @@ function openDetail(kind, name){
   if(first.model) kv(bar, 'model', first.model);
   if(first.tokensEst != null) kv(bar, T('dTokens'), '~' + first.tokensEst + ' tokens' + (kind === 'rule' ? ' · always-on' : ''));
   bar.appendChild(el('div','dsect', T('dStatus')));
-  const canAct = kind === 'mcp';
+  // core kind name for the API; permission/subagent have no writer → read-only
+  const CORE_KIND = { mcp:'mcp-server', skill:'skill', rule:'rule', plugin:'plugin' };
+  const coreKind = CORE_KIND[kind];
+  const canAct = !!coreKind;
   const haveAgents = found.map(function(x){ return x.agent; });
   agents.forEach(function(a){
     const mine = found.filter(function(x){ return x.agent === a; });
@@ -438,21 +441,43 @@ function openDetail(kind, name){
       right.appendChild(el('span','faint', bits || T('dInstalled')));
       if(canAct){
         const b = el('button','act', T('dRemoveFrom').replace('{a}', a));
-        b.addEventListener('click', function(){ doPlan({ action:'remove', name:name, from:[a] }); });
+        b.addEventListener('click', function(){ doPlan({ action:'remove', kind:coreKind, name:name, from:[a] }); });
         right.appendChild(b);
       }
     } else {
       right.appendChild(el('span','faint', T('dNot')));
       if(canAct && haveAgents.length){
         const b = el('button','act primary', T('dInstallTo').replace('{a}', a));
-        b.addEventListener('click', function(){ doPlan({ action:'sync', name:name, from:haveAgents[0], to:[a] }); });
+        if(coreKind === 'plugin'){
+          // plugins re-install from their source marketplace on the target agent
+          const srcEntry = found.filter(function(x){ return x.agent === haveAgents[0]; })[0] || {};
+          b.addEventListener('click', function(){ doPlan({ action:'install', kind:'plugin', name:name, to:[a], marketplace:srcEntry.marketplace }); });
+        } else {
+          b.addEventListener('click', function(){ doPlan({ action:'sync', kind:coreKind, name:name, from:haveAgents[0], to:[a] }); });
+        }
         right.appendChild(b);
       }
     }
     row.appendChild(right);
     bar.appendChild(row);
   });
-  if(!canAct){ bar.appendChild(el('div','meta', T('dInfoOnly').replace('{k}', kind==='plugin' ? 'plugin' : kind))); }
+  // one-click "put this on every agent that's missing it"
+  const missing = agents.filter(function(a){ return haveAgents.indexOf(a) < 0; });
+  if(canAct && haveAgents.length && missing.length > 1){
+    const allBtn = el('button','act primary', T('dInstallAllMissing'));
+    allBtn.style.marginTop = '8px';
+    allBtn.addEventListener('click', function(){
+      if(coreKind === 'plugin'){
+        const srcEntry = found.filter(function(x){ return x.agent === haveAgents[0]; })[0] || {};
+        // plugins target one agent each — fire them sequentially via the picker-less path
+        doPlan({ action:'install', kind:'plugin', name:name, to:[missing[0]], marketplace:srcEntry.marketplace });
+      } else {
+        doPlan({ action:'sync', kind:coreKind, name:name, from:haveAgents[0], to:missing });
+      }
+    });
+    bar.appendChild(allBtn);
+  }
+  if(!canAct){ bar.appendChild(el('div','meta', T('dInfoOnly').replace('{k}', kind))); }
   const act = el('div','pactions');
   const close = el('button',null,T('close')); close.addEventListener('click', clearPreview); act.appendChild(close);
   bar.appendChild(act);

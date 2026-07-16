@@ -6,11 +6,16 @@ import {
   planInstall,
   planSync,
   planRemove,
+  planSyncSkill,
+  planRemoveSkill,
+  planSyncRule,
+  planRemoveRule,
   execute,
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
+import { planPluginAction, runDelegated, type DelegatedPlan } from '../core/delegate.js';
 import { summarizeResult, redactUrl } from '../core/redact.js';
 import { invalidateInventoryCache } from './api.js';
 
@@ -79,17 +84,29 @@ function describeSpec(spec: McpServerSpec): string {
 
 export interface ActionBody {
   action?: string;
+  /** capability kind — routes sync/remove to the right engine (default mcp-server) */
+  kind?: string;
   name?: string;
   to?: unknown;
   from?: unknown;
   coordinate?: Coordinate;
+  /** for plugin sync: the source marketplace (selector = name@marketplace) */
+  marketplace?: string;
   planId?: string;
 }
 
 const MAX_PENDING = 100;
 
+/** A pending mutation: either a core Plan (execute pipeline) or a delegated
+ * vendor-CLI action (plugins). Both flow through the same preview→confirm. */
+type Pending = { type: 'core'; plan: Plan } | { type: 'delegated'; dplan: DelegatedPlan };
+
+// selector grammar reused from delegate.ts's boundary — name (or @scope/name)
+// optionally @marketplace; nothing else can reach the vendor CLI.
+const PLUGIN_SELECTOR = /^[A-Za-z0-9@][\w./-]*(@[\w.-]+)?$/;
+
 export class ActionService {
-  private readonly plans = new Map<string, Plan>();
+  private readonly plans = new Map<string, Pending>();
 
   constructor(
     private readonly adapters: AgentAdapter[],
@@ -100,6 +117,11 @@ export class ActionService {
   async plan(body: ActionBody) {
     const name = String(body.name ?? '').trim();
     if (!name) throw new Error('name is required');
+    const kind = String(body.kind ?? 'mcp-server');
+
+    // plugins live outside the core write engine — a delegated vendor-CLI action
+    if (kind === 'plugin') return this.planPlugin(body, name);
+
     let plan: Plan;
     let runs: string | undefined;
     switch (body.action) {
@@ -126,37 +148,96 @@ export class ActionService {
         break;
       }
       case 'sync': {
+        // "install what claude has onto codex too" — kind-routed cross-agent copy
         const targets = await resolveTargets(this.adapters, toTargets(body.to));
-        plan = await planSync(this.adapters, name, String(body.from ?? ''), targets);
+        const from = String(body.from ?? '');
+        plan =
+          kind === 'skill'
+            ? await planSyncSkill(this.adapters, name, from, targets)
+            : kind === 'rule'
+              ? await planSyncRule(this.adapters, name, from, targets)
+              : await planSync(this.adapters, name, from, targets);
         break;
       }
       case 'remove': {
         const targets = await resolveTargets(this.adapters, toTargets(body.from));
-        plan = await planRemove(this.adapters, name, targets);
+        plan =
+          kind === 'skill'
+            ? await planRemoveSkill(this.adapters, name, targets)
+            : kind === 'rule'
+              ? await planRemoveRule(this.adapters, name, targets)
+              : await planRemove(this.adapters, name, targets);
         break;
       }
       default:
         throw new Error(`unknown action '${body.action ?? ''}'`);
     }
-    if (this.plans.size >= MAX_PENDING) {
-      const oldest = this.plans.keys().next().value;
-      if (oldest) this.plans.delete(oldest);
-    }
-    const planId = randomBytes(12).toString('hex');
-    this.plans.set(planId, plan);
+    const planId = this.store({ type: 'core', plan });
     const preview = summarizeResult(
       await execute(this.adapters, plan, { commit: false, fleetHome: this.fleetHome }),
     );
     return { planId, preview, runs };
   }
 
+  /** Plugin install/remove goes through the delegated vendor CLI. The selector
+   * is name@marketplace for a sync-install (default action install). */
+  private async planPlugin(body: ActionBody, name: string) {
+    const op = body.action === 'remove' ? 'remove' : 'install';
+    const agent = op === 'remove' ? toTargets(body.from) : toTargets(body.to);
+    if (!agent || agent.includes(',') || agent === 'all') {
+      throw new Error('plugin actions target exactly one agent');
+    }
+    const selector = op === 'install' && body.marketplace ? `${name}@${body.marketplace}` : name;
+    if (!PLUGIN_SELECTOR.test(selector) || selector.includes('..')) {
+      throw new Error(`refusing unsafe plugin selector '${selector}'`);
+    }
+    const dplan = planPluginAction(agent, op, selector); // validates again at the boundary
+    const preview = await runDelegated(dplan, { commit: false, fleetHome: this.fleetHome });
+    const planId = this.store({ type: 'delegated', dplan });
+    return {
+      planId,
+      // shape the delegated preview like a core preview so the UI renders it uniformly
+      preview: {
+        status: 'preview' as const,
+        committed: false,
+        applied: 0,
+        changes: [{ agent, op, name, scope: 'user', file: '(vendor CLI)', warnings: undefined }],
+        skips: [],
+      },
+      runs: preview.command,
+    };
+  }
+
+  private store(p: Pending): string {
+    if (this.plans.size >= MAX_PENDING) {
+      const oldest = this.plans.keys().next().value;
+      if (oldest) this.plans.delete(oldest);
+    }
+    const planId = randomBytes(12).toString('hex');
+    this.plans.set(planId, p);
+    return planId;
+  }
+
   /** Apply a previously-planned change (by planId). Consumes the plan. */
   async apply(body: ActionBody) {
     const planId = String(body.planId ?? '');
-    const plan = this.plans.get(planId);
-    if (!plan) throw new Error('unknown planId — preview again before applying');
+    const pending = this.plans.get(planId);
+    if (!pending) throw new Error('unknown planId — preview again before applying');
     this.plans.delete(planId);
-    const result = await execute(this.adapters, plan, { commit: true, fleetHome: this.fleetHome });
+    if (pending.type === 'delegated') {
+      const r = await runDelegated(pending.dplan, { commit: true, fleetHome: this.fleetHome });
+      invalidateInventoryCache();
+      return {
+        status: r.status === 'applied' ? ('applied' as const) : ('failed' as const),
+        committed: true,
+        applied: r.status === 'applied' ? 1 : 0,
+        changes: [],
+        skips: [],
+        ...(r.status !== 'applied' ? { error: `vendor CLI exit ${r.exitCode ?? '?'}` } : {}),
+        ...(r.lockWarning ? { lockWarning: r.lockWarning } : {}),
+      };
+    }
+    const result = await execute(this.adapters, pending.plan, { commit: true, fleetHome: this.fleetHome });
     invalidateInventoryCache(); // a refresh right after apply must see the new state
     return summarizeResult(result);
   }
