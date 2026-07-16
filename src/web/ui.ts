@@ -355,6 +355,7 @@ function showPreview(res, onConfirm){
   const changes = preview.changes || [];
   bar.appendChild(el('div','ptitle', changes.length ? T('pvTitle').replace('{n}', changes.length) : T('pvNone').replace('{s}', TT('statuses', preview.status))));
   if(res.runs){ bar.appendChild(el('div','row', T('pvRuns')+res.runs)); }
+  if(res.undoCommand){ bar.appendChild(el('div','row muted','undo: '+res.undoCommand)); }
   changes.forEach(function(c){
     bar.appendChild(el('div','row '+(c.op==='remove'?'del':'add'), (c.op==='remove'?'− ':'+ ')+'['+c.agent+'] '+TT('ops', c.op)+' "'+c.name+'"'));
     (c.warnings||[]).forEach(function(w){ bar.appendChild(el('div','row warn','  ⚠ '+w)); });
@@ -461,19 +462,15 @@ function openDetail(kind, name){
     row.appendChild(right);
     bar.appendChild(row);
   });
-  // one-click "put this on every agent that's missing it"
+  // one-click "put this on every agent that's missing it" — core kinds only:
+  // plugins are one-agent-per-command (per-row buttons already cover them),
+  // so a single fan-out plan can't represent them honestly
   const missing = agents.filter(function(a){ return haveAgents.indexOf(a) < 0; });
-  if(canAct && haveAgents.length && missing.length > 1){
+  if(canAct && coreKind !== 'plugin' && haveAgents.length && missing.length > 1){
     const allBtn = el('button','act primary', T('dInstallAllMissing'));
     allBtn.style.marginTop = '8px';
     allBtn.addEventListener('click', function(){
-      if(coreKind === 'plugin'){
-        const srcEntry = found.filter(function(x){ return x.agent === haveAgents[0]; })[0] || {};
-        // plugins target one agent each — fire them sequentially via the picker-less path
-        doPlan({ action:'install', kind:'plugin', name:name, to:[missing[0]], marketplace:srcEntry.marketplace });
-      } else {
-        doPlan({ action:'sync', kind:coreKind, name:name, from:haveAgents[0], to:missing });
-      }
+      doPlan({ action:'sync', kind:coreKind, name:name, from:haveAgents[0], to:missing });
     });
     bar.appendChild(allBtn);
   }

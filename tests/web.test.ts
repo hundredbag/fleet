@@ -472,3 +472,62 @@ test('web actions: plugin selector is validated (no shell injection via marketpl
     /unsafe plugin selector/,
   );
 });
+
+test('web actions: plugin plan→apply runs the vendor argv once; replay refused; injection blocked', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const calls = [];
+  const runner = async (argv) => {
+    calls.push(argv);
+    return { exitCode: 0, output: 'ok' };
+  };
+  const svc = new ActionService([], undefined, runner);
+
+  // plan → preview carries the exact argv + undo; apply runs it exactly once
+  const { planId, runs, undoCommand } = await svc.plan({
+    action: 'install',
+    kind: 'plugin',
+    name: 'ponytail',
+    to: ['codex'],
+    marketplace: 'sisyphuslabs',
+  });
+  assert.equal(runs, 'codex plugin add ponytail@sisyphuslabs');
+  assert.match(undoCommand, /plugin remove ponytail@sisyphuslabs/);
+  assert.equal(calls.length, 0); // plan is exec-free
+  const applied = await svc.apply({ planId });
+  assert.equal(applied.status, 'applied');
+  assert.deepEqual(calls, [['codex', 'plugin', 'add', 'ponytail@sisyphuslabs']]);
+  await assert.rejects(svc.apply({ planId }), /unknown planId/); // single-use replay guard
+
+  // name-side + path-shaped injection all refused
+  for (const bad of [
+    { name: '--force', marketplace: 'm' },
+    { name: 'a;b', marketplace: 'm' },
+    { name: 'tmp/plugin', marketplace: undefined },
+    { name: 'a/./b', marketplace: undefined },
+    { name: 'x@evil', marketplace: 'm' },
+  ]) {
+    await assert.rejects(
+      svc.plan({
+        action: 'install',
+        kind: 'plugin',
+        name: bad.name,
+        to: ['codex'],
+        marketplace: bad.marketplace,
+      }),
+      /unsafe plugin selector/,
+    );
+  }
+});
+
+test('web actions: unknown kind/action fail closed (no default engine)', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const svc = new ActionService([], undefined);
+  await assert.rejects(
+    svc.plan({ action: 'remove', kind: 'banana', name: 'x', from: ['codex'] }),
+    /unknown kind/,
+  );
+  await assert.rejects(
+    svc.plan({ action: 'sync', kind: 'plugin', name: 'x', to: ['codex'], marketplace: 'm' }),
+    /plugin action must be install or remove/,
+  );
+});

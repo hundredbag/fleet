@@ -16,8 +16,9 @@ import { updateLockForPlugin } from './lock.js';
  * yet (plugins Part C).
  */
 
-// PLUGIN[@MARKETPLACE]; also allows @scope/name. Leading '-' rejected (no flag smuggling).
-const SELECTOR_RE = /^[A-Za-z0-9@][\w./-]*(@[\w.-]+)?$/;
+// PLUGIN[@MARKETPLACE]; slash ONLY inside a leading @scope/ (no bare paths, no
+// dot segments). Leading '-' rejected (no flag smuggling).
+export const SELECTOR_RE = /^(@[\w][\w.-]*\/)?[\w][\w.-]*(@[\w][\w.-]*)?$/;
 
 export type PluginOp = 'install' | 'remove';
 

@@ -15,7 +15,7 @@ import {
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
-import { planPluginAction, runDelegated, type DelegatedPlan } from '../core/delegate.js';
+import { planPluginAction, runDelegated, SELECTOR_RE, type DelegatedPlan } from '../core/delegate.js';
 import { summarizeResult, redactUrl } from '../core/redact.js';
 import { invalidateInventoryCache } from './api.js';
 
@@ -101,16 +101,14 @@ const MAX_PENDING = 100;
  * vendor-CLI action (plugins). Both flow through the same preview→confirm. */
 type Pending = { type: 'core'; plan: Plan } | { type: 'delegated'; dplan: DelegatedPlan };
 
-// selector grammar reused from delegate.ts's boundary — name (or @scope/name)
-// optionally @marketplace; nothing else can reach the vendor CLI.
-const PLUGIN_SELECTOR = /^[A-Za-z0-9@][\w./-]*(@[\w.-]+)?$/;
-
 export class ActionService {
   private readonly plans = new Map<string, Pending>();
 
   constructor(
     private readonly adapters: AgentAdapter[],
     private readonly fleetHome?: string,
+    /** injectable vendor-CLI runner — tests avoid spawning the real binary */
+    private readonly runner?: import('../core/delegate.js').Runner,
   ) {}
 
   /** Build a plan, store it, and return a redacted dry-run preview + planId + the command that will run. */
@@ -118,6 +116,10 @@ export class ActionService {
     const name = String(body.name ?? '').trim();
     if (!name) throw new Error('name is required');
     const kind = String(body.kind ?? 'mcp-server');
+    // allowlist kinds — an unknown kind must never fall through to a default engine
+    if (!['mcp-server', 'skill', 'rule', 'plugin'].includes(kind)) {
+      throw new Error(`unknown kind '${kind}'`);
+    }
 
     // plugins live outside the core write engine — a delegated vendor-CLI action
     if (kind === 'plugin') return this.planPlugin(body, name);
@@ -182,17 +184,24 @@ export class ActionService {
   /** Plugin install/remove goes through the delegated vendor CLI. The selector
    * is name@marketplace for a sync-install (default action install). */
   private async planPlugin(body: ActionBody, name: string) {
-    const op = body.action === 'remove' ? 'remove' : 'install';
+    if (body.action !== 'install' && body.action !== 'remove') {
+      throw new Error(`plugin action must be install or remove (got '${body.action ?? ''}')`);
+    }
+    const op = body.action;
     const agent = op === 'remove' ? toTargets(body.from) : toTargets(body.to);
     if (!agent || agent.includes(',') || agent === 'all') {
       throw new Error('plugin actions target exactly one agent');
     }
     const selector = op === 'install' && body.marketplace ? `${name}@${body.marketplace}` : name;
-    if (!PLUGIN_SELECTOR.test(selector) || selector.includes('..')) {
+    if (!SELECTOR_RE.test(selector) || selector.includes('..')) {
       throw new Error(`refusing unsafe plugin selector '${selector}'`);
     }
     const dplan = planPluginAction(agent, op, selector); // validates again at the boundary
-    const preview = await runDelegated(dplan, { commit: false, fleetHome: this.fleetHome });
+    const dpreview = await runDelegated(dplan, {
+      commit: false,
+      fleetHome: this.fleetHome,
+      runner: this.runner,
+    });
     const planId = this.store({ type: 'delegated', dplan });
     return {
       planId,
@@ -204,7 +213,8 @@ export class ActionService {
         changes: [{ agent, op, name, scope: 'user', file: '(vendor CLI)', warnings: undefined }],
         skips: [],
       },
-      runs: preview.command,
+      runs: dpreview.command,
+      ...(dpreview.undoCommand ? { undoCommand: dpreview.undoCommand } : {}),
     };
   }
 
@@ -225,7 +235,11 @@ export class ActionService {
     if (!pending) throw new Error('unknown planId — preview again before applying');
     this.plans.delete(planId);
     if (pending.type === 'delegated') {
-      const r = await runDelegated(pending.dplan, { commit: true, fleetHome: this.fleetHome });
+      const r = await runDelegated(pending.dplan, {
+        commit: true,
+        fleetHome: this.fleetHome,
+        runner: this.runner,
+      });
       invalidateInventoryCache();
       return {
         status: r.status === 'applied' ? ('applied' as const) : ('failed' as const),

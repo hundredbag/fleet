@@ -238,6 +238,23 @@ export function skillWriterAdapters(adapters: AgentAdapter[]): SkillWriterAdapte
 }
 
 /** Plan installing a skill (copy its dir) into each target agent. */
+/** Emit an error skip for every requested agent that has no writer for this
+ * kind — otherwise a targeted-but-unsupported agent (e.g. skill sync to an
+ * MCP-only adapter) produces neither a change nor a skip and vanishes silently. */
+function skipUnsupported(
+  targetIds: AgentId[],
+  supported: { id: string }[],
+  kindLabel: string,
+  skips: PlanSkip[],
+): void {
+  const ok = new Set(supported.map((a) => a.id));
+  for (const id of targetIds) {
+    if (!ok.has(id)) {
+      skips.push({ agent: id, kind: 'error', reason: `agent has no ${kindLabel} writer` });
+    }
+  }
+}
+
 export async function planInstallSkill(
   adapters: AgentAdapter[],
   source: SkillSource,
@@ -247,6 +264,7 @@ export async function planInstallSkill(
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
+  skipUnsupported(targetIds, skillWriterAdapters(adapters), 'skill', skips);
   const sourceHash = await hashDir(source.dir);
   for (const a of skillWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
@@ -294,6 +312,7 @@ export async function planRemoveSkill(
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
+  skipUnsupported(targetIds, skillWriterAdapters(adapters), 'skill', skips);
   for (const a of skillWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
@@ -363,6 +382,7 @@ export async function planInstallRule(
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
+  skipUnsupported(targetIds, ruleWriterAdapters(adapters), 'rule', skips);
   for (const a of ruleWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
@@ -414,6 +434,7 @@ export async function planRemoveRule(
 ): Promise<Plan> {
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
+  skipUnsupported(targetIds, ruleWriterAdapters(adapters), 'rule', skips);
   for (const a of ruleWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
