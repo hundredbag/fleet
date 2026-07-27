@@ -475,23 +475,23 @@ test('web actions: plugin selector is validated (no shell injection via marketpl
 
 test('web actions: plugin plan→apply runs the vendor argv once; replay refused; injection blocked', async () => {
   const { ActionService } = await import('../src/web/actions.js');
-  const calls = [];
-  const runner = async (argv) => {
+  const calls: string[][] = [];
+  const runner = async (argv: string[]) => {
     calls.push(argv);
     return { exitCode: 0, output: 'ok' };
   };
   const svc = new ActionService([], undefined, runner);
 
   // plan → preview carries the exact argv + undo; apply runs it exactly once
-  const { planId, runs, undoCommand } = await svc.plan({
+  const { planId, runs, undoCommand } = (await svc.plan({
     action: 'install',
     kind: 'plugin',
     name: 'ponytail',
     to: ['codex'],
     marketplace: 'sisyphuslabs',
-  });
+  })) as { planId: string; runs: string; undoCommand?: string };
   assert.equal(runs, 'codex plugin add ponytail@sisyphuslabs');
-  assert.match(undoCommand, /plugin remove ponytail@sisyphuslabs/);
+  assert.match(String(undoCommand), /plugin remove ponytail@sisyphuslabs/);
   assert.equal(calls.length, 0); // plan is exec-free
   const applied = await svc.apply({ planId });
   assert.equal(applied.status, 'applied');
