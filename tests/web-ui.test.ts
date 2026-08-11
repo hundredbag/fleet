@@ -188,3 +188,19 @@ test('renderPage contains no sketch-only mock labels', () => {
   const html = renderPage();
   assert.doesNotMatch(html, /12 sec ago|18 managed items|8\.8 \/ 10/);
 });
+
+test('shell bootstraps theme before body and contains dialog focus and refresh race guards', () => {
+  const html = renderPage();
+  const head = html.slice(0, html.indexOf('</head>'));
+  assert.match(head, /fleet_theme/);
+  assert.match(head, /document\.documentElement\.setAttribute\('data-theme'/);
+  assert.match(html, /setAttribute\('inert', ''\)/);
+  assert.match(html, /event\.key === 'Tab'/);
+  assert.match(html, /generation === refreshGeneration/);
+});
+
+test('client consumes fixed public error codes and never reads a raw error field', () => {
+  const html = renderPage();
+  assert.match(html, /typeof data\.code === 'string'/);
+  assert.doesNotMatch(html, /data\.error/);
+});
