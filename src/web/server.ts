@@ -142,8 +142,7 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
           'x-content-type-options': 'nosniff',
           'content-security-policy': CSP,
         });
-        // v2 is the default look; ?v=1 serves the original (both maintained)
-        res.end(renderPage(reqUrl?.searchParams.get('v') === '1' ? 'v1' : 'v2'));
+        res.end(renderPage());
         return;
       case '/api/inventory':
         return apiInventory(adapters).then((r) => sendJson(res, 200, r));
