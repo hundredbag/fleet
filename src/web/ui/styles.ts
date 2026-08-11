@@ -123,6 +123,36 @@ export const DASHBOARD_CSS = `
   .attention-item button { justify-self:start; min-height:30px; margin-top:4px; padding:4px 8px; font-size:11px; }
   .empty-state { color:var(--muted); text-align:center!important; }
 
+  .inventory-panel { min-width:0!important; }
+  .inventory-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-bottom:12px; border-bottom:1px solid var(--border); }
+  .inventory-kind-chips { display:flex; flex:1; flex-wrap:wrap; gap:5px; }
+  .inventory-kind-chips button { min-height:30px; padding:4px 9px; font-size:11px; }
+  .inventory-kind-chips button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,transparent); }
+  .compact-control { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:11px; }
+  .compact-control select { min-height:32px; padding:4px 24px 4px 8px; }
+  .inventory-result-count { margin:10px 0 5px; color:var(--muted); font-size:11px; }
+  .inventory-list { display:grid; }
+  .inventory-item { display:grid; grid-template-columns:minmax(150px,1fr) minmax(260px,2fr) auto; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--border); }
+  .inventory-item:first-child { border-top:0; }
+  .inventory-item-heading h3 { margin:1px 0 0; font-size:13px; overflow-wrap:anywhere; }
+  .inventory-statuses { display:flex; flex-wrap:wrap; gap:5px; }
+  .status-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 7px; border:1px solid var(--border); border-radius:999px; font-size:10px; font-weight:700; white-space:nowrap; }
+  .status-icon { font-size:8px; }
+  .status-installed { color:var(--good); }
+  .status-missing, .status-disabled { color:var(--warn); }
+  .status-unavailable, .status-unverifiable { color:var(--danger); }
+  .capability-detail { display:grid; gap:9px; }
+  .capability-detail p { margin:0; }
+  .detail-kind, .detail-meta, .preview-note { color:var(--muted); font-size:11px; }
+  .detail-link { color:var(--accent); overflow-wrap:anywhere; }
+  .agent-states, .plan-changes { margin:4px 0 0; padding:0; list-style:none; }
+  .agent-state { display:grid; grid-template-columns:minmax(100px,1fr) auto; align-items:center; gap:6px 10px; padding:9px 0; border-top:1px solid var(--border); }
+  .agent-state .cell-actions { grid-column:1 / -1; }
+  .plan-summary { font-weight:700; }
+  .plan-changes li { padding:5px 0; border-top:1px solid var(--border); font-size:12px; }
+  .plan-warnings { color:var(--warn); }
+  .dialog-error { margin:12px 0 0; color:var(--danger); font-weight:650; }
+
   .overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:18px; background:rgba(3,7,10,.72); }
   .dialog-panel { width:min(520px,100%); padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--surface-raised); box-shadow:0 24px 80px var(--shadow); }
   .dialog-panel h2 { margin:0 0 12px; }
@@ -151,6 +181,8 @@ export const DASHBOARD_CSS = `
     .overview-layout { grid-template-columns:1fr; }
     .card-heading { flex-direction:column; }
     .kind-filters { justify-content:flex-start; }
+    .inventory-item { grid-template-columns:1fr auto; }
+    .inventory-statuses { grid-column:1 / -1; }
   }
   @media (max-width:639px) {
     .app-shell { display:block; }

@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Script, runInNewContext } from 'node:vm';
+import type { AgentAdapter } from '../src/core/adapter.js';
 import { apiFeed, apiInventory } from '../src/web/api.js';
 import { renderPage } from '../src/web/ui.js';
+import {
+  INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE,
+  INVENTORY_VIEW_ITEMS_BROWSER_SOURCE,
+  inventoryOperationPayload,
+  inventoryViewItems,
+} from '../src/web/ui/client.js';
 import { dashboardAdapters, dashboardFeedSources } from './fixtures/web-dashboard.js';
 
 const VOID_ELEMENTS = new Set([
@@ -149,6 +157,178 @@ test('dashboard fixture flows through the real inventory and feed read models', 
   );
 });
 
+test('inventory DTO truthfully models read-only and failed adapter cells for the UI', async () => {
+  const adapters: AgentAdapter[] = [
+    {
+      id: 'reader',
+      displayName: 'Reader',
+      supportsWrite: false,
+      capabilitySupport: { skill: { inventory: 'supported', management: 'read-only' } },
+      async detect() {
+        return { id: 'reader', displayName: 'Reader', present: true, configPaths: [] };
+      },
+      async readInventory() {
+        return [
+          {
+            kind: 'skill' as const,
+            name: 'safe-review',
+            agent: 'reader',
+            scope: 'user' as const,
+            enabled: true,
+            path: '/private/not-public',
+            meta: { description: 'Review safely.' },
+            source: { file: '/private/not-public/SKILL.md' },
+          },
+        ];
+      },
+    },
+    {
+      id: 'failed',
+      displayName: 'Failed adapter',
+      supportsWrite: false,
+      capabilitySupport: { skill: { inventory: 'supported', management: 'read-only' } },
+      async detect() {
+        return { id: 'failed', displayName: 'Failed adapter', present: true, configPaths: [] };
+      },
+      async readInventory() {
+        throw new Error('private adapter detail');
+      },
+    },
+  ];
+  const inventory = await apiInventory(adapters);
+  const capability = inventory.capabilities.find((item) => item.name === 'safe-review');
+  assert.ok(capability);
+  assert.deepEqual(
+    capability.instances.map((instance) => [
+      instance.agent,
+      instance.availability,
+      instance.management,
+      instance.operations,
+    ]),
+    [
+      ['reader', 'installed', 'read-only', []],
+      ['failed', 'unavailable', 'none', []],
+    ],
+  );
+  assert.equal('path' in capability, false);
+  assert.equal('raw' in capability, false);
+  const filters = { kind: 'all', status: 'read-only', sort: 'kind' as const, query: '' };
+  assert.deepEqual(
+    inventoryViewItems(inventory, filters).map((item) => item.name),
+    ['safe-review'],
+  );
+  assert.deepEqual(
+    inventoryViewItems(inventory, { ...filters, status: 'unavailable' }).map((item) => item.name),
+    ['safe-review'],
+  );
+});
+
+test('inventory local view model distinguishes empty and search no-results without refetching', async () => {
+  const inventory = await apiInventory(dashboardAdapters);
+  const base = { kind: 'all', status: 'all', sort: 'kind' as const, query: '' };
+  assert.deepEqual(inventoryViewItems({ agents: inventory.agents, capabilities: [] }, base), []);
+  assert.deepEqual(inventoryViewItems(inventory, { ...base, query: 'no-such-capability' }), []);
+  assert.deepEqual(
+    inventoryViewItems(inventory, { ...base, query: 'github' }).map((item) => item.name),
+    ['github'],
+  );
+  assert.deepEqual(
+    inventoryViewItems(inventory, { ...base, status: 'all-present' }).map((item) => item.name),
+    ['playwright', 'shared-review'],
+  );
+  const unsafeUrlCapability = {
+    ...inventory.capabilities[0]!,
+    name: 'safe-name',
+    description: undefined,
+    sourceLabel: undefined,
+    sourceUrl: 'https://user:password@example.test/item?token=secret-needle',
+    coordinate: undefined,
+    instances: [],
+  };
+  assert.deepEqual(
+    inventoryViewItems(
+      { agents: inventory.agents, capabilities: [unsafeUrlCapability] },
+      { ...base, query: 'secret-needle' },
+    ),
+    [],
+  );
+});
+
+test('generated inventory helpers execute without transpiler globals and match typed behavior', async () => {
+  assert.doesNotMatch(INVENTORY_VIEW_ITEMS_BROWSER_SOURCE, /__name/);
+  assert.doesNotMatch(INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE, /__name/);
+  const browserView = runInNewContext('(' + INVENTORY_VIEW_ITEMS_BROWSER_SOURCE + ')', {
+    URL,
+  }) as typeof inventoryViewItems;
+  const browserPayload = runInNewContext(
+    '(' + INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE + ')',
+  ) as typeof inventoryOperationPayload;
+  const inventory = await apiInventory(dashboardAdapters);
+  const filters = { kind: 'all', status: 'gap', sort: 'kind' as const, query: 'github' };
+  assert.deepEqual(
+    Array.from(browserView(inventory, filters), (item) => item.name),
+    inventoryViewItems(inventory, filters).map((item) => item.name),
+  );
+  const plugin = inventory.capabilities.find((item) => item.kind === 'plugin');
+  const target = plugin?.instances.find((instance) => instance.operations.includes('install'));
+  assert.ok(plugin && target);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(browserPayload('install', plugin, target, inventory))),
+    inventoryOperationPayload('install', plugin, target, inventory),
+  );
+});
+
+test('inventory advertised plugin install and multi-source sync build deterministic plan payloads', async () => {
+  const inventory = await apiInventory(dashboardAdapters);
+  const plugin = inventory.capabilities.find((item) => item.kind === 'plugin');
+  const pluginTarget = plugin?.instances.find((instance) => instance.operations.includes('install'));
+  assert.ok(plugin && pluginTarget);
+  assert.deepEqual(inventoryOperationPayload('install', plugin, pluginTarget, inventory), {
+    action: 'install',
+    kind: 'plugin',
+    name: 'review-tools',
+    to: 'codex',
+  });
+
+  const agents = [
+    { id: 'a', displayName: 'A' },
+    { id: 'b', displayName: 'B' },
+    { id: 'c', displayName: 'C' },
+  ];
+  const capability = {
+    kind: 'skill',
+    name: 'shared',
+    coverage: 'gap',
+    instances: [
+      { agent: 'a', availability: 'installed', management: 'writable' },
+      { agent: 'b', availability: 'installed', management: 'writable' },
+      { agent: 'c', availability: 'missing', management: 'writable' },
+    ],
+  };
+  assert.deepEqual(
+    inventoryOperationPayload('sync', capability, capability.instances[2]!, {
+      agents,
+      capabilities: [capability],
+    }),
+    { action: 'sync', kind: 'skill', name: 'shared', from: 'a', to: 'c' },
+  );
+
+  const disabledSource = {
+    ...capability,
+    instances: [
+      { agent: 'a', availability: 'disabled', management: 'writable' },
+      { agent: 'c', availability: 'missing', management: 'writable' },
+    ],
+  };
+  assert.deepEqual(
+    inventoryOperationPayload('sync', disabledSource, disabledSource.instances[1]!, {
+      agents: [agents[0]!, agents[2]!],
+      capabilities: [disabledSource],
+    }),
+    { action: 'sync', kind: 'skill', name: 'shared', from: 'a', to: 'c' },
+  );
+});
+
 test('overview client renders one deterministic four-DTO capability map without inferring operations', () => {
   const html = renderPage();
   assert.match(html, /get\('\/api\/inventory'\)/);
@@ -238,6 +418,11 @@ test('renderPage uses semantic navigation and buttons with aria-label or visible
 
 test('renderPage is one self-contained dashboard without a v1/v2 switch', () => {
   const html = renderPage();
+  assert.equal(html.match(/<script\b/g)?.length, 1);
+  assert.equal(html.match(/<style\b/g)?.length, 1);
+  const client = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(client);
+  assert.doesNotThrow(() => new Script(client));
   assert.doesNotMatch(html, /\?v=1|\?v=2|class="vsw"/);
   assert.doesNotMatch(html, /https:\/\/fonts\.|cdn\.|<script src=/);
 });
@@ -261,4 +446,47 @@ test('client consumes fixed public error codes and never reads a raw error field
   const html = renderPage();
   assert.match(html, /typeof data\.code === 'string'/);
   assert.doesNotMatch(html, /data\.error/);
+});
+
+test('inventory view has local search, counted kind chips, status filtering, and stable sorting', () => {
+  const html = renderPage();
+  assert.match(html, /globalSearch\.addEventListener\('input'/);
+  assert.match(html, /renderInventory\(inventoryModel\)/);
+  assert.match(html, /kindCounts/);
+  assert.match(html, /inventory-status-filter/);
+  assert.match(html, /inventory-result-count/);
+  assert.match(html, /kindCompare[\s\S]*a\.name\.localeCompare/);
+  assert.match(html, /No inventory items match/);
+  assert.match(html, /No capabilities were reported/);
+  assert.match(html, /Inventory unavailable/);
+  assert.match(html, /id="inventory" class="placeholder">Loading capability inventory/);
+  assert.match(html, /data-inventory-kind/);
+  assert.match(html, /replacement\.focus\(\)/);
+  assert.match(html, /inventory-status-filter'\)\.focus\(\)/);
+  assert.match(html, /inventory-sort'\)\.focus\(\)/);
+});
+
+test('inventory validation and detail rendering expose only public metadata and exact operations', () => {
+  const html = renderPage();
+  assert.match(html, /validCoordinate/);
+  assert.match(html, /validCapabilityMetadata/);
+  assert.match(html, /capability\.description/);
+  assert.match(html, /capability\.tokensEst/);
+  assert.match(html, /safeHttpUrl\(capability\.sourceUrl\)/);
+  assert.match(html, /instance\.operations\.forEach/);
+  assert.doesNotMatch(html, /capability\.(?:path|raw|spec)/);
+});
+
+test('every inventory operation and MCP update uses the shared preview-only plan path', () => {
+  const html = renderPage();
+  assert.match(html, /async function doPlan/);
+  assert.match(html, /postJson\('\/api\/plan', body\)/);
+  assert.match(html, /validPlan/);
+  assert.match(html, /planPending/);
+  assert.match(html, /startingDialogGeneration !== dialogGeneration/);
+  assert.match(html, /button\.plan-trigger/);
+  assert.match(html, /setAttribute\('role', 'alert'\)/);
+  assert.match(html, /doPlan\(operation\.charAt/);
+  assert.match(html, /doPlan\('Update', \{ action:'update'/);
+  assert.doesNotMatch(html, /postJson\('\/api\/apply'/);
 });

@@ -96,7 +96,7 @@ ${renderNav()}
 
       <section class="view" data-view="inventory" aria-labelledby="view-inventory-heading" hidden>
         <div class="view-intro"><div><span class="eyebrow">Connected capabilities</span><h1 id="view-inventory-heading" tabindex="-1">Inventory</h1></div><p>Inspect capabilities reported by each present agent.</p></div>
-        <article class="card"><h2>Capability inventory</h2><div class="overflow-region" tabindex="0" role="region" aria-label="Capability inventory table"><div id="inventory" class="placeholder">Inventory data is ready for the capability map.</div></div></article>
+        <article class="card"><h2>Capability inventory</h2><div class="overflow-region" tabindex="0" role="region" aria-label="Capability inventory table"><div id="inventory" class="placeholder">Loading capability inventory…</div></div></article>
       </section>
 
       <section class="view" data-view="discover" aria-labelledby="view-discover-heading" hidden>
