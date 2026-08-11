@@ -111,7 +111,7 @@ ${renderNav()}
 
       <section class="view" data-view="activity" aria-labelledby="view-activity-heading" hidden>
         <div class="view-intro"><div><span class="eyebrow" data-i18n="activity.eyebrow">Audit trail</span><h1 id="view-activity-heading" tabindex="-1" data-i18n="nav.activity">Activity</h1></div><p data-i18n="activity.intro">Review Fleet operations and their outcomes.</p></div>
-        <article class="card"><h2 data-i18n="activity.title">Recent activity</h2><div class="placeholder" data-i18n="loading.activity">Activity records will appear here.</div></article>
+        <article class="card"><h2 data-i18n="activity.title">Recent activity</h2><div id="activity-panel" class="placeholder" data-i18n="loading.activity">Activity records will appear here.</div></article>
       </section>
     </main>
   </div>

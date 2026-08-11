@@ -516,6 +516,9 @@ test('overview client renders one deterministic four-DTO capability map without 
 
 test('drift and activity render truthful grouped read models and targeted rollback controls', () => {
   const html = renderPage();
+  assert.match(html, /id="activity-panel"/);
+  assert.match(html, /getElementById\('activity-panel'\)/);
+  assert.doesNotMatch(html, /\[data-view=\\?"activity\\?"\] \.placeholder/);
   assert.match(html, /get\('\/api\/activity'\)/);
   assert.match(html, /renderDrift/);
   assert.match(html, /drift\.modified/);
@@ -713,6 +716,8 @@ test('every inventory operation and MCP update uses the shared preview-only plan
   assert.doesNotMatch(html, /node\('p', 'plan-summary', plan\.operationSummary\)/);
   assert.match(html, /enumLabel\(skillUpdateLabels, update\.state\)/);
   assert.match(html, /planPending/);
+  assert.match(html, /openDialog\(t\('preview\.title',[\s\S]*null, trigger\)/);
+  assert.match(html, /focusTarget && focusTarget\.isConnected \? focusTarget : document\.activeElement/);
   assert.match(html, /startingDialogGeneration !== dialogGeneration/);
   assert.match(html, /button\.plan-trigger/);
   assert.match(html, /setAttribute\('role', 'alert'\)/);

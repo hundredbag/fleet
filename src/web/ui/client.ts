@@ -712,7 +712,7 @@ async function doPlan(action, body, trigger){
     const plan = await postJson('/api/plan', body);
     if(requestGeneration !== planGeneration || startingDialogGeneration !== dialogGeneration) return;
     if(!validPlan(plan)) throw new Error(t('preview.planUnavailable'));
-    openDialog(t('preview.title', { action:action }), planContent(plan, action), null);
+    openDialog(t('preview.title', { action:action }), planContent(plan, action), null, trigger);
   } catch {
     if(requestGeneration !== planGeneration || startingDialogGeneration !== dialogGeneration) return;
     if(startedInDialog && overlay && !overlay.hidden){
@@ -1089,7 +1089,7 @@ function beginRollback(item){
 }
 function renderActivity(activity){
   activityModel = activity;
-  const target = document.querySelector('[data-view="activity"] .placeholder');
+  const target = document.getElementById('activity-panel');
   target.className = 'activity-panel';
   if(!activity){ replaceChildren(target, [node('p', 'empty-state', t('activity.unavailable'))]); return; }
   const list = node('ul', 'activity-list');
@@ -1188,9 +1188,9 @@ function closeDialog(){
   confirmAction = null;
   if(returnFocus) returnFocus.focus();
 }
-function openDialog(title, message, action){
+function openDialog(title, message, action, focusTarget){
   dialogGeneration += 1;
-  if(overlay.hidden) returnFocus = document.activeElement;
+  if(overlay.hidden) returnFocus = focusTarget && focusTarget.isConnected ? focusTarget : document.activeElement;
   dialogTitle.textContent = title;
   if(message instanceof Node) replaceChildren(dialogContent, [message]);
   else dialogContent.textContent = message;
