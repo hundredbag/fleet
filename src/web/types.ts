@@ -7,6 +7,7 @@ export type Operation = 'install' | 'sync' | 'remove' | 'update';
 export interface PublicCapabilityInstance {
   agent: string;
   scope?: string;
+  marketplace?: string;
   availability: Availability;
   management: Management;
   operations: Operation[];

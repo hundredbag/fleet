@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Script, runInNewContext } from 'node:vm';
 import type { AgentAdapter } from '../src/core/adapter.js';
 import { apiFeed, apiInventory } from '../src/web/api.js';
+import { publicMarketplace } from '../src/web/public-mappers.js';
 import { renderPage } from '../src/web/ui.js';
 import {
   DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE,
@@ -512,6 +513,109 @@ test('overview client renders one deterministic four-DTO capability map without 
   assert.match(html, /capability\.coverage/);
   assert.doesNotMatch(html, /management\s*===\s*['"]writable['"].*operations/s);
   assert.match(html, /Promise\.allSettled/);
+});
+
+test('vendor-managed plugin inventory exposes only authoritative public detail metadata', async () => {
+  const inventory = await apiInventory(dashboardAdapters);
+  const plugin = inventory.capabilities.find(
+    (capability) => capability.kind === 'plugin' && capability.name === 'review-tools',
+  );
+  assert.ok(plugin);
+  assert.equal(plugin.sourceLabel, 'vendor-plugin');
+  assert.deepEqual(
+    plugin.instances.map((instance) => ({
+      agent: instance.agent,
+      scope: instance.scope,
+      enabled: instance.enabled,
+      availability: instance.availability,
+      management: instance.management,
+      marketplace: instance.marketplace,
+    })),
+    [
+      {
+        agent: 'claude-code',
+        scope: 'user',
+        enabled: true,
+        availability: 'installed',
+        management: 'delegated',
+        marketplace: 'fixture-marketplace',
+      },
+      {
+        agent: 'codex',
+        scope: undefined,
+        enabled: undefined,
+        availability: 'missing',
+        management: 'delegated',
+        marketplace: undefined,
+      },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(plugin), /\/fixture\/|command|argv|raw/);
+});
+
+test('public marketplace identifiers reject unsafe or unbounded configuration suffixes', () => {
+  assert.equal(publicMarketplace('claude-plugins-official'), 'claude-plugins-official');
+  assert.equal(publicMarketplace('market.v2_local'), 'market.v2_local');
+  for (const value of [
+    '../private-market',
+    'market/place',
+    'market;rm-rf',
+    'market\nsecret',
+    '-flag',
+    'trailing-',
+    'a'.repeat(81),
+    '',
+  ]) {
+    assert.equal(publicMarketplace(value), undefined, value);
+  }
+  assert.equal(publicMarketplace(42), undefined);
+});
+
+test('vendor-managed plugin detail is bilingual, truthful, accessible, and provider-owned', () => {
+  const html = renderPage();
+  assert.match(html, /Vendor managed/);
+  assert.match(html, /공급자 관리/);
+  assert.match(html, /'vendor\.marketplaceLabel':'Marketplace'/);
+  assert.match(html, /'vendor\.marketplaceLabel':'마켓플레이스'/);
+  assert.match(html, /'vendor\.scopeLabel':'Scope'/);
+  assert.match(html, /'vendor\.scopeLabel':'범위'/);
+  assert.match(html, /'vendor\.stateLabel':'State'/);
+  assert.match(html, /'vendor\.stateLabel':'상태'/);
+  assert.match(html, /'vendor\.enabledLabel':'Enabled state'/);
+  assert.match(html, /'vendor\.enabledLabel':'활성 상태'/);
+  assert.match(html, /Enabled/);
+  assert.match(html, /활성/);
+  assert.match(html, /t\('vendor\.marketplaceLabel'\)/);
+  assert.match(html, /t\('vendor\.scopeLabel'\)/);
+  assert.match(html, /t\('vendor\.stateLabel'\)/);
+  assert.match(html, /t\('vendor\.enabledLabel'\)/);
+  assert.doesNotMatch(html, /replace\(': ',''\)/);
+  assert.match(html, /Fleet does not write vendor plugin files/);
+  assert.match(html, /Fleet은 공급자 플러그인 파일을 쓰지 않습니다/);
+  assert.match(html, /provider CLI owns install, remove, and recovery/i);
+  assert.match(html, /공급자 CLI가 설치, 제거 및 복구를 담당합니다/);
+  assert.match(html, /capability\.kind === 'plugin' && instance\.management === 'delegated'/);
+  assert.match(html, /instance\.marketplace/);
+  assert.match(html, /instance\.scope/);
+  assert.match(html, /instance\.enabled/);
+  assert.doesNotMatch(html, /metadata\.setAttribute\('aria-label'/);
+  assert.match(html, /const marketplacePattern = \/\^\[A-Za-z0-9\]/);
+  assert.doesNotMatch(html, /capability\.(?:path|raw|spec)|instance\.(?:path|raw|command|argv)/);
+});
+
+test('delegated activity gives localized non-action recovery guidance without rollback authority', () => {
+  const html = renderPage();
+  assert.match(html, /Use the provider CLI to recover this plugin/);
+  assert.match(html, /이 플러그인을 복구하려면 공급자 CLI를 사용하세요/);
+  assert.match(html, /item\.source === 'delegated-plugin'/);
+  assert.match(html, /node\('div', 'delegated-recovery'/);
+  assert.match(html, /recovery\.setAttribute\('role', 'note'\)/);
+  assert.match(html, /t\('activity\.recoveryLabel', \{ name:item\.name \}\)/);
+  assert.match(
+    html,
+    /selectable = item\.rollbackEligible && !item\.rolledBack && item\.source === 'core-audit'/,
+  );
+  assert.doesNotMatch(html, /delegated-recovery[\s\S]{0,300}(?:button|postJson|argv|command|output|path)/);
 });
 
 test('drift and activity render truthful grouped read models and targeted rollback controls', () => {

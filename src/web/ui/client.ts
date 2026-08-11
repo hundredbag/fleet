@@ -100,6 +100,9 @@ interface InventoryViewAgent {
 }
 interface InventoryViewInstance {
   agent: string;
+  scope?: string;
+  marketplace?: string;
+  enabled?: boolean;
   availability: string;
   management: string;
 }
@@ -380,7 +383,8 @@ const messages = {
     'attention.mcpUpdate':'MCP update · {name}','attention.skillUpdate':'Skill update · {name}','attention.sourceUnavailable':'Source unavailable','attention.feedUnavailable':'Feed unavailable','attention.feedDetail':'Update and source state could not be loaded.','attention.ruleConflict':'Rule conflict · {name}','attention.conflictsUnavailable':'Conflicts unavailable','attention.conflictsDetail':'Rule conflict state could not be loaded.','agent.unavailable':'Agent inventory unavailable','attention.drift':'Drift {state} · {name}','attention.unmanaged':'Unmanaged · {name}','attention.overviewUnavailable':'Overview unavailable','attention.overviewDetail':'Agent and drift state could not be loaded.','attention.inventoryUnavailable':'Inventory unavailable','attention.inventoryDetail':'Capability map could not be loaded.','attention.noneDetail':'All reported sources returned no findings.',
     'drift.unavailable':'Drift unavailable.','drift.summary':'{checked} checked · {findings} findings · {unmanaged} unmanaged','drift.note':'Unmanaged capabilities are informational: Fleet did not install them. Lock metadata is best-effort and may make an item unverifiable.','drift.modified':'Modified','drift.missing':'Missing','drift.unverifiable':'Unverifiable','drift.unmanaged':'Unmanaged','drift.conflicts':'{count} rule conflict(s) reported.','drift.conflictsUnavailable':'Rule conflicts unavailable.',
     'rollback.title':'Rollback capability change','rollback.scope':'Scope: {scope}','rollback.guard':'Divergence guard: rollback is skipped if the capability changed after Fleet wrote it.','rollback.responseUnavailable':'Rollback response unavailable.','rollback.result':'Rollback {action}{reason}','rollback.failed':'Rollback was not completed.','rollback.confirm':'Confirm rollback','rollback.select':'Select {op} {name} on {agent}{scope}, from {source}, recorded {time}, for rollback','rollback.openActivity':'Open Activity to select a rollback target',
-    'activity.unavailable':'Activity unavailable.','activity.rolledBack':'Rolled back','activity.delegated':'Delegated activity: {status}.',
+    'activity.unavailable':'Activity unavailable.','activity.rolledBack':'Rolled back','activity.delegated':'Delegated activity: {status}.','activity.recoveryLabel':'Recovery guidance for {name}','activity.recovery':'Use the provider CLI to recover this plugin. Fleet rollback is unavailable for delegated activity.',
+    'vendor.title':'Vendor managed · Delegated','vendor.explanation':'Fleet does not write vendor plugin files. The provider CLI owns install, remove, and recovery.','vendor.marketplaceLabel':'Marketplace','vendor.scopeLabel':'Scope','vendor.stateLabel':'State','vendor.enabledLabel':'Enabled state','vendor.enabled':'Enabled','vendor.disabled':'Disabled',
     'refresh.progress':'Refreshing Fleet data…','refresh.endpoints':'{count} Fleet endpoint(s) unavailable.','refresh.sources':'{count} Discovery source(s) unavailable.','refresh.done':'Fleet data refreshed.','refresh.unavailable':'Fleet data is unavailable.','common.unavailable':'Unavailable'
   },
   ko:{
@@ -415,7 +419,8 @@ const messages = {
     'attention.mcpUpdate':'MCP 업데이트 · {name}','attention.skillUpdate':'스킬 업데이트 · {name}','attention.sourceUnavailable':'소스 사용 불가','attention.feedUnavailable':'피드 사용 불가','attention.feedDetail':'업데이트 및 소스 상태를 불러오지 못했습니다.','attention.ruleConflict':'규칙 충돌 · {name}','attention.conflictsUnavailable':'충돌 정보 사용 불가','attention.conflictsDetail':'규칙 충돌 상태를 불러오지 못했습니다.','agent.unavailable':'에이전트 인벤토리 사용 불가','attention.drift':'드리프트 {state} · {name}','attention.unmanaged':'관리되지 않음 · {name}','attention.overviewUnavailable':'개요 사용 불가','attention.overviewDetail':'에이전트 및 드리프트 상태를 불러오지 못했습니다.','attention.inventoryUnavailable':'인벤토리 사용 불가','attention.inventoryDetail':'기능 맵을 불러오지 못했습니다.','attention.noneDetail':'보고된 모든 소스에 항목이 없습니다.',
     'drift.unavailable':'드리프트를 사용할 수 없습니다.','drift.summary':'{checked}개 확인 · {findings}개 항목 · {unmanaged}개 관리되지 않음','drift.note':'관리되지 않는 기능은 정보 제공용입니다. Fleet이 설치하지 않았습니다. 잠금 메타데이터는 최선의 정보이므로 항목을 확인하지 못할 수 있습니다.','drift.modified':'수정됨','drift.missing':'누락','drift.unverifiable':'확인 불가','drift.unmanaged':'관리되지 않음','drift.conflicts':'규칙 충돌 {count}개가 보고되었습니다.','drift.conflictsUnavailable':'규칙 충돌을 사용할 수 없습니다.',
     'rollback.title':'기능 변경 롤백','rollback.scope':'범위: {scope}','rollback.guard':'차이 보호: Fleet이 기록한 후 기능이 변경되었다면 롤백을 건너뜁니다.','rollback.responseUnavailable':'롤백 응답을 사용할 수 없습니다.','rollback.result':'롤백 {action}{reason}','rollback.failed':'롤백을 완료하지 못했습니다.','rollback.confirm':'롤백 확인','rollback.select':'{agent}의 {name} {op}{scope}, 소스 {source}, 기록 {time}, 롤백 대상으로 선택','rollback.openActivity':'롤백 대상을 선택하려면 활동 열기',
-    'activity.unavailable':'활동을 사용할 수 없습니다.','activity.rolledBack':'롤백됨','activity.delegated':'위임 활동: {status}.',
+    'activity.unavailable':'활동을 사용할 수 없습니다.','activity.rolledBack':'롤백됨','activity.delegated':'위임 활동: {status}.','activity.recoveryLabel':'{name} 복구 안내','activity.recovery':'이 플러그인을 복구하려면 공급자 CLI를 사용하세요. 위임 활동에는 Fleet 롤백을 사용할 수 없습니다.',
+    'vendor.title':'공급자 관리 · 위임됨','vendor.explanation':'Fleet은 공급자 플러그인 파일을 쓰지 않습니다. 공급자 CLI가 설치, 제거 및 복구를 담당합니다.','vendor.marketplaceLabel':'마켓플레이스','vendor.scopeLabel':'범위','vendor.stateLabel':'상태','vendor.enabledLabel':'활성 상태','vendor.enabled':'활성','vendor.disabled':'비활성',
     'refresh.progress':'Fleet 데이터 새로고치는 중…','refresh.endpoints':'Fleet 엔드포인트 {count}개를 사용할 수 없습니다.','refresh.sources':'탐색 소스 {count}개를 사용할 수 없습니다.','refresh.done':'Fleet 데이터를 새로고쳤습니다.','refresh.unavailable':'Fleet 데이터를 사용할 수 없습니다.','common.unavailable':'사용 불가'
   }
 };
@@ -610,6 +615,7 @@ function validCapabilityMetadata(capability){
     && (capability.coordinate === undefined || validCoordinate(capability.coordinate));
 }
 function validInventory(value){
+  const marketplacePattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,78}[A-Za-z0-9])?$/;
   return !!value && Array.isArray(value.agents) && value.agents.every(function(agent){
     return isString(agent.id) && isString(agent.displayName) && typeof agent.present === 'boolean' && typeof agent.inventoryAvailable === 'boolean';
   })
@@ -620,6 +626,7 @@ function validInventory(value){
         && Array.isArray(capability.instances) && capability.instances.every(function(instance){
           return isString(instance.agent) && availabilityValues.indexOf(instance.availability) >= 0
             && managementValues.indexOf(instance.management) >= 0 && (instance.scope === undefined || isString(instance.scope))
+            && (instance.marketplace === undefined || (isString(instance.marketplace) && marketplacePattern.test(instance.marketplace)))
             && (instance.enabled === undefined || typeof instance.enabled === 'boolean') && Array.isArray(instance.operations)
             && instance.operations.every(function(operation){ return operationValues.indexOf(operation) >= 0; });
         });
@@ -813,6 +820,13 @@ function statusBadge(instance, inventory){
 function detailContent(capability, inventory){
   const content = node('div', 'capability-detail');
   content.append(node('p', 'detail-kind', enumLabel(kindLabels, capability.kind)));
+  const vendorManaged = capability.kind === 'plugin' && capability.instances.some(function(instance){ return instance.management === 'delegated'; });
+  if(vendorManaged){
+    const notice = node('section', 'vendor-managed');
+    notice.setAttribute('aria-label', t('vendor.title'));
+    notice.append(node('strong', 'vendor-managed-title', t('vendor.title')), node('p', 'vendor-managed-note', t('vendor.explanation')));
+    content.append(notice);
+  }
   if(capability.description) content.append(node('p', '', capability.description));
   if(capability.sourceLabel) content.append(node('p', 'detail-meta', t('source.label', { value:enumLabel(sourceLabelLabels, capability.sourceLabel) })));
   if(capability.coordinate) content.append(node('p', 'detail-meta', t('identifier.label', { value:capability.coordinate.identifier })
@@ -826,6 +840,17 @@ function detailContent(capability, inventory){
     const agent = inventory.agents.find(function(candidate){ return candidate.id === instance.agent; });
     item.append(node('strong', '', agent ? agent.displayName : instance.agent), statusBadge(instance, inventory));
     if(instance.management === 'read-only' || instance.management === 'delegated') item.append(node('span', 'management-label', t(instance.management === 'read-only' ? 'management.read-only' : 'management.delegated')));
+    if(capability.kind === 'plugin' && instance.management === 'delegated'){
+      const availability = enumLabel(availabilityLabels, instance.availability);
+      const marketplace = instance.marketplace || t('filter.unknown');
+      const scope = instance.scope ? enumLabel(scopeLabels, instance.scope) : t('filter.unknown');
+      const enabled = instance.enabled === true ? t('vendor.enabled') : instance.enabled === false ? t('vendor.disabled') : t('filter.unknown');
+      const metadata = node('dl', 'vendor-metadata');
+      [[t('vendor.marketplaceLabel'), marketplace], [t('vendor.scopeLabel'), scope], [t('vendor.stateLabel'), availability], [t('vendor.enabledLabel'), enabled]].forEach(function(pair){
+        metadata.append(node('dt', '', pair[0]), node('dd', '', pair[1]));
+      });
+      item.append(metadata);
+    }
     const actions = node('div', 'cell-actions');
     instance.operations.forEach(function(operation){ const button = operationButton(operation, capability, instance); if(button) actions.append(button); });
     if(actions.childNodes.length) item.append(actions);
@@ -1112,7 +1137,14 @@ function renderActivity(activity){
     entry.append(node('strong', '', enumLabel(operationLabels, item.op) + ' · ' + item.name));
     entry.append(node('span', 'activity-meta', enumLabel(activitySourceLabels, item.source) + ' · ' + item.agent + (item.scope ? ' · ' + enumLabel(scopeLabels, item.scope) : '')));
     entry.append(node('span', 'activity-outcome', item.rolledBack ? t('activity.rolledBack') : enumLabel(outcomeLabels, item.outcome)));
-    record.append(entry); list.append(record);
+    record.append(entry);
+    if(item.source === 'delegated-plugin'){
+      const recovery = node('div', 'delegated-recovery', t('activity.recovery'));
+      recovery.setAttribute('role', 'note');
+      recovery.setAttribute('aria-label', t('activity.recoveryLabel', { name:item.name }));
+      record.append(recovery);
+    }
+    list.append(record);
   });
   if(!activity.items.length) list.append(node('li', 'empty-state', t('empty.activity')));
   const completeness = activity.delegatedActions.status === 'available' ? '' : t('activity.delegated', { status:enumLabel(delegatedStatusLabels, activity.delegatedActions.status) });

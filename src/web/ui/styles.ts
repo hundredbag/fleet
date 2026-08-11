@@ -148,6 +148,12 @@ export const DASHBOARD_CSS = `
   .agent-states, .plan-changes { margin:4px 0 0; padding:0; list-style:none; }
   .agent-state { display:grid; grid-template-columns:minmax(100px,1fr) auto; align-items:center; gap:6px 10px; padding:9px 0; border-top:1px solid var(--border); }
   .agent-state .cell-actions { grid-column:1 / -1; }
+  .vendor-managed { padding:11px 12px; border:1px solid color-mix(in srgb,var(--accent) 45%,var(--border)); border-radius:9px; background:color-mix(in srgb,var(--accent) 7%,var(--surface)); }
+  .vendor-managed-title { color:var(--accent); }
+  .vendor-managed-note { margin-top:4px!important; color:var(--muted); font-size:11px; }
+  .vendor-metadata { grid-column:1 / -1; display:grid; grid-template-columns:max-content minmax(0,1fr); gap:3px 10px; margin:2px 0; font-size:11px; }
+  .vendor-metadata dt { color:var(--muted); }
+  .vendor-metadata dd { margin:0; overflow-wrap:anywhere; }
   .plan-summary { font-weight:700; }
   .plan-changes li { padding:5px 0; border-top:1px solid var(--border); font-size:12px; }
   .plan-warnings { color:var(--warn); }
@@ -191,6 +197,7 @@ export const DASHBOARD_CSS = `
   button.activity-item:hover { border-color:var(--accent); }
   .activity-time, .activity-meta, .activity-outcome { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
   .activity-outcome { justify-self:end; text-transform:capitalize; }
+  .delegated-recovery { margin-top:5px; padding:9px 12px; border-left:3px solid var(--warn); border-radius:0 7px 7px 0; background:color-mix(in srgb,var(--warn) 8%,var(--surface)); color:var(--muted); font-size:11px; }
   .rollback-warning { color:var(--warn); }
 
   .overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:18px; background:rgba(3,7,10,.72); }
@@ -253,6 +260,9 @@ export const DASHBOARD_CSS = `
     .inventory-statuses { grid-column:auto; }
     .inventory-item .details-button { justify-self:start; }
     .activity-item { grid-template-columns:minmax(0,1fr); }
+    .vendor-metadata { grid-template-columns:minmax(0,1fr); gap:1px; }
+    .vendor-metadata dd + dt { margin-top:5px; }
+    .delegated-recovery { overflow-wrap:anywhere; }
     .dialog-panel { max-height:calc(100dvh - 28px); overflow:auto; padding:18px; }
   }
 `;
