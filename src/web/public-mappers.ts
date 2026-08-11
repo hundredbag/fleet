@@ -162,7 +162,14 @@ interface RankedRecommendation {
   reasons: string[];
   trust: string;
   url?: string;
+  updatedAt?: string;
   operation: 'install' | null;
+}
+
+function publicTimestamp(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
 }
 
 export function mapFeed(input: {
@@ -199,6 +206,7 @@ export function mapFeed(input: {
       reasons: item.reasons.map((reason) => reason),
       trust: item.trust,
       ...(safeHttpUrl(item.url) ? { url: safeHttpUrl(item.url) } : {}),
+      ...(publicTimestamp(item.updatedAt) ? { updatedAt: publicTimestamp(item.updatedAt) } : {}),
       operation: item.operation,
     })),
     failures: input.failures.map((failure) => ({ source: failure.source })),

@@ -55,6 +55,7 @@ export interface FeedResponse {
     reasons: string[];
     trust: string;
     url?: string;
+    updatedAt?: string;
     operation: 'install' | null;
   }>;
   failures: Array<{ source: string }>;

@@ -10,12 +10,14 @@ export interface DiscoveryViewItem {
   reasons: string[];
   trust: string;
   url?: string;
+  updatedAt?: string;
   operation: 'install' | null;
 }
 export interface DiscoveryViewFilters {
   query: string;
   kind: string;
   trust: string;
+  sort: 'recommended' | 'newest';
 }
 export interface DiscoveryViewSection {
   kind: 'mcp-server' | 'skill' | 'plugin';
@@ -49,6 +51,13 @@ export function discoveryViewSections(
     .filter((kind) => filters.kind === 'all' || filters.kind === kind)
     .map((kind) => {
       const items = matching.filter((item) => item.kind === kind);
+      if (filters.sort === 'newest') {
+        items.sort(
+          (a, b) =>
+            (b.updatedAt ? Date.parse(b.updatedAt) : -Infinity) -
+            (a.updatedAt ? Date.parse(a.updatedAt) : -Infinity),
+        );
+      }
       const isExpanded = expanded[kind] === true;
       return {
         kind,
@@ -72,7 +81,9 @@ export const DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE = String.raw`func
   return !!item && kinds.indexOf(item.kind) >= 0 && isString(item.name) && isString(item.source)
     && Array.isArray(item.reasons) && item.reasons.every(validReason) && trusts.indexOf(item.trust) >= 0
     && (item.operation === null || item.operation === 'install')
-    && optional.every(function(key) { return item[key] === undefined || isString(item[key]); });
+    && optional.every(function(key) { return item[key] === undefined || isString(item[key]); })
+    && (item.updatedAt === undefined || (isString(item.updatedAt) && !Number.isNaN(Date.parse(item.updatedAt))
+      && new Date(Date.parse(item.updatedAt)).toISOString() === item.updatedAt));
 }`;
 
 export const DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE = String.raw`function discoveryViewSections(feed, filters, expanded) {
@@ -88,6 +99,10 @@ export const DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE = String.raw`function discov
   });
   return kinds.filter(function(kind) { return filters.kind === 'all' || filters.kind === kind; }).map(function(kind) {
     const items = matching.filter(function(item) { return item.kind === kind; });
+    if(filters.sort === 'newest') items.sort(function(a, b) {
+      return (b.updatedAt ? Date.parse(b.updatedAt) : -Infinity)
+        - (a.updatedAt ? Date.parse(a.updatedAt) : -Infinity);
+    });
     const isExpanded = expanded[kind] === true;
     return { kind:kind, visible:isExpanded ? items : items.slice(0,limits[kind]), total:items.length,
       canExpand:!isExpanded && items.length > limits[kind], canCollapse:isExpanded && items.length > limits[kind] };
@@ -357,7 +372,7 @@ const messages = {
     'metric.agents':'Detected / present agents','metric.instances':'Capability instances','metric.keys':'Unique capability keys','metric.updates':'Updates','metric.drift':'Drift findings',
     'map.eyebrow':'Server-reported state','map.title':'Capability fleet map','map.filter':'Filter capabilities by kind','map.table':'Capability fleet map table','map.legend':'Fleet map legend',
     'inventory.eyebrow':'Connected capabilities','inventory.intro':'Inspect capabilities reported by each present agent.','inventory.title':'Capability inventory','inventory.table':'Capability inventory table',
-    'discover.eyebrow':'Registry sources','discover.intro':'Review available capabilities before choosing an action.','discover.skillsPlugins':'Skills and plugins',
+    'discover.eyebrow':'Registry sources','discover.intro':'Review available capabilities before choosing an action.','discover.recommendBasis':'Recommendations consider freshness, popularity, relevance to your installed setup, and marketplace availability.',
     'drift.eyebrow':'Configuration signals','drift.intro':'Review differences and conflicts before making changes.','drift.title':'Detected drift',
     'activity.eyebrow':'Audit trail','activity.intro':'Review Fleet operations and their outcomes.','activity.title':'Recent activity',
     'attention.eyebrow':'Updates and signals','attention.title':'Needs attention',
@@ -376,7 +391,7 @@ const messages = {
     'skillUpdate.update':'Update available','skillUpdate.update+local-edits':'Update with local edits','skillUpdate.update+missing':'Update with missing content','skillUpdate.update+unverifiable':'Update cannot be verified',
     'table.capability':'Capability','table.coverage':'Coverage','empty.map':'No capabilities match this filter.','empty.inventory':'No capabilities were reported.','empty.inventorySearch':'No inventory items match your search and filters.','empty.discovery':'No discovery items match your search and filters.','empty.none':'None reported.','empty.activity':'No activity records were reported.','empty.attention':'No attention items',
     'results.count':'{shown} of {total} results','details.for':'Details for {name}','operation.on':'{operation} {name} on {agent}','source.label':'Source: {value}','identifier.label':'Identifier: {value}','category.label':'Category: {value}','tokens.label':'Estimated tokens: {value}',
-    'discover.kind':'Discovery kind','discover.trust':'Discovery trust','discover.showAll':'Show all','discover.collapse':'Collapse','discover.sourceUnavailable':'Source unavailable: {source}','discover.unavailable':'Discovery unavailable.','discover.trustLabel':'Trust: {value}','discover.reasons':'Recommendation reasons for {name}','discover.openSource':'Open HTTPS source','discover.openMarketplace':'Open marketplace source','discover.noCli':'Local CLI guidance was not provided by this source.','discover.useGuidance':'Use the marketplace or CLI instructions from this source.','discover.noGuidance':'Marketplace or CLI guidance was not provided by this source.','discover.previewInstall':'Preview install',
+    'discover.kind':'Discovery kind','discover.trust':'Discovery trust','discover.sort':'Discovery sort','discover.recommended':'Recommended','discover.newest':'Newest','discover.updated':'Updated: {date}','discover.showAll':'Show all','discover.collapse':'Collapse','discover.sourceUnavailable':'Source unavailable: {source}','discover.unavailable':'Discovery unavailable.','discover.trustLabel':'Trust: {value}','discover.reasons':'Recommendation reasons for {name}','discover.openSource':'Open HTTPS source','discover.openMarketplace':'Open marketplace source','discover.noCli':'Local CLI guidance was not provided by this source.','discover.useGuidance':'Use the marketplace or CLI instructions from this source.','discover.noGuidance':'Marketplace or CLI guidance was not provided by this source.','discover.previewInstall':'Preview install',
     'attention.mcpUpdate':'MCP update · {name}','attention.skillUpdate':'Skill update · {name}','attention.sourceUnavailable':'Source unavailable','attention.feedUnavailable':'Feed unavailable','attention.feedDetail':'Update and source state could not be loaded.','attention.ruleConflict':'Rule conflict · {name}','attention.conflictsUnavailable':'Conflicts unavailable','attention.conflictsDetail':'Rule conflict state could not be loaded.','agent.unavailable':'Agent inventory unavailable','attention.drift':'Drift {state} · {name}','attention.unmanaged':'Unmanaged · {name}','attention.overviewUnavailable':'Overview unavailable','attention.overviewDetail':'Agent and drift state could not be loaded.','attention.inventoryUnavailable':'Inventory unavailable','attention.inventoryDetail':'Capability map could not be loaded.','attention.noneDetail':'All reported sources returned no findings.',
     'drift.unavailable':'Drift unavailable.','drift.summary':'{checked} checked · {findings} findings · {unmanaged} unmanaged','drift.note':'Unmanaged capabilities are informational: Fleet did not install them. Lock metadata is best-effort and may make an item unverifiable.','drift.modified':'Modified','drift.missing':'Missing','drift.unverifiable':'Unverifiable','drift.unmanaged':'Unmanaged','drift.conflicts':'{count} rule conflict(s) reported.','drift.conflictsUnavailable':'Rule conflicts unavailable.',
     'rollback.title':'Rollback capability change','rollback.scope':'Scope: {scope}','rollback.guard':'Divergence guard: rollback is skipped if the capability changed after Fleet wrote it.','rollback.responseUnavailable':'Rollback response unavailable.','rollback.result':'Rollback {action}{reason}','rollback.failed':'Rollback was not completed.','rollback.confirm':'Confirm rollback','rollback.select':'Select {op} {name} on {agent}{scope}, from {source}, recorded {time}, for rollback','rollback.openActivity':'Open Activity to select a rollback target',
@@ -392,7 +407,7 @@ const messages = {
     'metric.agents':'감지됨 / 사용 가능 에이전트','metric.instances':'기능 인스턴스','metric.keys':'고유 기능 키','metric.updates':'업데이트','metric.drift':'드리프트 항목',
     'map.eyebrow':'서버 보고 상태','map.title':'기능 Fleet 맵','map.filter':'종류별 기능 필터','map.table':'기능 Fleet 맵 표','map.legend':'Fleet 맵 범례',
     'inventory.eyebrow':'연결된 기능','inventory.intro':'각 사용 가능 에이전트가 보고한 기능을 확인합니다.','inventory.title':'기능 인벤토리','inventory.table':'기능 인벤토리 표',
-    'discover.eyebrow':'레지스트리 소스','discover.intro':'작업을 선택하기 전에 사용 가능한 기능을 검토합니다.','discover.skillsPlugins':'스킬 및 플러그인',
+    'discover.eyebrow':'레지스트리 소스','discover.intro':'작업을 선택하기 전에 사용 가능한 기능을 검토합니다.','discover.recommendBasis':'추천은 최신성, 인기도, 설치된 설정과의 관련성 및 마켓플레이스 제공 여부를 고려합니다.',
     'drift.eyebrow':'구성 신호','drift.intro':'변경 전에 차이와 충돌을 검토합니다.','drift.title':'감지된 드리프트',
     'activity.eyebrow':'감사 기록','activity.intro':'Fleet 작업과 결과를 검토합니다.','activity.title':'최근 활동',
     'attention.eyebrow':'업데이트 및 신호','attention.title':'확인 필요',
@@ -411,7 +426,7 @@ const messages = {
     'skillUpdate.update':'업데이트 가능','skillUpdate.update+local-edits':'로컬 수정이 있는 업데이트','skillUpdate.update+missing':'누락 항목이 있는 업데이트','skillUpdate.update+unverifiable':'업데이트 확인 불가',
     'table.capability':'기능','table.coverage':'적용 범위','empty.map':'이 필터와 일치하는 기능이 없습니다.','empty.inventory':'보고된 기능이 없습니다.','empty.inventorySearch':'검색 및 필터와 일치하는 인벤토리 항목이 없습니다.','empty.discovery':'검색 및 필터와 일치하는 탐색 항목이 없습니다.','empty.none':'보고된 항목 없음.','empty.activity':'보고된 활동 기록이 없습니다.','empty.attention':'확인할 항목 없음',
     'results.count':'전체 {total}개 중 {shown}개 결과','details.for':'{name} 상세','operation.on':'{agent}에서 {name} {operation}','source.label':'소스: {value}','identifier.label':'식별자: {value}','category.label':'카테고리: {value}','tokens.label':'예상 토큰: {value}',
-    'discover.kind':'탐색 종류','discover.trust':'탐색 신뢰도','discover.showAll':'모두 보기','discover.collapse':'접기','discover.sourceUnavailable':'소스 사용 불가: {source}','discover.unavailable':'탐색을 사용할 수 없습니다.','discover.trustLabel':'신뢰도: {value}','discover.reasons':'{name} 추천 이유','discover.openSource':'HTTPS 소스 열기','discover.openMarketplace':'마켓플레이스 소스 열기','discover.noCli':'이 소스는 로컬 CLI 안내를 제공하지 않습니다.','discover.useGuidance':'이 소스의 마켓플레이스 또는 CLI 안내를 사용하세요.','discover.noGuidance':'이 소스는 마켓플레이스 또는 CLI 안내를 제공하지 않습니다.','discover.previewInstall':'설치 미리보기',
+    'discover.kind':'탐색 종류','discover.trust':'탐색 신뢰도','discover.sort':'탐색 정렬','discover.recommended':'추천순','discover.newest':'최신순','discover.updated':'업데이트: {date}','discover.showAll':'모두 보기','discover.collapse':'접기','discover.sourceUnavailable':'소스 사용 불가: {source}','discover.unavailable':'탐색을 사용할 수 없습니다.','discover.trustLabel':'신뢰도: {value}','discover.reasons':'{name} 추천 이유','discover.openSource':'HTTPS 소스 열기','discover.openMarketplace':'마켓플레이스 소스 열기','discover.noCli':'이 소스는 로컬 CLI 안내를 제공하지 않습니다.','discover.useGuidance':'이 소스의 마켓플레이스 또는 CLI 안내를 사용하세요.','discover.noGuidance':'이 소스는 마켓플레이스 또는 CLI 안내를 제공하지 않습니다.','discover.previewInstall':'설치 미리보기',
     'attention.mcpUpdate':'MCP 업데이트 · {name}','attention.skillUpdate':'스킬 업데이트 · {name}','attention.sourceUnavailable':'소스 사용 불가','attention.feedUnavailable':'피드 사용 불가','attention.feedDetail':'업데이트 및 소스 상태를 불러오지 못했습니다.','attention.ruleConflict':'규칙 충돌 · {name}','attention.conflictsUnavailable':'충돌 정보 사용 불가','attention.conflictsDetail':'규칙 충돌 상태를 불러오지 못했습니다.','agent.unavailable':'에이전트 인벤토리 사용 불가','attention.drift':'드리프트 {state} · {name}','attention.unmanaged':'관리되지 않음 · {name}','attention.overviewUnavailable':'개요 사용 불가','attention.overviewDetail':'에이전트 및 드리프트 상태를 불러오지 못했습니다.','attention.inventoryUnavailable':'인벤토리 사용 불가','attention.inventoryDetail':'기능 맵을 불러오지 못했습니다.','attention.noneDetail':'보고된 모든 소스에 항목이 없습니다.',
     'drift.unavailable':'드리프트를 사용할 수 없습니다.','drift.summary':'{checked}개 확인 · {findings}개 항목 · {unmanaged}개 관리되지 않음','drift.note':'관리되지 않는 기능은 정보 제공용입니다. Fleet이 설치하지 않았습니다. 잠금 메타데이터는 최선의 정보이므로 항목을 확인하지 못할 수 있습니다.','drift.modified':'수정됨','drift.missing':'누락','drift.unverifiable':'확인 불가','drift.unmanaged':'관리되지 않음','drift.conflicts':'규칙 충돌 {count}개가 보고되었습니다.','drift.conflictsUnavailable':'규칙 충돌을 사용할 수 없습니다.',
     'rollback.title':'기능 변경 롤백','rollback.scope':'범위: {scope}','rollback.guard':'차이 보호: Fleet이 기록한 후 기능이 변경되었다면 롤백을 건너뜁니다.','rollback.responseUnavailable':'롤백 응답을 사용할 수 없습니다.','rollback.result':'롤백 {action}{reason}','rollback.failed':'롤백을 완료하지 못했습니다.','rollback.confirm':'롤백 확인','rollback.select':'{agent}의 {name} {op}{scope}, 소스 {source}, 기록 {time}, 롤백 대상으로 선택','rollback.openActivity':'롤백 대상을 선택하려면 활동 열기',
@@ -566,6 +581,7 @@ let rollbackPending = false;
 let rollbackGeneration = 0;
 let discoveryKind = 'all';
 let discoveryTrust = 'all';
+let discoverySort = 'recommended';
 let discoveryExpanded = { 'mcp-server':false, skill:false, plugin:false };
 let inventoryModel = null;
 let feedModel = null;
@@ -800,14 +816,15 @@ function knownInstances(capability, inventory){
     return matches.length === 1 ? matches[0] : { agent:agent.id, availability:'unverifiable', management:'none', operations:[] };
   });
 }
-function statusBadge(instance, inventory){
+function statusBadge(instance, inventory, includeAgent){
   const label = enumLabel(availabilityLabels, instance.availability);
   const agent = inventory.agents.find(function(item){ return item.id === instance.agent; });
+  const visibleLabel = includeAgent === false ? label : (agent ? agent.displayName : instance.agent) + ' · ' + label;
   const badge = node('span', 'status-badge status-' + instance.availability);
-  badge.setAttribute('aria-label', (agent ? agent.displayName : instance.agent) + ': ' + label);
+  badge.setAttribute('aria-label', visibleLabel);
   const icon = node('span', 'status-icon', instance.availability === 'installed' ? '●' : instance.availability === 'missing' ? '○' : '◆');
   icon.setAttribute('aria-hidden', 'true');
-  badge.append(icon, node('span', '', label));
+  badge.append(icon, node('span', '', visibleLabel));
   return badge;
 }
 function detailContent(capability, inventory){
@@ -824,7 +841,7 @@ function detailContent(capability, inventory){
   knownInstances(capability, inventory).forEach(function(instance){
     const item = node('li', 'agent-state');
     const agent = inventory.agents.find(function(candidate){ return candidate.id === instance.agent; });
-    item.append(node('strong', '', agent ? agent.displayName : instance.agent), statusBadge(instance, inventory));
+    item.append(node('strong', '', agent ? agent.displayName : instance.agent), statusBadge(instance, inventory, false));
     if(instance.management === 'read-only' || instance.management === 'delegated') item.append(node('span', 'management-label', t(instance.management === 'read-only' ? 'management.read-only' : 'management.delegated')));
     const actions = node('div', 'cell-actions');
     instance.operations.forEach(function(operation){ const button = operationButton(operation, capability, instance); if(button) actions.append(button); });
@@ -913,7 +930,7 @@ function discoveryAction(item){
 function discoveryItem(item){
   const article = node('article', 'discovery-item');
   const heading = node('div', 'discovery-item-heading');
-  heading.append(node(item.kind === 'mcp-server' ? 'h3' : 'h4', '', item.name), node('span', 'trust trust-' + item.trust, t('discover.trustLabel', { value:enumLabel(trustLabels, item.trust) })));
+  heading.append(node('h3', '', item.name), node('span', 'trust trust-' + item.trust, t('discover.trustLabel', { value:enumLabel(trustLabels, item.trust) })));
   article.append(heading);
   if(item.description) article.append(node('p', 'discovery-description', item.description));
   const metadata = [];
@@ -921,6 +938,13 @@ function discoveryItem(item){
   if(item.category) metadata.push(t('category.label', { value:item.category }));
   metadata.push(t('source.label', { value:item.source }));
   article.append(node('p', 'discovery-meta', metadata.join(' · ')));
+  if(item.updatedAt){
+    const updated = new Date(item.updatedAt);
+    const dateLabel = updated.toLocaleDateString(language === 'ko' ? 'ko-KR' : 'en-US', { year:'numeric', month:'short', day:'numeric' });
+    const time = node('time', 'discovery-meta', t('discover.updated', { date:dateLabel }));
+    time.dateTime = item.updatedAt;
+    article.append(time);
+  }
   const reasons = node('div', 'reason-list'); reasons.setAttribute('role','group'); reasons.setAttribute('aria-label',t('discover.reasons', { name:item.name }));
   item.reasons.forEach(function(reason){ reasons.append(node('span', 'reason', recommendationReasonLabel(reason))); });
   if(reasons.childNodes.length) article.append(reasons);
@@ -944,7 +968,7 @@ function discoveryItem(item){
 function renderDiscovery(feed){
   const view = document.querySelector('[data-view="discover"]');
   let toolbar = document.getElementById('discovery-toolbar');
-  if(!toolbar){ toolbar = node('div', 'discovery-toolbar'); toolbar.id = 'discovery-toolbar'; view.querySelector('.placeholder-grid').before(toolbar); }
+  if(!toolbar){ toolbar = node('div', 'discovery-toolbar'); toolbar.id = 'discovery-toolbar'; view.querySelector('.discovery-sections').before(toolbar); }
   const kindGroup = node('div', 'discovery-filter-group'); kindGroup.setAttribute('role','group'); kindGroup.setAttribute('aria-label',t('discover.kind'));
   [['all','filter.all'],['mcp-server',null],['skill','kind.skill'],['plugin','kind.plugin']].forEach(function(pair){
     discoveryFilterButton(kindGroup, pair[0], pair[1] ? t(pair[1]) : 'MCP', discoveryKind, function(value){ discoveryKind = value; });
@@ -953,21 +977,30 @@ function renderDiscovery(feed){
   [['all','filter.allTrust'],['no-flags','filter.noFlags'],['caution','filter.caution'],['unknown','filter.unknown']].forEach(function(pair){
     discoveryFilterButton(trustGroup, pair[0], t(pair[1]), discoveryTrust, function(value){ discoveryTrust = value; });
   });
+  const sortLabel = node('label', 'compact-control', t('discover.sort'));
+  const sort = node('select'); sort.id = 'discovery-sort';
+  [['recommended','discover.recommended'],['newest','discover.newest']].forEach(function(pair){
+    const option = node('option', '', t(pair[1])); option.value = pair[0]; option.selected = pair[0] === discoverySort; sort.append(option);
+  });
+  sort.addEventListener('change', function(){ discoverySort = sort.value; renderDiscovery(feedModel); document.getElementById('discovery-sort').focus(); });
+  sortLabel.append(sort);
+  const basis = node('p', 'recommendation-basis', t('discover.recommendBasis'));
   const failures = node('div', 'source-failures'); failures.id = 'discovery-failures';
   if(feed) feed.failures.forEach(function(failure){ failures.append(node('p', '', t('discover.sourceUnavailable', { source:failure.source }))); });
-  replaceChildren(toolbar, [kindGroup, trustGroup, failures]);
+  replaceChildren(toolbar, [kindGroup, trustGroup, sortLabel, basis, failures]);
   const targets = { 'mcp-server':document.getElementById('recommended'), skill:document.getElementById('recskills'), plugin:document.getElementById('recplugins') };
   if(!feed){
     Object.keys(targets).forEach(function(kind){ targets[kind].className = 'placeholder error'; targets[kind].textContent = t('discover.unavailable'); });
     return;
   }
-  const sections = discoveryViewSections(feed, { query:discoveryQuery, kind:discoveryKind, trust:discoveryTrust }, discoveryExpanded);
+  const sections = discoveryViewSections(feed, { query:discoveryQuery, kind:discoveryKind, trust:discoveryTrust, sort:discoverySort }, discoveryExpanded);
   Object.keys(targets).forEach(function(kind){
     const target = targets[kind]; const section = sections.find(function(candidate){ return candidate.kind === kind; });
+    const sectionContainer = target.parentElement;
+    sectionContainer.hidden = !section;
     target.className = 'discovery-list';
     if(!section){ replaceChildren(target, []); return; }
     const children = [];
-    if(kind === 'skill' || kind === 'plugin') children.push(node('h3', 'discovery-section-title', t(kind === 'skill' ? 'kind.skills' : 'kind.plugins')));
     section.visible.forEach(function(item){ children.push(discoveryItem(item)); });
     if(!section.visible.length) children.push(node('p', 'empty-state', t('empty.discovery')));
     if(section.canExpand || section.canCollapse){

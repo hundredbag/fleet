@@ -160,14 +160,15 @@ export const DASHBOARD_CSS = `
   .source-failures { flex-basis:100%; }
   .source-failures:empty { display:none; }
   .source-failures p { margin:4px 0 0; color:var(--muted); font-size:11px; }
-  .discovery-list { display:grid; }
+  .discovery-sections { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
+  .discovery-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:12px; }
   .discovery-section-title { margin:14px 0 3px; color:var(--muted-on-bg); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
-  .discovery-item { padding:13px 0; border-top:1px solid var(--border); }
-  .discovery-item:first-child { border-top:0; }
+  .discovery-item { min-width:0; padding:13px; border:1px solid var(--border); border-radius:9px; background:var(--surface-raised); }
   .discovery-item-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
-  .discovery-item h3, .discovery-item h4 { margin:0; font-size:14px; overflow-wrap:anywhere; }
+  .discovery-item h3 { margin:0; font-size:14px; overflow-wrap:anywhere; }
   .discovery-description { margin:6px 0; color:var(--text)!important; }
   .discovery-meta { margin:5px 0; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+  .recommendation-basis { flex:1 1 100%; margin:0; color:var(--muted); font-size:11px; }
   .trust, .reason { display:inline-flex; padding:2px 7px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:9px; font-weight:700; white-space:nowrap; }
   .trust-no-flags { border-color:color-mix(in srgb,var(--accent) 42%,var(--border)); color:var(--accent); }
   .trust-caution, .trust-unknown { color:var(--muted-on-bg); }

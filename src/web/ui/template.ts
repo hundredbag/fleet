@@ -101,7 +101,7 @@ ${renderNav()}
 
       <section class="view" data-view="discover" aria-labelledby="view-discover-heading" hidden>
         <div class="view-intro"><div><span class="eyebrow" data-i18n="discover.eyebrow">Registry sources</span><h1 id="view-discover-heading" tabindex="-1" data-i18n="nav.discover">Discover</h1></div><p data-i18n="discover.intro">Review available capabilities before choosing an action.</p></div>
-        <div class="placeholder-grid"><article class="card"><h2 data-i18n="kind.mcpServers">MCP servers</h2><div id="recommended" class="placeholder" data-i18n="loading.discovery">Discovery results will appear here.</div></article><article class="card"><h2 data-i18n="discover.skillsPlugins">Skills and plugins</h2><div id="recskills" class="placeholder" data-i18n="loading.registry">Registry results will appear here.</div><div id="recplugins"></div></article></div>
+        <div class="discovery-sections"><article class="card discovery-section"><h2 data-i18n="kind.mcpServers">MCP servers</h2><div id="recommended" class="placeholder" data-i18n="loading.discovery">Discovery results will appear here.</div></article><article class="card discovery-section"><h2 data-i18n="kind.skills">Skills</h2><div id="recskills" class="placeholder" data-i18n="loading.registry">Registry results will appear here.</div></article><article class="card discovery-section"><h2 data-i18n="kind.plugins">Plugins</h2><div id="recplugins" class="placeholder" data-i18n="loading.registry">Registry results will appear here.</div></article></div>
       </section>
 
       <section class="view" data-view="drift" aria-labelledby="view-drift-heading" hidden>

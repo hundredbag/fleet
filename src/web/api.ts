@@ -127,6 +127,7 @@ export async function apiFeed(
       reasons: rankedItem.reasons.map((reason) => reason),
       trust: rankedItem.trust.level,
       url: item.url,
+      updatedAt: item.updatedAt,
       operation: supportsFeedOperation(adapters, inv, kind, item.name, 'install'),
     };
   });

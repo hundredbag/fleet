@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Script, runInNewContext } from 'node:vm';
 import type { AgentAdapter } from '../src/core/adapter.js';
 import { apiFeed, apiInventory } from '../src/web/api.js';
+import { mapFeed } from '../src/web/public-mappers.js';
 import { renderPage } from '../src/web/ui.js';
 import {
   DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE,
@@ -151,6 +152,10 @@ test('dashboard fixture flows through the real inventory and feed read models', 
     },
   ]);
   assert.equal(feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.trust, 'no-flags');
+  assert.equal(
+    feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.updatedAt,
+    '2099-01-01T00:00:00.000Z',
+  );
   assert.equal(feed.recommendations.find((item) => item.name === 'caution-legacy-tools')?.trust, 'caution');
   assert.equal(inventory.capabilityInstances, 8);
   assert.equal(inventory.uniqueCapabilityKeys, 6);
@@ -316,7 +321,7 @@ test('discovery model searches public metadata, applies kind and trust filters, 
     })),
   ];
   const feed = { recommendations };
-  const base = { query: '', kind: 'all', trust: 'all' };
+  const base = { query: '', kind: 'all', trust: 'all', sort: 'recommended' as const };
   const bounded = discoveryViewSections(feed, base, {});
   assert.deepEqual(
     bounded.map((section) => [section.kind, section.visible.length, section.total]),
@@ -351,13 +356,97 @@ test('discovery model searches public metadata, applies kind and trust filters, 
   );
 });
 
+test('discovery newest sort uses only valid public timestamps and keeps deterministic ties', () => {
+  const recommendations = [
+    {
+      kind: 'mcp-server',
+      name: 'recommended-first',
+      source: 'r',
+      reasons: [],
+      trust: 'unknown',
+      operation: null,
+    },
+    {
+      kind: 'mcp-server',
+      name: 'newest-a',
+      source: 'r',
+      reasons: [],
+      trust: 'unknown',
+      operation: null,
+      updatedAt: '2026-08-02T00:00:00.000Z',
+    },
+    {
+      kind: 'mcp-server',
+      name: 'newest-b',
+      source: 'r',
+      reasons: [],
+      trust: 'unknown',
+      operation: null,
+      updatedAt: '2026-08-02T00:00:00.000Z',
+    },
+    {
+      kind: 'mcp-server',
+      name: 'older',
+      source: 'r',
+      reasons: [],
+      trust: 'unknown',
+      operation: null,
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    },
+  ];
+  const feed = { recommendations };
+  const base = { query: '', kind: 'all', trust: 'all' };
+  assert.deepEqual(
+    discoveryViewSections(feed, { ...base, sort: 'recommended' }, {})[0]?.visible.map((item) => item.name),
+    ['recommended-first', 'newest-a', 'newest-b', 'older'],
+  );
+  assert.deepEqual(
+    discoveryViewSections(feed, { ...base, sort: 'newest' }, {})[0]?.visible.map((item) => item.name),
+    ['newest-a', 'newest-b', 'older', 'recommended-first'],
+  );
+});
+
+test('feed mapper allowlists only parseable timestamps and normalizes them to ISO', () => {
+  const base = {
+    updates: [],
+    skillUpdates: [],
+    failures: [],
+    fromCache: false,
+    recommendations: [
+      {
+        kind: 'skill',
+        name: 'valid',
+        source: 'r',
+        reasons: [],
+        trust: 'unknown',
+        operation: null,
+        updatedAt: '2026-08-02T12:30:00Z',
+      },
+      {
+        kind: 'plugin',
+        name: 'invalid',
+        source: 'r',
+        reasons: [],
+        trust: 'unknown',
+        operation: null,
+        updatedAt: 'not-a-date',
+      },
+      { kind: 'mcp-server', name: 'unknown', source: 'r', reasons: [], trust: 'unknown', operation: null },
+    ],
+  };
+  const mapped = mapFeed(base);
+  assert.equal(mapped.recommendations[0]?.updatedAt, '2026-08-02T12:30:00.000Z');
+  assert.equal(mapped.recommendations[1]?.updatedAt, undefined);
+  assert.equal(mapped.recommendations[2]?.updatedAt, undefined);
+});
+
 test('generated discovery helper executes closure-free and matches typed behavior', async () => {
   assert.doesNotMatch(DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE, /__name/);
   const browserView = runInNewContext(
     '(' + DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE + ')',
   ) as typeof discoveryViewSections;
   const feed = await apiFeed(dashboardAdapters, dashboardFeedSources, { fleetHome: '/fixture/fleet-home' });
-  const filters = { query: 'browser', kind: 'mcp-server', trust: 'no-flags' };
+  const filters = { query: 'browser', kind: 'mcp-server', trust: 'no-flags', sort: 'recommended' as const };
   assert.deepEqual(
     JSON.parse(JSON.stringify(browserView(feed, filters, { 'mcp-server': false }))),
     discoveryViewSections(feed, filters, { 'mcp-server': false }),
@@ -402,6 +491,9 @@ test('generated discovery validator accepts real producer reasons and rejects ar
   assert.equal(validate({ ...relatedBase, reasons: [`related to your setup (${'a'.repeat(122)})`] }), true);
   assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (a)'] }), false);
   assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (abcd  efgh)'] }), false);
+  assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00.000Z' }), true);
+  assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00Z' }), false);
+  assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: 'not-a-date' }), false);
   assert.equal(
     validate({
       kind: 'skill',
@@ -445,6 +537,46 @@ test('discovery workbench renders bounded local controls, truthful metadata, and
   assert.match(html, /refresh\.sources/);
   assert.match(html, /search\.setAttribute\('aria-label', searchLabel\)/);
   assert.doesNotMatch(html, /fit score|fit percentage|recommendation grade/i);
+  assert.match(html, /Recommended/);
+  assert.match(html, /Newest/);
+  assert.match(html, /추천순/);
+  assert.match(html, /최신순/);
+  assert.match(
+    html,
+    /Recommendations consider freshness, popularity, relevance to your installed setup, and marketplace availability\./,
+  );
+  assert.match(html, /최신성, 인기도, 설치된 설정과의 관련성 및 마켓플레이스 제공 여부/);
+  assert.match(html, /toLocaleDateString\(language === 'ko' \? 'ko-KR' : 'en-US'/);
+  assert.match(html, /discoverySort = sort\.value; renderDiscovery\(feedModel\)/);
+  assert.match(html, /sectionContainer\.hidden = !section/);
+  assert.match(html, /heading\.append\(node\('h3'/);
+  assert.doesNotMatch(html, /item\.kind === 'mcp-server' \? 'h3' : 'h4'/);
+  assert.doesNotMatch(html, /discoverySort[\s\S]{0,160}(?:get\(|fetch\()/);
+});
+
+test('discovery renders three full-width kind sections with responsive card grids', () => {
+  const html = renderPage();
+  assert.match(html, /class="discovery-sections"/);
+  assert.match(html, /class="card discovery-section"[\s\S]*id="recommended"/);
+  assert.match(html, /class="card discovery-section"[\s\S]*id="recskills"/);
+  assert.match(html, /class="card discovery-section"[\s\S]*id="recplugins"/);
+  assert.doesNotMatch(html, /Skills and plugins|스킬 및 플러그인/);
+  assert.match(html, /\.discovery-sections \{ display:grid; grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(
+    html,
+    /\.discovery-list \{ display:grid; grid-template-columns:repeat\(auto-fit,minmax\(min\(100%,260px\),1fr\)\)/,
+  );
+});
+
+test('inventory status badges visibly pair the agent display name with status', () => {
+  const html = renderPage();
+  assert.match(
+    html,
+    /const visibleLabel = includeAgent === false \? label : \(agent \? agent\.displayName : instance\.agent\) \+ ' · ' \+ label/,
+  );
+  assert.match(html, /statusBadge\(instance, inventory, false\)/);
+  assert.match(html, /node\('span', '', visibleLabel\)/);
+  assert.doesNotMatch(html, /badge\.append\(icon, node\('span', '', label\)\)/);
 });
 
 test('inventory advertised plugin install and multi-source sync build deterministic plan payloads', async () => {
