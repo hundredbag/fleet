@@ -240,6 +240,25 @@ test('skill updates: origin dir changed → update; local edit → update+local-
     assert.equal(ups[0]!.state, 'update');
     assert.match(ups[0]!.applyHint, /fleet skill install up/);
 
+    // Policy branches only on structured inventoryStatus, never arbitrary notes.
+    const base = await buildInventory([a]);
+    for (const [inventoryStatus, expected] of [
+      ['ok', 'update'],
+      ['not-present', 'update+missing'],
+      ['detect-failed', 'update+unverifiable'],
+      ['read-failed', 'update+unverifiable'],
+    ] as const) {
+      const inv = structuredClone(base);
+      inv.agents[0] = {
+        ...inv.agents[0]!,
+        present: inventoryStatus !== 'not-present',
+        inventoryStatus,
+        note: inventoryStatus === 'ok' ? 'read failed words are diagnostic only' : 'everything is healthy',
+      };
+      if (inventoryStatus !== 'ok') inv.items = [];
+      assert.equal((await skillUpdatesFromLock(inv, home))[0]!.state, expected, inventoryStatus);
+    }
+
     // AND the installed copy was edited locally → flagged so reinstall doesn't silently clobber
     writeFileSync(join(dir, 'skills', 'up', 'SKILL.md'), 'my local tweak');
     ups = await skillUpdatesFromLock(await buildInventory([a]), home);

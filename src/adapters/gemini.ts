@@ -87,6 +87,16 @@ export class GeminiAdapter implements AgentAdapter, AgentWriter {
   readonly id = 'gemini';
   readonly displayName = 'Gemini CLI';
   readonly supportsWrite = true;
+  readonly capabilitySupport = {
+    'mcp-server': { inventory: 'supported', management: 'writable' },
+    skill: { inventory: 'unsupported', management: 'none' },
+    rule: { inventory: 'unsupported', management: 'none' },
+    permission: { inventory: 'unsupported', management: 'none' },
+    plugin: { inventory: 'unsupported', management: 'none' },
+    command: { inventory: 'unsupported', management: 'none' },
+    hook: { inventory: 'unsupported', management: 'none' },
+    subagent: { inventory: 'unsupported', management: 'none' },
+  } as const;
 
   constructor(private readonly settingsPath: string = DEFAULT_GEMINI_JSON) {}
 

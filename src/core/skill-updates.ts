@@ -27,7 +27,11 @@ export interface SkillUpdate {
 export async function skillUpdatesFromLock(inv: Inventory, fleetHome?: string): Promise<SkillUpdate[]> {
   const lock = await readLock(fleetHome);
   const out: SkillUpdate[] = [];
-  const brokenAgents = new Set(inv.agents.filter((a) => a.note).map((a) => a.id));
+  const brokenAgents = new Set(
+    inv.agents
+      .filter((a) => a.inventoryStatus === 'detect-failed' || a.inventoryStatus === 'read-failed')
+      .map((a) => a.id),
+  );
   const originHashMemo = new Map<string, string | undefined>(); // fan-out installs share origins
   for (const e of Object.values(lock.entries)) {
     if (e.kind !== 'skill' || e.origin.type !== 'dir' || !e.contentHash) continue;

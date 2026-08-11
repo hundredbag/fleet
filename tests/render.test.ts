@@ -6,13 +6,20 @@ import type { Inventory } from '../src/core/types.js';
 test('render: empty state shows agents and the no-servers hint', () => {
   const inv: Inventory = {
     agents: [
-      { id: 'claude-code', displayName: 'Claude Code', present: true, configPaths: [] },
+      {
+        id: 'claude-code',
+        displayName: 'Claude Code',
+        present: true,
+        configPaths: [],
+        inventoryStatus: 'ok',
+      },
       {
         id: 'gemini',
         displayName: 'Gemini CLI',
         present: false,
         configPaths: [],
         note: 'not configured on this machine',
+        inventoryStatus: 'not-present',
       },
     ],
     items: [],
@@ -27,8 +34,8 @@ test('render: empty state shows agents and the no-servers hint', () => {
 test('render: matrix marks scope, multi-agent, and disabled', () => {
   const inv: Inventory = {
     agents: [
-      { id: 'a', displayName: 'A', present: true, configPaths: [] },
-      { id: 'b', displayName: 'B', present: true, configPaths: [] },
+      { id: 'a', displayName: 'A', present: true, configPaths: [], inventoryStatus: 'ok' },
+      { id: 'b', displayName: 'B', present: true, configPaths: [], inventoryStatus: 'ok' },
     ],
     items: [
       {

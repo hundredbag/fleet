@@ -155,7 +155,11 @@ test('drift: broken agent inventory reads UNVERIFIABLE (not mass missing)', asyn
     await installServer(a, home);
     const inv = await buildInventory([a]);
     inv.items = []; // simulate a read failure: no items…
-    inv.agents = inv.agents.map((g) => ({ ...g, note: 'config.toml does not parse' })); // …with a note
+    inv.agents = inv.agents.map((agent) => ({
+      ...agent,
+      inventoryStatus: 'read-failed' as const,
+      note: 'arbitrary diagnostic text must not drive drift policy',
+    }));
     const report = await detectDrift(inv, home);
     assert.equal(report.findings[0]?.state, 'unverifiable');
     assert.match(report.findings[0]?.detail ?? '', /inventory unavailable/);

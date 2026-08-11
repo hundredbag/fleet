@@ -80,56 +80,63 @@ test('dashboard fixture flows through the real inventory and feed read models', 
       ['codex', true],
     ],
   );
+  const playwright = inventory.capabilities.find(
+    (capability) => capability.kind === 'mcp-server' && capability.name === 'playwright',
+  );
+  assert.ok(playwright);
+  assert.equal(playwright.coverage, 'all-present');
   assert.deepEqual(
-    inventory.servers
-      .filter((server) => server.name === 'playwright')
-      .map((server) => server.agent)
+    playwright.instances.map((instance) => instance.agent),
+    ['claude-code', 'codex'],
+  );
+  assert.deepEqual(
+    inventory.capabilities
+      .find((capability) => capability.kind === 'mcp-server' && capability.name === 'github')
+      ?.instances.filter((instance) => instance.availability === 'installed')
+      .map((instance) => instance.agent),
+    ['claude-code'],
+  );
+  assert.deepEqual(
+    inventory.capabilities
+      .find((capability) => capability.kind === 'skill' && capability.name === 'shared-review')
+      ?.instances.filter((instance) => instance.availability === 'installed')
+      .map((instance) => instance.agent)
       .sort(),
     ['claude-code', 'codex'],
   );
   assert.deepEqual(
-    inventory.servers.filter((server) => server.name === 'github').map((server) => server.agent),
+    inventory.capabilities
+      .find((capability) => capability.kind === 'skill' && capability.name === 'claude-only-debugging')
+      ?.instances.filter((instance) => instance.availability === 'installed')
+      .map((instance) => instance.agent),
     ['claude-code'],
   );
   assert.deepEqual(
-    inventory.skills
-      .filter((skill) => skill.name === 'shared-review')
-      .map((skill) => skill.agent)
-      .sort(),
-    ['claude-code', 'codex'],
-  );
-  assert.deepEqual(
-    inventory.skills.filter((skill) => skill.name === 'claude-only-debugging').map((skill) => skill.agent),
-    ['claude-code'],
-  );
-  assert.deepEqual(
-    inventory.rules.map((rule) => rule.name),
+    inventory.capabilities
+      .filter((capability) => capability.kind === 'rule')
+      .map((capability) => capability.name),
     ['verify-before-apply'],
   );
   assert.deepEqual(
-    inventory.plugins.map((plugin) => plugin.name),
+    inventory.capabilities
+      .filter((capability) => capability.kind === 'plugin')
+      .map((capability) => capability.name),
     ['review-tools'],
   );
 
   const feed = await apiFeed(dashboardAdapters, dashboardFeedSources, { fleetHome: '/fixture/fleet-home' });
   assert.deepEqual(feed.updates, [
     {
+      kind: 'mcp-server',
       name: 'playwright',
       agent: 'claude-code',
-      identifier: '@playwright/mcp',
-      ecosystem: 'npm',
-      installed: '1.0.0',
-      available: '2.0.0',
+      from: '1.0.0',
+      to: '2.0.0',
+      operation: 'update',
     },
   ]);
-  assert.equal(
-    feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.trust.level,
-    'no-flags',
-  );
-  assert.equal(
-    feed.recommendations.find((item) => item.name === 'caution-legacy-tools')?.trust.level,
-    'caution',
-  );
+  assert.equal(feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.trust, 'no-flags');
+  assert.equal(feed.recommendations.find((item) => item.name === 'caution-legacy-tools')?.trust, 'caution');
 });
 
 test('renderPage exposes every dashboard view', () => {

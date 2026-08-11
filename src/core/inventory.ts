@@ -1,5 +1,5 @@
 import type { AgentAdapter } from './adapter.js';
-import type { Inventory, DetectedAgent, InstalledCapability } from './types.js';
+import type { Inventory, InventoryAgent, InstalledCapability } from './types.js';
 
 /**
  * Build the unified cross-agent inventory by asking every adapter to detect
@@ -11,9 +11,10 @@ export async function buildInventory(adapters: AgentAdapter[]): Promise<Inventor
   // failures too (a throwing detect used to abort the whole snapshot)
   const per = await Promise.all(
     adapters.map(async (adapter) => {
-      let detected: DetectedAgent;
+      let detected: InventoryAgent;
       try {
-        detected = await adapter.detect();
+        const result = await adapter.detect();
+        detected = { ...result, inventoryStatus: result.present ? 'ok' : 'not-present' };
       } catch (err) {
         return {
           detected: {
@@ -22,7 +23,8 @@ export async function buildInventory(adapters: AgentAdapter[]): Promise<Inventor
             present: false,
             configPaths: [],
             note: `detect error: ${err instanceof Error ? err.message : String(err)}`,
-          } satisfies DetectedAgent,
+            inventoryStatus: 'detect-failed',
+          } satisfies InventoryAgent,
           items: [] as InstalledCapability[],
         };
       }
@@ -31,6 +33,7 @@ export async function buildInventory(adapters: AgentAdapter[]): Promise<Inventor
         return { detected, items: await adapter.readInventory() };
       } catch (err) {
         detected.note = `read error: ${err instanceof Error ? err.message : String(err)}`;
+        detected.inventoryStatus = 'read-failed';
         return { detected, items: [] as InstalledCapability[] };
       }
     }),

@@ -6,10 +6,12 @@ import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFleetServer } from '../src/web/server.js';
+import { apiActivity } from '../src/web/api.js';
 import { checkHost, checkOrigin, tokenMatches } from '../src/web/security.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import type { AgentAdapter } from '../src/core/adapter.js';
 import type { FeedSource } from '../src/feed/source.js';
+import { applyChanges } from '../src/core/writer.js';
 import {
   dashboardAdapters,
   dashboardFailingFeedSource,
@@ -175,6 +177,142 @@ test('public response matcher rejects nested stack strings and stack keys', () =
   assert.doesNotThrow(() => assertPublicResponse({ description: 'Error: handling utilities' }, 'fixture'));
 });
 
+test('feed mapper never advertises unsupported skill update actions', async () => {
+  const { mapFeed } = await import('../src/web/public-mappers.js');
+  const feed = mapFeed({
+    updates: [],
+    skillUpdates: [{ name: 's', agent: 'a', state: 'update' }],
+    recommendations: [],
+    failures: [],
+    fromCache: false,
+  });
+  assert.equal(feed.skillUpdates[0]!.operation, null);
+});
+
+test('activity merges newest 20, marks rolled-back core IDs, and reports delegated completeness', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fleet-activity-'));
+  try {
+    const opaqueId = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+    const core = Array.from({ length: 12 }, (_, i) => ({
+      id: opaqueId(i),
+      ts: i * 2 + 1,
+      op: 'install',
+      agent: 'codex',
+      name: `core-${i}`,
+      file: '/redacted',
+      backup: '/redacted',
+      existedBefore: false,
+    }));
+    core[0]!.id = `1700000000000-123-${opaqueId(0)}`; // legacy writer format
+    core.push({
+      id: opaqueId(50),
+      ts: 25,
+      op: 'rollback',
+      agent: 'codex',
+      name: 'core-5',
+      file: '/redacted',
+      backup: '/redacted',
+      existedBefore: false,
+      rolledBackFrom: opaqueId(5),
+    } as (typeof core)[number]);
+    writeFileSync(join(root, 'audit.jsonl'), core.map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const coreOnly = await apiActivity(root);
+    assert.equal(coreOnly.delegatedActions.status, 'not-present');
+    assert.equal(coreOnly.items.filter((x) => x.rollbackEligible).length, 1);
+    assert.equal(coreOnly.items.find((x) => x.rollbackEligible)?.source, 'core-audit');
+    assert.equal(coreOnly.items.find((x) => x.name === 'core-0')?.id, opaqueId(0));
+    assert.doesNotMatch(JSON.stringify(coreOnly), /1700000000000-123/);
+
+    const delegated = Array.from({ length: 12 }, (_, i) => ({
+      id: opaqueId(100 + i),
+      time: new Date(i * 2 + 2).toISOString(),
+      op: 'install',
+      agent: 'codex',
+      selector: `plugin-${i}@market`,
+      exitCode: i === 11 ? 1 : 0,
+    }));
+    writeFileSync(join(root, 'delegated.jsonl'), delegated.map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const result = await apiActivity(root);
+    assert.equal(result.delegatedActions.status, 'available');
+    assert.equal(result.items.length, 20);
+    assert.deepEqual(
+      result.items.map((x) => x.ts),
+      [...result.items.map((x) => x.ts)].sort((a, b) => b - a),
+    );
+    const rolled = result.items.find((x) => x.id === opaqueId(5));
+    assert.equal(rolled?.rolledBack, true);
+    assert.equal(rolled?.rollbackEligible, false);
+    assert.equal(result.items.filter((x) => x.rollbackEligible).length, 1);
+    assert.equal(result.items.find((x) => x.rollbackEligible)?.source, 'core-audit');
+
+    writeFileSync(join(root, 'delegated.jsonl'), '{malformed\n');
+    assert.equal((await apiActivity(root)).delegatedActions.status, 'malformed');
+
+    writeFileSync(
+      join(root, 'delegated.jsonl'),
+      [
+        { ...delegated[0], id: '/private/DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL' },
+        { ...delegated[1], agent: 'DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL' },
+        { ...delegated[2], exitCode: 'stderr: private output' },
+        { ...delegated[3], selector: 'plugin@../../DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL' },
+      ]
+        .map((x) => JSON.stringify(x))
+        .join('\n') + '\n',
+    );
+    const rejectedDelegated = await apiActivity(root);
+    assert.equal(rejectedDelegated.delegatedActions.status, 'malformed');
+    assert.doesNotMatch(
+      JSON.stringify(rejectedDelegated),
+      /DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL|private output/,
+    );
+
+    writeFileSync(
+      join(root, 'audit.jsonl'),
+      JSON.stringify({
+        ...core[0],
+        id: '/private/DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL',
+      }) + '\n',
+    );
+    assert.doesNotMatch(JSON.stringify(await apiActivity(root)), /DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL/);
+
+    rmSync(join(root, 'delegated.jsonl'));
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(root, 'delegated.jsonl'));
+    assert.equal((await apiActivity(root)).delegatedActions.status, 'unavailable');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('activity accepts audit records emitted by the real core writer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fleet-activity-real-'));
+  try {
+    const file = join(root, 'agent-config.json');
+    const applied = await applyChanges(
+      [
+        {
+          agent: 'codex',
+          op: 'install',
+          name: 'real-writer-entry',
+          kind: 'mcp-server',
+          scope: 'user',
+          file,
+          newContent: '{}',
+        },
+      ],
+      () => {},
+      { fleetHome: root },
+    );
+    const result = await apiActivity(root);
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0]?.id, applied[0]?.auditId);
+    assert.equal(result.items[0]?.rollbackEligible, true);
+    assert.match(result.items[0]?.id ?? '', /^[0-9a-f-]{36}$/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('security: host / origin / token checks (unit)', () => {
   assert.equal(checkHost('127.0.0.1:7777', 7777), true);
   assert.equal(checkHost('localhost:7777', 7777), true);
@@ -205,8 +343,8 @@ test('web: API requires the session token', async () => {
       headers: { authorization: 'Bearer secret' },
     });
     assert.equal(r.status, 200);
-    const inv = (await r.json()) as { servers: { name: string }[] };
-    assert.ok(inv.servers.some((s) => s.name === 'gh'));
+    const inv = (await r.json()) as { capabilities: { name: string }[] };
+    assert.ok(inv.capabilities.some((capability) => capability.name === 'gh'));
   } finally {
     await close(server);
   }
@@ -259,6 +397,45 @@ test('web: public API responses omit private fields, stacks, and caught-error de
     }
   } finally {
     await close(server);
+  }
+});
+
+test('web: failed GET, POST, and rollback are fixed JSON DTOs with recursive redaction', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fleet-web-errors-'));
+  const home = join(root, 'home');
+  const { mkdirSync } = await import('node:fs');
+  mkdirSync(join(home, 'audit.jsonl'), { recursive: true });
+  const { server } = createFleetServer(dashboardAdapters, { token: 't', fleetHome: home });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const h = {
+    origin: `http://127.0.0.1:${port}`,
+    'content-type': 'application/json',
+    authorization: 'Bearer t',
+  };
+  try {
+    const failedGet = await httpGet(port, '/api/activity', { authorization: 'Bearer t' });
+    assert.equal(failedGet.status, 500);
+    assert.match(String(failedGet.headers['content-type'] ?? ''), /application\/json/);
+    assertPublicResponse(failedGet.json, 'failed GET');
+
+    const failedPost = await post(
+      port,
+      '/api/plan',
+      h,
+      JSON.stringify({ name: 'x', action: 'remove', kind: 'permission', from: ['codex'] }),
+    );
+    assert.equal(failedPost.status, 400);
+    assert.match(String(failedPost.headers['content-type'] ?? ''), /application\/json/);
+    assertPublicResponse(failedPost.json, 'failed POST');
+
+    const failedRollback = await post(port, '/api/rollback', h, '{}');
+    assert.equal(failedRollback.status, 400);
+    assert.match(String(failedRollback.headers['content-type'] ?? ''), /application\/json/);
+    assertPublicResponse(failedRollback.json, 'failed rollback');
+  } finally {
+    await close(server);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -397,7 +574,7 @@ test('web: rejects mutation bodies larger than 64 KiB with 413', async () => {
       JSON.stringify({ padding: 'x'.repeat(64 * 1024) }),
     );
     assert.equal(r.status, 413);
-    assert.match(String(r.json.error), /too large/);
+    assert.equal(r.json.code, 'PAYLOAD_TOO_LARGE');
     assert.equal(r.headers['cache-control'], 'no-store');
   } finally {
     await close(server);
@@ -460,22 +637,21 @@ test('web: plan → apply installs to a real agent config; planId is single-use'
     assert.equal(planned.status, 200);
     assert.match(String(planned.headers['content-type'] ?? ''), /application\/json/);
     assert.ok(planned.json.planId);
-    assert.equal(planned.json.preview.changes.length, 1);
+    assert.equal(planned.json.changes.length, 1);
     // not yet written (dry-run preview only)
     assert.doesNotMatch(readFileSync(claudeJson, 'utf8'), /@x\/demo/);
 
     const applied = await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
     assert.equal(applied.status, 200);
     assert.match(String(applied.headers['content-type'] ?? ''), /application\/json/);
-    assert.equal(applied.json.status, 'applied');
+    assert.equal(applied.json.applied, 1);
     assert.match(readFileSync(claudeJson, 'utf8'), /@x\/demo/);
 
     // same planId can't be replayed
     const replay = await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
     assert.equal(replay.status, 400);
 
-    // preview reveals the actual command that will run
-    assert.equal(planned.json.runs, 'npx -y @x/demo');
+    assert.equal(planned.json.operationSummary, 'install mcp-server (1 change)');
     assertPublicResponse(planned.json, '/api/plan');
     assertPublicResponse(applied.json, '/api/apply');
   } finally {
@@ -513,7 +689,7 @@ test('web: refuses unsafe package coordinates (no flag/git/url/file injection)',
         }),
       );
       assert.equal(r.status, 400, `expected 400 for '${identifier}'`);
-      assert.match(String(r.json.error), /unsafe/);
+      assert.equal(r.json.code, 'ACTION_REJECTED');
     }
   } finally {
     await close(server);
@@ -557,7 +733,7 @@ test('web: update bumps version WITHOUT dropping env', async () => {
       }),
     );
     assert.equal(planned.status, 200);
-    assert.equal(planned.json.runs, 'npx -y @x/demo@2.0.0');
+    assert.equal(planned.json.operationSummary, 'update mcp-server (1 change)');
     await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
     const written = JSON.parse(readFileSync(claudeJson, 'utf8'));
     assert.equal(written.mcpServers.demo.args[1], '@x/demo@2.0.0'); // version bumped
@@ -617,14 +793,14 @@ test('web: inventory reflects an APPLY immediately (cache invalidated)', async (
         },
         body: JSON.stringify({ planId }),
       })
-    ).json()) as { status: string };
-    assert.equal(applied.status, 'applied');
+    ).json()) as { applied: number };
+    assert.equal(applied.applied, 1);
     // immediate refresh must show the new server (no 3s stale window)
     const inv = (await (
       await fetch(`http://127.0.0.1:${port}/api/inventory`, { headers: { authorization: 'Bearer t' } })
-    ).json()) as { servers: { name: string }[] };
+    ).json()) as { capabilities: { name: string }[] };
     assert.ok(
-      inv.servers.some((s) => s.name === 'fresh-one'),
+      inv.capabilities.some((capability) => capability.name === 'fresh-one'),
       'apply not visible — cache not invalidated',
     );
   } finally {
@@ -659,16 +835,17 @@ test('web actions: skill sync (claude→codex) plans through the skill engine, n
       join(dir, 'AGENTS.md'),
       join(dir, '_shared'),
     );
+    writeFileSync(join(dir, 'config.toml'), '');
     const svc = new ActionService([claude, codex], join(dir, 'home'));
-    const { planId, preview } = await svc.plan({
+    const { planId, changes } = await svc.plan({
       action: 'sync',
       kind: 'skill',
       name: 'demo',
       from: 'claude-code',
       to: ['codex'],
     });
-    assert.equal(preview.changes.length, 1);
-    assert.equal(preview.changes[0]!.agent, 'codex');
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0]!.agent, 'codex');
     await svc.apply({ planId });
     const { existsSync } = await import('node:fs');
     assert.ok(existsSync(join(dir, 'xskills', 'demo', 'SKILL.md'))); // landed on codex
@@ -699,22 +876,35 @@ test('web actions: plugin plan→apply runs the vendor argv once; replay refused
     return { exitCode: 0, output: 'ok' };
   };
   const dir = mkdtempSync(join(tmpdir(), 'fleet-web-plugin-'));
-  const svc = new ActionService([], join(dir, 'fleet-home'), runner);
+  const pluginAdapter: AgentAdapter = {
+    id: 'codex',
+    displayName: 'Codex',
+    capabilitySupport: { plugin: { inventory: 'supported', management: 'delegated' } },
+    async detect() {
+      return { id: 'codex', displayName: 'Codex', present: true, configPaths: [] };
+    },
+    async readInventory() {
+      return [];
+    },
+  };
+  const svc = new ActionService([pluginAdapter], join(dir, 'fleet-home'), runner);
 
   try {
     // plan → preview carries the exact argv + undo; apply runs it exactly once
-    const { planId, runs, undoCommand } = (await svc.plan({
+    const { planId, changes, operationSummary } = await svc.plan({
       action: 'install',
       kind: 'plugin',
       name: 'ponytail',
       to: ['codex'],
       marketplace: 'sisyphuslabs',
-    })) as { planId: string; runs: string; undoCommand?: string };
-    assert.equal(runs, 'codex plugin add ponytail@sisyphuslabs');
-    assert.match(String(undoCommand), /plugin remove ponytail@sisyphuslabs/);
+    });
+    assert.deepEqual(changes, [
+      { agent: 'codex', kind: 'plugin', name: 'ponytail', scope: 'user', op: 'install' },
+    ]);
+    assert.equal(operationSummary, 'install plugin (1 change)');
     assert.equal(calls.length, 0); // plan is exec-free
     const applied = await svc.apply({ planId });
-    assert.equal(applied.status, 'applied');
+    assert.equal(applied.applied, 1);
     assert.deepEqual(calls, [['codex', 'plugin', 'add', 'ponytail@sisyphuslabs']]);
     await assert.rejects(svc.apply({ planId }), /unknown planId/); // single-use replay guard
 
@@ -770,28 +960,36 @@ test('web fixture server uses only one temporary root and cleans it up', async (
       headers: { authorization: 'Bearer fixture-token' },
     });
     assert.equal(inventory.status, 200);
-    const body = (await inventory.json()) as {
-      servers: { name: string; source?: { file?: string } }[];
-      skills: { name: string }[];
-      rules: { name: string }[];
-      plugins: { name: string }[];
-    };
-    assert.deepEqual(body.servers.map((server) => server.name).sort(), ['fixture-claude', 'fixture-codex']);
-    assert.deepEqual(body.skills.map((skill) => skill.name).sort(), [
-      'fixture-claude-skill',
-      'fixture-codex-skill',
-    ]);
-    assert.deepEqual(body.rules.map((rule) => rule.name).sort(), [
-      'fixture-claude-rule',
-      'fixture-codex-rule',
-    ]);
-    assert.deepEqual(body.plugins.map((plugin) => plugin.name).sort(), [
-      'fixture-claude-plugin',
-      'fixture-codex-plugin',
-    ]);
-    assert.ok(
-      body.servers.every((server) => !server.source?.file || server.source.file.startsWith(fixture.root)),
+    const body = (await inventory.json()) as { capabilities: { kind: string; name: string }[] };
+    assert.deepEqual(
+      body.capabilities
+        .filter((capability) => capability.kind === 'mcp-server')
+        .map((capability) => capability.name)
+        .sort(),
+      ['fixture-claude', 'fixture-codex'],
     );
+    assert.deepEqual(
+      body.capabilities
+        .filter((capability) => capability.kind === 'skill')
+        .map((capability) => capability.name)
+        .sort(),
+      ['fixture-claude-skill', 'fixture-codex-skill'],
+    );
+    assert.deepEqual(
+      body.capabilities
+        .filter((capability) => capability.kind === 'rule')
+        .map((capability) => capability.name)
+        .sort(),
+      ['fixture-claude-rule', 'fixture-codex-rule'],
+    );
+    assert.deepEqual(
+      body.capabilities
+        .filter((capability) => capability.kind === 'plugin')
+        .map((capability) => capability.name)
+        .sort(),
+      ['fixture-claude-plugin', 'fixture-codex-plugin'],
+    );
+    assertPublicResponse(body, '/api/inventory');
     assert.ok(existsSync(fixture.root));
   } finally {
     await fixture.close();

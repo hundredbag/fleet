@@ -76,6 +76,16 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
   readonly id = 'claude-code';
   readonly displayName = 'Claude Code';
   readonly supportsWrite = true;
+  readonly capabilitySupport = {
+    'mcp-server': { inventory: 'supported', management: 'writable' },
+    skill: { inventory: 'supported', management: 'writable' },
+    rule: { inventory: 'supported', management: 'writable' },
+    permission: { inventory: 'supported', management: 'read-only' },
+    plugin: { inventory: 'supported', management: 'delegated' },
+    command: { inventory: 'unsupported', management: 'none' },
+    hook: { inventory: 'unsupported', management: 'none' },
+    subagent: { inventory: 'supported', management: 'read-only' },
+  } as const;
 
   constructor(
     private readonly claudeJsonPath: string = DEFAULT_CLAUDE_JSON,

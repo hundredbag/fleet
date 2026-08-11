@@ -57,9 +57,18 @@ export function writerAdapters(adapters: AgentAdapter[]): WriterAdapter[] {
 /** Names fleet refuses to mutate (its own entry once self-installed in M3). */
 export const SELF_PROTECTED = new Set<string>(['fleet', 'fleet-mcp']);
 
-/** Resolve a `--to`/`--from` target string to concrete writer agent ids. */
-export async function resolveTargets(adapters: AgentAdapter[], target: string): Promise<AgentId[]> {
-  const writers = writerAdapters(adapters);
+/** Resolve a target string using the writer contract for the requested capability kind. */
+export async function resolveTargets(
+  adapters: AgentAdapter[],
+  target: string,
+  kind: 'mcp-server' | 'skill' | 'rule' = 'mcp-server',
+): Promise<AgentId[]> {
+  const writers: AgentAdapter[] =
+    kind === 'skill'
+      ? skillWriterAdapters(adapters)
+      : kind === 'rule'
+        ? ruleWriterAdapters(adapters)
+        : writerAdapters(adapters);
   if (target === 'all') {
     // 'all' = present writer agents only (don't surprise-create absent ones)
     const present: AgentId[] = [];

@@ -80,7 +80,11 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
   const entries = Object.values(lock.entries);
   const findings: DriftFinding[] = [];
 
-  const brokenAgents = new Map(inv.agents.filter((a) => a.note).map((a) => [a.id, a.note as string]));
+  const brokenAgents = new Set(
+    inv.agents
+      .filter((a) => a.inventoryStatus === 'detect-failed' || a.inventoryStatus === 'read-failed')
+      .map((a) => a.id),
+  );
 
   for (const e of entries) {
     if (brokenAgents.has(e.agent)) {
@@ -90,7 +94,7 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
         name: e.name,
         agent: e.agent,
         state: 'unverifiable',
-        detail: `agent inventory unavailable: ${brokenAgents.get(e.agent)}`,
+        detail: 'agent inventory unavailable',
       });
       continue;
     }

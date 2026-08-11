@@ -95,5 +95,27 @@ test('inventory: tolerates absent agents and read errors', async () => {
   const inv = await buildInventory([present, absent, broken]);
   assert.equal(inv.agents.length, 3);
   assert.equal(inv.items.length, 1);
-  assert.match(inv.agents.find((a) => a.id === 'broken')?.note ?? '', /boom/);
+  assert.equal(inv.agents.find((a) => a.id === 'present')?.inventoryStatus, 'ok');
+  assert.equal(inv.agents.find((a) => a.id === 'absent')?.inventoryStatus, 'not-present');
+  assert.equal(inv.agents.find((a) => a.id === 'broken')?.inventoryStatus, 'read-failed');
+});
+
+test('inventory: distinguishes detect failure from successful empty inventory', async () => {
+  const detectFailed: AgentAdapter = {
+    id: 'detect-failed',
+    displayName: 'Detect failed',
+    detect: async () => {
+      throw new Error('private detect detail');
+    },
+    readInventory: async () => [],
+  };
+  const empty: AgentAdapter = {
+    id: 'empty',
+    displayName: 'Empty',
+    detect: async () => ({ id: 'empty', displayName: 'Empty', present: true, configPaths: [] }),
+    readInventory: async () => [],
+  };
+  const inv = await buildInventory([detectFailed, empty]);
+  assert.equal(inv.agents.find((a) => a.id === 'detect-failed')?.inventoryStatus, 'detect-failed');
+  assert.equal(inv.agents.find((a) => a.id === 'empty')?.inventoryStatus, 'ok');
 });

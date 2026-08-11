@@ -16,17 +16,18 @@ import {
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
 import { planPluginAction, runDelegated, SELECTOR_RE, type DelegatedPlan } from '../core/delegate.js';
-import { summarizeResult, redactUrl } from '../core/redact.js';
 import { invalidateInventoryCache } from './api.js';
+import { operationAllowed, supportsDelegatedPlugin } from './operations.js';
+import { mapApply, mapDelegatedApply, mapDelegatedPlan, mapPlan, mapRollback } from './public-mappers.js';
+import type { Operation, PublicApplyResponse, PublicPlanResponse, PublicRollbackResponse } from './types.js';
 
 /**
  * The dashboard's mutation service: a server-enforced preview→confirm two-step.
- * `plan()` builds + stores a dry-run plan and returns a planId + a human-readable
- * `runs` (the actual command that will be configured); `apply()` only runs a plan
- * produced by a prior `plan()` (single-use planId). All results go through
- * `summarizeResult`. Package coordinates from the (remote) feed are VALIDATED
- * before they can become a spec — a crafted identifier must not smuggle flags or
- * git/url/file targets into what the agent later executes.
+ * `plan()` validates logical inputs, stores a dry-run plan, and returns only a
+ * redacted preview plus a single-use planId. Package coordinates from the
+ * (remote) feed are VALIDATED before they can become a spec — a crafted
+ * identifier must not smuggle flags or git/url/file targets into what the agent
+ * later executes.
  */
 
 interface Coordinate {
@@ -76,12 +77,6 @@ function bumpVersion(spec: McpServerSpec, version: string): McpServerSpec {
   return { ...spec, args }; // preserves command, env, other args
 }
 
-function describeSpec(spec: McpServerSpec): string {
-  return spec.transport === 'stdio'
-    ? [spec.command, ...(spec.args ?? [])].join(' ')
-    : `${spec.transport} ${redactUrl(spec.url)}`;
-}
-
 export interface ActionBody {
   action?: string;
   /** capability kind — routes sync/remove to the right engine (default mcp-server) */
@@ -96,10 +91,14 @@ export interface ActionBody {
 }
 
 const MAX_PENDING = 100;
+const PLAN_TTL_MS = 5 * 60_000;
 
 /** A pending mutation: either a core Plan (execute pipeline) or a delegated
  * vendor-CLI action (plugins). Both flow through the same preview→confirm. */
-type Pending = { type: 'core'; plan: Plan } | { type: 'delegated'; dplan: DelegatedPlan };
+type Pending =
+  | { type: 'core'; plan: Plan; expiresAt: number }
+  | { type: 'delegated'; dplan: DelegatedPlan; expiresAt: number };
+type PendingInput = { type: 'core'; plan: Plan } | { type: 'delegated'; dplan: DelegatedPlan };
 
 export class ActionService {
   private readonly plans = new Map<string, Pending>();
@@ -111,8 +110,8 @@ export class ActionService {
     private readonly runner?: import('../core/delegate.js').Runner,
   ) {}
 
-  /** Build a plan, store it, and return a redacted dry-run preview + planId + the command that will run. */
-  async plan(body: ActionBody) {
+  /** Build and store a plan, returning only its redacted logical preview. */
+  async plan(body: ActionBody): Promise<PublicPlanResponse> {
     const name = String(body.name ?? '').trim();
     if (!name) throw new Error('name is required');
     const kind = String(body.kind ?? 'mcp-server');
@@ -123,14 +122,14 @@ export class ActionService {
 
     // plugins live outside the core write engine — a delegated vendor-CLI action
     if (kind === 'plugin') return this.planPlugin(body, name);
+    const coreKind = kind as 'mcp-server' | 'skill' | 'rule';
 
     let plan: Plan;
-    let runs: string | undefined;
     switch (body.action) {
       case 'install': {
         const spec = specFromCoordinate(body.coordinate);
-        runs = describeSpec(spec);
-        const targets = await resolveTargets(this.adapters, toTargets(body.to));
+        const targets = await resolveTargets(this.adapters, toTargets(body.to), coreKind);
+        await this.assertAllowed(kind, name, 'install', targets);
         plan = await planInstall(this.adapters, spec, name, 'user', targets, { fleetHome: this.fleetHome });
         break;
       }
@@ -142,8 +141,8 @@ export class ActionService {
         if (!existing || existing.kind !== 'mcp-server')
           throw new Error(`'${name}' is not an installed MCP server on ${agent}`);
         const spec = bumpVersion(existing.spec, String(body.coordinate?.version ?? ''));
-        runs = describeSpec(spec);
-        const targets = await resolveTargets(this.adapters, agent);
+        const targets = await resolveTargets(this.adapters, agent, coreKind);
+        await this.assertAllowed(kind, name, 'update', targets);
         plan = await planInstall(this.adapters, spec, name, existing.scope, targets, {
           fleetHome: this.fleetHome,
         });
@@ -151,8 +150,9 @@ export class ActionService {
       }
       case 'sync': {
         // "install what claude has onto codex too" — kind-routed cross-agent copy
-        const targets = await resolveTargets(this.adapters, toTargets(body.to));
+        const targets = await resolveTargets(this.adapters, toTargets(body.to), coreKind);
         const from = String(body.from ?? '');
+        await this.assertAllowed(kind, name, 'sync', targets, from);
         plan =
           kind === 'skill'
             ? await planSyncSkill(this.adapters, name, from, targets)
@@ -162,7 +162,8 @@ export class ActionService {
         break;
       }
       case 'remove': {
-        const targets = await resolveTargets(this.adapters, toTargets(body.from));
+        const targets = await resolveTargets(this.adapters, toTargets(body.from), coreKind);
+        await this.assertAllowed(kind, name, 'remove', targets);
         plan =
           kind === 'skill'
             ? await planRemoveSkill(this.adapters, name, targets)
@@ -174,16 +175,19 @@ export class ActionService {
       default:
         throw new Error(`unknown action '${body.action ?? ''}'`);
     }
-    const planId = this.store({ type: 'core', plan });
-    const preview = summarizeResult(
-      await execute(this.adapters, plan, { commit: false, fleetHome: this.fleetHome }),
+    const stored = this.store({ type: 'core', plan });
+    return mapPlan(
+      stored.planId,
+      stored.expiresAt,
+      plan,
+      this.summary(body.action!, kind, plan.changes.length),
+      body.action,
     );
-    return { planId, preview, runs };
   }
 
   /** Plugin install/remove goes through the delegated vendor CLI. The selector
    * is name@marketplace for a sync-install (default action install). */
-  private async planPlugin(body: ActionBody, name: string) {
+  private async planPlugin(body: ActionBody, name: string): Promise<PublicPlanResponse> {
     if (body.action !== 'install' && body.action !== 'remove') {
       throw new Error(`plugin action must be install or remove (got '${body.action ?? ''}')`);
     }
@@ -196,44 +200,35 @@ export class ActionService {
     if (!SELECTOR_RE.test(selector) || selector.includes('..')) {
       throw new Error(`refusing unsafe plugin selector '${selector}'`);
     }
+    await this.assertAllowed('plugin', name, op, [agent]);
     const dplan = planPluginAction(agent, op, selector); // validates again at the boundary
-    const dpreview = await runDelegated(dplan, {
-      commit: false,
-      fleetHome: this.fleetHome,
-      runner: this.runner,
-    });
-    const planId = this.store({ type: 'delegated', dplan });
-    return {
-      planId,
-      // shape the delegated preview like a core preview so the UI renders it uniformly
-      preview: {
-        status: 'preview' as const,
-        committed: false,
-        applied: 0,
-        changes: [{ agent, op, name, scope: 'user', file: '(vendor CLI)', warnings: undefined }],
-        skips: [],
-      },
-      runs: dpreview.command,
-      ...(dpreview.undoCommand ? { undoCommand: dpreview.undoCommand } : {}),
-    };
+    const stored = this.store({ type: 'delegated', dplan });
+    return mapDelegatedPlan(
+      stored.planId,
+      stored.expiresAt,
+      { agent, name, op },
+      this.summary(op, 'plugin', 1),
+    );
   }
 
-  private store(p: Pending): string {
+  private store(p: PendingInput): { planId: string; expiresAt: number } {
     if (this.plans.size >= MAX_PENDING) {
       const oldest = this.plans.keys().next().value;
       if (oldest) this.plans.delete(oldest);
     }
     const planId = randomBytes(12).toString('hex');
-    this.plans.set(planId, p);
-    return planId;
+    const expiresAt = Date.now() + PLAN_TTL_MS;
+    this.plans.set(planId, { ...p, expiresAt } as Pending);
+    return { planId, expiresAt };
   }
 
   /** Apply a previously-planned change (by planId). Consumes the plan. */
-  async apply(body: ActionBody) {
+  async apply(body: ActionBody): Promise<PublicApplyResponse> {
     const planId = String(body.planId ?? '');
     const pending = this.plans.get(planId);
     if (!pending) throw new Error('unknown planId — preview again before applying');
     this.plans.delete(planId);
+    if (pending.expiresAt < Date.now()) throw new Error('plan expired — preview again before applying');
     if (pending.type === 'delegated') {
       const r = await runDelegated(pending.dplan, {
         commit: true,
@@ -241,25 +236,58 @@ export class ActionService {
         runner: this.runner,
       });
       invalidateInventoryCache();
-      return {
-        status: r.status === 'applied' ? ('applied' as const) : ('failed' as const),
-        committed: true,
-        applied: r.status === 'applied' ? 1 : 0,
-        changes: [],
-        skips: [],
-        ...(r.status !== 'applied' ? { error: `vendor CLI exit ${r.exitCode ?? '?'}` } : {}),
-        ...(r.lockWarning ? { lockWarning: r.lockWarning } : {}),
-      };
+      return mapDelegatedApply(r.status === 'applied', Boolean(r.lockWarning));
     }
     const result = await execute(this.adapters, pending.plan, { commit: true, fleetHome: this.fleetHome });
     invalidateInventoryCache(); // a refresh right after apply must see the new state
-    return summarizeResult(result);
+    return mapApply(result);
   }
 
-  async rollback() {
+  async rollback(): Promise<PublicRollbackResponse> {
     const r = await rollback({ fleetHome: this.fleetHome });
     invalidateInventoryCache();
-    return r;
+    return mapRollback(r);
+  }
+
+  private summary(action: string, kind: string, changes: number): string {
+    return `${action} ${kind} (${changes} ${changes === 1 ? 'change' : 'changes'})`;
+  }
+
+  private async assertAllowed(
+    kind: string,
+    name: string,
+    operation: Operation,
+    targets: string[],
+    sourceAgent?: string,
+  ): Promise<void> {
+    const inventory = await buildInventory(this.adapters);
+    const primitive = kind as import('../core/types.js').PrimitiveKind;
+    const hasSourceInstance = inventory.items.some(
+      (item) => item.kind === primitive && item.name === name && (!sourceAgent || item.agent === sourceAgent),
+    );
+    for (const target of targets) {
+      const adapter = this.adapters.find((candidate) => candidate.id === target);
+      const agent = inventory.agents.find((candidate) => candidate.id === target);
+      if (
+        !adapter ||
+        !agent ||
+        !operationAllowed(
+          {
+            adapter,
+            agent,
+            kind: primitive,
+            hasInstance: inventory.items.some(
+              (item) => item.kind === primitive && item.name === name && item.agent === target,
+            ),
+            hasSourceInstance,
+            delegatedSupported: primitive === 'plugin' && supportsDelegatedPlugin(adapter),
+          },
+          operation,
+        )
+      ) {
+        throw new Error('operation is not supported for the requested target');
+      }
+    }
   }
 }
 

@@ -258,7 +258,7 @@ async function applyFileChange(
     );
   }
 
-  const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  const id = randomUUID();
   const wroteHash = sha256(change.newContent);
   // push BEFORE the audit append: if the append fails the mutation still
   // happened, and err.applied (set by applyChanges) must reflect reality
@@ -372,7 +372,7 @@ async function applyDirChange(
     }
   }
 
-  const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  const id = randomUUID();
   const wroteHash = change.dirOp === 'remove' ? '' : await hashDir(target);
   results.push({ change, auditId: id, backup, wroteHash }); // before append — see applyFileChange
   try {
@@ -542,7 +542,7 @@ export async function rollback(
 
     try {
       await appendAudit(home, {
-        id: `${Date.now()}-${process.pid}-${randomUUID()}`,
+        id: randomUUID(),
         ts: Date.now(),
         op: 'rollback',
         agent: target.agent,

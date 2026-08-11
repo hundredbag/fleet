@@ -158,8 +158,12 @@ export interface DetectedAgent {
   note?: string;
 }
 
+export interface InventoryAgent extends DetectedAgent {
+  inventoryStatus: 'ok' | 'not-present' | 'detect-failed' | 'read-failed';
+}
+
 /** The unified, cross-agent inventory snapshot. */
 export interface Inventory {
-  agents: DetectedAgent[];
+  agents: InventoryAgent[];
   items: InstalledCapability[];
 }

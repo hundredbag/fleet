@@ -1,5 +1,10 @@
 import type { DetectedAgent, InstalledCapability, McpServerSpec, PrimitiveKind, Scope } from './types.js';
 
+export interface CapabilitySurface {
+  inventory: 'supported' | 'unsupported';
+  management: 'writable' | 'read-only' | 'delegated' | 'none';
+}
+
 /**
  * One adapter per agent runtime. It knows how to read (and, when
  * `supportsWrite`, write) that agent's capability configuration.
@@ -15,6 +20,9 @@ export interface AgentAdapter {
 
   /** Whether this adapter implements the AgentWriter methods. */
   readonly supportsWrite?: boolean;
+
+  /** Explicit per-kind contract. Absence means support is unverifiable. */
+  readonly capabilitySupport?: Partial<Record<PrimitiveKind, CapabilitySurface>>;
 
   /** Detect whether the agent is present and where its config lives. */
   detect(): Promise<DetectedAgent>;

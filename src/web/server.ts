@@ -9,8 +9,9 @@ import {
   tokenFromReq,
   tokenFromHeader,
 } from './security.js';
-import { apiInventory, apiFeed, apiConflicts } from './api.js';
+import { apiActivity, apiConflicts, apiFeed, apiInventory, apiOverview } from './api.js';
 import { ActionService } from './actions.js';
+import { mapError } from './public-mappers.js';
 import { renderPage } from './ui.js';
 
 /**
@@ -68,7 +69,7 @@ function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown>
         reject(httpError('invalid JSON body', 400));
       }
     });
-    req.on('error', (e) => fail(e.message, 400));
+    req.on('error', () => fail('request body read failed', 400));
   });
 }
 
@@ -89,8 +90,8 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
   const token = opts.token ?? makeToken();
   const actions = new ActionService(adapters, opts.fleetHome);
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    void handle(req, res).catch((e) => {
-      sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    void handle(req, res).catch(() => {
+      sendJson(res, 500, mapError('INTERNAL_ERROR', 'internal.error'));
     });
   });
 
@@ -98,14 +99,17 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
     // Use the actual bound port for checks so ephemeral (:0) test binds work too.
     const port = req.socket.localPort ?? 0;
     const allow = opts.allowHosts ?? [];
-    if (!checkHost(req.headers.host, port, allow)) return sendJson(res, 403, { error: 'bad host' });
+    if (!checkHost(req.headers.host, port, allow))
+      return sendJson(res, 403, mapError('HOST_REJECTED', 'request.hostRejected'));
 
     const reqUrl = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
     const path = reqUrl.pathname;
 
     if (req.method === 'GET') {
-      if (!checkOrigin(req.headers.origin, port, allow)) return sendJson(res, 403, { error: 'bad origin' });
-      if (!tokenMatches(tokenFromReq(req, port), token)) return sendJson(res, 401, { error: 'unauthorized' });
+      if (!checkOrigin(req.headers.origin, port, allow))
+        return sendJson(res, 403, mapError('ORIGIN_REJECTED', 'request.originRejected'));
+      if (!tokenMatches(tokenFromReq(req, port), token))
+        return sendJson(res, 401, mapError('UNAUTHORIZED', 'request.unauthorized'));
       return handleGet(res, path, reqUrl);
     }
 
@@ -114,23 +118,30 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
       // Origin MUST be present and match; token MUST be in the header (not URL);
       // body MUST be application/json (browsers can't send that cross-site without a preflight).
       if (!req.headers.origin || !checkOrigin(req.headers.origin, port, allow)) {
-        return sendJson(res, 403, { error: 'bad origin' });
+        return sendJson(res, 403, mapError('ORIGIN_REJECTED', 'request.originRejected'));
       }
       if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] ?? '')) {
-        return sendJson(res, 415, { error: 'content-type must be application/json' });
+        return sendJson(res, 415, mapError('UNSUPPORTED_MEDIA_TYPE', 'request.jsonRequired'));
       }
-      if (!tokenMatches(tokenFromHeader(req), token)) return sendJson(res, 401, { error: 'unauthorized' });
+      if (!tokenMatches(tokenFromHeader(req), token))
+        return sendJson(res, 401, mapError('UNAUTHORIZED', 'request.unauthorized'));
       let body: unknown;
       try {
         body = await readJsonBody(req);
-      } catch (e) {
-        const code = (e as HttpError)?.statusCode ?? 400;
-        return sendJson(res, code, { error: e instanceof Error ? e.message : 'bad body' });
+      } catch (error) {
+        const code = (error as HttpError)?.statusCode ?? 400;
+        return sendJson(
+          res,
+          code,
+          code === 413
+            ? mapError('PAYLOAD_TOO_LARGE', 'request.payloadTooLarge')
+            : mapError('INVALID_JSON', 'request.invalidJson'),
+        );
       }
       return handlePost(res, path, body);
     }
 
-    return sendJson(res, 405, { error: 'method not allowed' });
+    return sendJson(res, 405, mapError('METHOD_NOT_ALLOWED', 'request.methodNotAllowed'));
   }
 
   function handleGet(res: ServerResponse, path: string, reqUrl?: URL): Promise<void> | void {
@@ -153,8 +164,12 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
         }).then((r) => sendJson(res, 200, r));
       case '/api/conflicts':
         return apiConflicts(adapters).then((r) => sendJson(res, 200, r));
+      case '/api/overview':
+        return apiOverview(adapters, opts.fleetHome).then((r) => sendJson(res, 200, r));
+      case '/api/activity':
+        return apiActivity(opts.fleetHome).then((r) => sendJson(res, 200, r));
       default:
-        return sendJson(res, 404, { error: 'not found' });
+        return sendJson(res, 404, mapError('NOT_FOUND', 'request.notFound'));
     }
   }
 
@@ -169,10 +184,10 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
         case '/api/rollback':
           return sendJson(res, 200, await actions.rollback());
         default:
-          return sendJson(res, 404, { error: 'not found' });
+          return sendJson(res, 404, mapError('NOT_FOUND', 'request.notFound'));
       }
-    } catch (e) {
-      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    } catch {
+      return sendJson(res, 400, mapError('ACTION_REJECTED', 'operation.rejected'));
     }
   }
 

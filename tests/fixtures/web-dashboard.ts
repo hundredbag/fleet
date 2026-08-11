@@ -4,6 +4,29 @@ import type { FeedSource } from '../../src/feed/source.js';
 
 const SHARED_SKILL_CONTENT = '# Shared review\nReview changes before applying them.\n';
 
+const fixtureWriters = {
+  supportsWrite: true,
+  async renderInstall() {
+    throw new Error('fixture render is not executable');
+  },
+  async renderRemove() {
+    throw new Error('fixture render is not executable');
+  },
+  validate() {},
+  async renderInstallSkill() {
+    throw new Error('fixture render is not executable');
+  },
+  async renderRemoveSkill() {
+    throw new Error('fixture render is not executable');
+  },
+  async renderInstallRule() {
+    throw new Error('fixture render is not executable');
+  },
+  async renderRemoveRule() {
+    throw new Error('fixture render is not executable');
+  },
+};
+
 const claudeInventory: InstalledCapability[] = [
   {
     kind: 'mcp-server',
@@ -104,7 +127,13 @@ export const dashboardAdapters: AgentAdapter[] = [
   {
     id: 'claude-code',
     displayName: 'Claude Code',
-    supportsWrite: false,
+    ...fixtureWriters,
+    capabilitySupport: {
+      'mcp-server': { inventory: 'supported', management: 'writable' },
+      skill: { inventory: 'supported', management: 'writable' },
+      rule: { inventory: 'supported', management: 'writable' },
+      plugin: { inventory: 'supported', management: 'delegated' },
+    },
     async detect() {
       return {
         id: 'claude-code',
@@ -120,7 +149,13 @@ export const dashboardAdapters: AgentAdapter[] = [
   {
     id: 'codex',
     displayName: 'Codex',
-    supportsWrite: false,
+    ...fixtureWriters,
+    capabilitySupport: {
+      'mcp-server': { inventory: 'supported', management: 'writable' },
+      skill: { inventory: 'supported', management: 'writable' },
+      rule: { inventory: 'supported', management: 'writable' },
+      plugin: { inventory: 'supported', management: 'delegated' },
+    },
     async detect() {
       return {
         id: 'codex',
