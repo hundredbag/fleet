@@ -5,12 +5,19 @@ import type { AgentAdapter } from '../src/core/adapter.js';
 import { apiFeed, apiInventory } from '../src/web/api.js';
 import { renderPage } from '../src/web/ui.js';
 import {
+  DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE,
+  DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE,
   INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE,
   INVENTORY_VIEW_ITEMS_BROWSER_SOURCE,
+  discoveryViewSections,
   inventoryOperationPayload,
   inventoryViewItems,
 } from '../src/web/ui/client.js';
-import { dashboardAdapters, dashboardFeedSources } from './fixtures/web-dashboard.js';
+import {
+  dashboardAdapters,
+  dashboardFailingFeedSource,
+  dashboardFeedSources,
+} from './fixtures/web-dashboard.js';
 
 const VOID_ELEMENTS = new Set([
   'area',
@@ -276,6 +283,167 @@ test('generated inventory helpers execute without transpiler globals and match t
     JSON.parse(JSON.stringify(browserPayload('install', plugin, target, inventory))),
     inventoryOperationPayload('install', plugin, target, inventory),
   );
+});
+
+test('discovery model searches public metadata, applies kind and trust filters, and bounds each section', () => {
+  const recommendations = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      kind: 'mcp-server',
+      name: `mcp-${index}`,
+      identifier: index === 7 ? '@scope/browser-needle' : `@scope/mcp-${index}`,
+      description: index === 6 ? 'Browser needle description' : undefined,
+      category: index === 5 ? 'browser-needle-category' : undefined,
+      source: 'public-registry',
+      reasons: index % 2 ? ['popular'] : ['new', 'related'],
+      trust: index === 4 ? 'caution' : index === 3 ? 'unknown' : 'no-flags',
+      operation: 'install' as const,
+    })),
+    ...Array.from({ length: 7 }, (_, index) => ({
+      kind: 'skill',
+      name: `skill-${index}`,
+      source: 'skills-registry',
+      reasons: ['popular'],
+      trust: 'no-flags',
+      operation: null,
+    })),
+    ...Array.from({ length: 5 }, (_, index) => ({
+      kind: 'plugin',
+      name: `plugin-${index}`,
+      source: 'marketplace',
+      reasons: ['marketplace'],
+      trust: 'no-flags',
+      operation: index === 0 ? ('install' as const) : null,
+    })),
+  ];
+  const feed = { recommendations };
+  const base = { query: '', kind: 'all', trust: 'all' };
+  const bounded = discoveryViewSections(feed, base, {});
+  assert.deepEqual(
+    bounded.map((section) => [section.kind, section.visible.length, section.total]),
+    [
+      ['mcp-server', 6, 8],
+      ['skill', 6, 7],
+      ['plugin', 4, 5],
+    ],
+  );
+  assert.equal(bounded[0]?.canExpand, true);
+  assert.deepEqual(
+    bounded[0]?.visible.map((item) => item.name),
+    ['mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5'],
+  );
+  assert.deepEqual(bounded[0]?.visible[0]?.reasons, ['new', 'related']);
+  assert.equal(bounded[0]?.visible[3]?.trust, 'unknown');
+  assert.equal(discoveryViewSections(feed, base, { 'mcp-server': true })[0]?.visible.length, 8);
+  assert.equal(discoveryViewSections(feed, base, { 'mcp-server': true })[0]?.canCollapse, true);
+  assert.deepEqual(
+    discoveryViewSections(feed, { ...base, query: 'browser' }, {})[0]?.visible.map((item) => item.name),
+    ['mcp-5', 'mcp-6', 'mcp-7'],
+  );
+  assert.deepEqual(
+    discoveryViewSections(feed, { ...base, kind: 'mcp-server', trust: 'caution' }, {})[0]?.visible.map(
+      (item) => item.name,
+    ),
+    ['mcp-4'],
+  );
+  assert.deepEqual(
+    discoveryViewSections(feed, { ...base, kind: 'skill' }, {}).map((section) => section.kind),
+    ['skill'],
+  );
+});
+
+test('generated discovery helper executes closure-free and matches typed behavior', async () => {
+  assert.doesNotMatch(DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE, /__name/);
+  const browserView = runInNewContext(
+    '(' + DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE + ')',
+  ) as typeof discoveryViewSections;
+  const feed = await apiFeed(dashboardAdapters, dashboardFeedSources, { fleetHome: '/fixture/fleet-home' });
+  const filters = { query: 'browser', kind: 'mcp-server', trust: 'no-flags' };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(browserView(feed, filters, { 'mcp-server': false }))),
+    discoveryViewSections(feed, filters, { 'mcp-server': false }),
+  );
+});
+
+test('discovery feed failures expose only the safe public source identifier', async () => {
+  const feed = await apiFeed(dashboardAdapters, [dashboardFailingFeedSource], {
+    fleetHome: '/fixture/fleet-home',
+  });
+  assert.deepEqual(feed.failures, [{ source: 'dashboard-failing-registry' }]);
+  assert.doesNotMatch(JSON.stringify(feed), /DASHBOARD_FIXTURE_CAUGHT_ERROR_DETAIL/);
+});
+
+test('generated discovery validator accepts real producer reasons and rejects arbitrary text', async () => {
+  const validate = runInNewContext('(' + DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE + ')') as (
+    item: unknown,
+  ) => boolean;
+  const feed = await apiFeed(dashboardAdapters, dashboardFeedSources, {
+    fleetHome: '/fixture/fleet-home',
+  });
+  assert.ok(feed.recommendations.length > 0);
+  assert.equal(feed.recommendations.every(validate), true);
+  assert.equal(
+    validate({
+      kind: 'plugin',
+      name: 'safe-plugin',
+      source: 'marketplace-source',
+      reasons: ['marketplace'],
+      trust: 'unknown',
+      operation: null,
+    }),
+    true,
+  );
+  const relatedBase = {
+    kind: 'skill',
+    name: 'related-skill',
+    source: 'source',
+    trust: 'unknown',
+    operation: null,
+  };
+  assert.equal(validate({ ...relatedBase, reasons: [`related to your setup (${'a'.repeat(122)})`] }), true);
+  assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (a)'] }), false);
+  assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (abcd  efgh)'] }), false);
+  assert.equal(
+    validate({
+      kind: 'skill',
+      name: 'unsafe',
+      source: 'source',
+      reasons: ['raw producer error text'],
+      trust: 'unknown',
+      operation: null,
+    }),
+    false,
+  );
+});
+
+test('discovery workbench renders bounded local controls, truthful metadata, and guarded actions', () => {
+  const html = renderPage();
+  assert.match(html, /const discoveryViewSections =/);
+  assert.match(html, /renderDiscovery/);
+  assert.match(html, /Discovery kind/);
+  assert.match(html, /No flags/);
+  assert.match(html, /Caution/);
+  assert.match(html, /Unknown/);
+  assert.match(html, /Show all/);
+  assert.match(html, /Collapse/);
+  assert.match(html, /item\.reasons\.forEach/);
+  assert.match(html, /reasons\.setAttribute\('role','group'\)/);
+  assert.match(html, /Trust: ' \+ item\.trust/);
+  assert.match(html, /failure\.source/);
+  assert.doesNotMatch(html, /failure\.(?:error|message|stack)/);
+  assert.match(html, /const validDiscoveryRecommendation =/);
+  assert.match(html, /data-discovery-filter/);
+  assert.match(html, /data-discovery-toggle/);
+  assert.match(html, /replacement\.focus\(\)/);
+  assert.match(html, /item\.ecosystem === 'npm' \|\| item\.ecosystem === 'pypi'/);
+  assert.match(html, /doPlan\('Install'/);
+  assert.match(html, /to:'all'/);
+  assert.match(html, /Local CLI guidance was not provided by this source/);
+  assert.match(html, /Open marketplace source/);
+  assert.match(html, /Marketplace or CLI guidance was not provided by this source/);
+  assert.doesNotMatch(html, /Preview delegated install/);
+  assert.match(html, /Discovery source' \+ \(sourceFailures/);
+  assert.match(html, /search\.setAttribute\('aria-label', searchLabel\)/);
+  assert.doesNotMatch(html, /fit score|fit percentage|recommendation grade/i);
 });
 
 test('inventory advertised plugin install and multi-source sync build deterministic plan payloads', async () => {

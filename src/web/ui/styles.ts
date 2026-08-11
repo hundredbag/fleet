@@ -153,6 +153,31 @@ export const DASHBOARD_CSS = `
   .plan-warnings { color:var(--warn); }
   .dialog-error { margin:12px 0 0; color:var(--danger); font-weight:650; }
 
+  .discovery-toolbar { display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; margin-bottom:16px; padding:12px; border:1px solid var(--border); border-radius:11px; background:var(--surface); }
+  .discovery-filter-group { display:flex; flex-wrap:wrap; gap:5px; }
+  .discovery-filter-group button { min-height:30px; padding:4px 9px; font-size:11px; }
+  .discovery-filter-group button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,transparent); }
+  .source-failures { flex-basis:100%; }
+  .source-failures:empty { display:none; }
+  .source-failures p { margin:4px 0 0; color:var(--muted); font-size:11px; }
+  .discovery-list { display:grid; }
+  .discovery-section-title { margin:14px 0 3px; color:var(--muted-on-bg); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+  .discovery-item { padding:13px 0; border-top:1px solid var(--border); }
+  .discovery-item:first-child { border-top:0; }
+  .discovery-item-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+  .discovery-item h3, .discovery-item h4 { margin:0; font-size:14px; overflow-wrap:anywhere; }
+  .discovery-description { margin:6px 0; color:var(--text)!important; }
+  .discovery-meta { margin:5px 0; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+  .trust, .reason { display:inline-flex; padding:2px 7px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:9px; font-weight:700; white-space:nowrap; }
+  .trust-no-flags { border-color:color-mix(in srgb,var(--accent) 42%,var(--border)); color:var(--accent); }
+  .trust-caution, .trust-unknown { color:var(--muted-on-bg); }
+  .reason-list, .discovery-actions { display:flex; align-items:center; flex-wrap:wrap; gap:5px; margin-top:7px; }
+  .discovery-actions { justify-content:space-between; gap:8px 12px; }
+  .discovery-actions a { min-height:30px; display:inline-flex; align-items:center; }
+  .guidance-note { flex:1 1 210px; color:var(--muted); font-size:10px; }
+  .discovery-actions button, .discovery-toggle { min-height:30px; padding:4px 9px; font-size:11px; }
+  .discovery-toggle { justify-self:start; margin-top:10px; }
+
   .overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:18px; background:rgba(3,7,10,.72); }
   .dialog-panel { width:min(520px,100%); padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--surface-raised); box-shadow:0 24px 80px var(--shadow); }
   .dialog-panel h2 { margin:0 0 12px; }

@@ -1,3 +1,99 @@
+export interface DiscoveryViewItem {
+  kind: string;
+  name: string;
+  category?: string;
+  identifier?: string;
+  ecosystem?: string;
+  version?: string;
+  description?: string;
+  source: string;
+  reasons: string[];
+  trust: string;
+  url?: string;
+  operation: 'install' | null;
+}
+export interface DiscoveryViewFilters {
+  query: string;
+  kind: string;
+  trust: string;
+}
+export interface DiscoveryViewSection {
+  kind: 'mcp-server' | 'skill' | 'plugin';
+  visible: DiscoveryViewItem[];
+  total: number;
+  canExpand: boolean;
+  canCollapse: boolean;
+}
+
+/** Pure, local discovery filtering that preserves server recommendation order. */
+export function discoveryViewSections(
+  feed: { recommendations: DiscoveryViewItem[] },
+  filters: DiscoveryViewFilters,
+  expanded: Partial<Record<'mcp-server' | 'skill' | 'plugin', boolean>>,
+): DiscoveryViewSection[] {
+  const kinds = ['mcp-server', 'skill', 'plugin'] as const;
+  const limits = { 'mcp-server': 6, skill: 6, plugin: 4 } as const;
+  const query = filters.query.trim().toLocaleLowerCase();
+  const matching = feed.recommendations.filter((item) => {
+    const search = [item.name, item.identifier, item.description, item.category]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+      .toLocaleLowerCase();
+    return (
+      (filters.kind === 'all' || item.kind === filters.kind) &&
+      (filters.trust === 'all' || item.trust === filters.trust) &&
+      (!query || search.includes(query))
+    );
+  });
+  return kinds
+    .filter((kind) => filters.kind === 'all' || filters.kind === kind)
+    .map((kind) => {
+      const items = matching.filter((item) => item.kind === kind);
+      const isExpanded = expanded[kind] === true;
+      return {
+        kind,
+        visible: isExpanded ? items : items.slice(0, limits[kind]),
+        total: items.length,
+        canExpand: !isExpanded && items.length > limits[kind],
+        canCollapse: isExpanded && items.length > limits[kind],
+      };
+    });
+}
+
+export const DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE = String.raw`function validDiscoveryRecommendation(item) {
+  const kinds = ['mcp-server','skill','plugin'];
+  const trusts = ['no-flags','caution','unknown'];
+  const optional = ['category','identifier','ecosystem','version','description','url'];
+  function isString(value) { return typeof value === 'string'; }
+  function validReason(reason) {
+    return reason === 'new' || reason === 'popular' || reason === 'marketplace'
+      || /^related to your setup \([a-z0-9]{4,}(, [a-z0-9]{4,}){0,2}\)$/.test(reason);
+  }
+  return !!item && kinds.indexOf(item.kind) >= 0 && isString(item.name) && isString(item.source)
+    && Array.isArray(item.reasons) && item.reasons.every(validReason) && trusts.indexOf(item.trust) >= 0
+    && (item.operation === null || item.operation === 'install')
+    && optional.every(function(key) { return item[key] === undefined || isString(item[key]); });
+}`;
+
+export const DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE = String.raw`function discoveryViewSections(feed, filters, expanded) {
+  const kinds = ['mcp-server','skill','plugin'];
+  const limits = { 'mcp-server':6, skill:6, plugin:4 };
+  const query = filters.query.trim().toLocaleLowerCase();
+  const matching = feed.recommendations.filter(function(item) {
+    const search = [item.name,item.identifier,item.description,item.category]
+      .filter(function(value) { return typeof value === 'string'; }).join(' ').toLocaleLowerCase();
+    return (filters.kind === 'all' || item.kind === filters.kind)
+      && (filters.trust === 'all' || item.trust === filters.trust)
+      && (!query || search.includes(query));
+  });
+  return kinds.filter(function(kind) { return filters.kind === 'all' || filters.kind === kind; }).map(function(kind) {
+    const items = matching.filter(function(item) { return item.kind === kind; });
+    const isExpanded = expanded[kind] === true;
+    return { kind:kind, visible:isExpanded ? items : items.slice(0,limits[kind]), total:items.length,
+      canExpand:!isExpanded && items.length > limits[kind], canCollapse:isExpanded && items.length > limits[kind] };
+  });
+}`;
+
 interface InventoryViewAgent {
   id: string;
   displayName: string;
@@ -301,7 +397,11 @@ function safeHttpUrl(value){
   } catch { return null; }
 }
 const inventoryViewItems = ${INVENTORY_VIEW_ITEMS_BROWSER_SOURCE};
+const validDiscoveryRecommendation = ${DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE};
+const discoveryViewSections = ${DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE};
 const operationPayload = ${INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE};
+let inventoryQuery = '';
+let discoveryQuery = '';
 
 document.addEventListener('DOMContentLoaded', function(){
 const views = ['overview','inventory','discover','drift','activity'];
@@ -327,6 +427,13 @@ function activateView(focusHeading){
   });
   document.getElementById('current-view-title').textContent = viewTitles[view];
   document.title = viewTitles[view] + ' · Fleet';
+  const search = document.getElementById('global-search');
+  if(search){
+    search.value = view === 'discover' ? discoveryQuery : inventoryQuery;
+    const searchLabel = view === 'discover' ? 'Search Discovery' : view === 'inventory' ? 'Search Inventory' : 'Search Fleet';
+    search.placeholder = searchLabel;
+    search.setAttribute('aria-label', searchLabel);
+  }
 }
 window.addEventListener('hashchange', function(){ activateView(true); });
 document.querySelectorAll('[data-nav-view]').forEach(function(link){
@@ -363,8 +470,11 @@ let inventorySort = 'kind';
 let dialogGeneration = 0;
 let planGeneration = 0;
 let planPending = false;
-let inventoryQuery = '';
+let discoveryKind = 'all';
+let discoveryTrust = 'all';
+let discoveryExpanded = { 'mcp-server':false, skill:false, plugin:false };
 let inventoryModel = null;
+let feedModel = null;
 const refreshButton = document.getElementById('refresh');
 const availabilityLabels = { installed:'Installed', missing:'Missing', disabled:'Disabled', unavailable:'Unavailable', unsupported:'Unsupported', unverifiable:'Unverifiable' };
 const coverageLabels = { 'all-present':'All present', gap:'Gap', 'agent-only':'Agent only', unverifiable:'Unverifiable' };
@@ -411,11 +521,13 @@ function validOverview(value){
     });
 }
 function validFeed(value){
-  return !!value && Array.isArray(value.updates) && Array.isArray(value.skillUpdates) && Array.isArray(value.failures)
+  return !!value && Array.isArray(value.updates) && Array.isArray(value.skillUpdates)
+    && Array.isArray(value.recommendations) && Array.isArray(value.failures) && typeof value.fromCache === 'boolean'
     && value.updates.every(function(update){ return isString(update.kind) && isString(update.name) && isString(update.agent)
       && (update.operation === null || update.operation === 'update') && (update.to === undefined || isString(update.to)); })
     && value.skillUpdates.every(function(update){ return isString(update.name) && isString(update.agent) && isString(update.state)
       && (update.operation === null || update.operation === 'update'); })
+    && value.recommendations.every(validDiscoveryRecommendation)
     && value.failures.every(function(failure){ return isString(failure.source); });
 }
 function validConflicts(value){
@@ -640,6 +752,109 @@ function renderInventory(inventory){
   else if(!filtered.length) list.append(node('p', 'empty-state inventory-no-results', 'No inventory items match your search and filters.'));
   replaceChildren(target, [toolbar, count, list]);
 }
+function discoveryFilterButton(group, value, label, current, onSelect){
+  const button = node('button', '', label); button.type = 'button';
+  const groupLabel = group.getAttribute('aria-label');
+  button.setAttribute('data-discovery-filter', value);
+  button.setAttribute('aria-pressed', value === current ? 'true' : 'false');
+  button.addEventListener('click', function(){
+    onSelect(value);
+    renderDiscovery(feedModel);
+    const replacement = Array.from(document.querySelectorAll('[data-discovery-filter]')).find(function(candidate){
+      return candidate.getAttribute('data-discovery-filter') === value
+        && candidate.parentElement && candidate.parentElement.getAttribute('aria-label') === groupLabel;
+    });
+    if(replacement) replacement.focus();
+  });
+  group.append(button);
+}
+function discoveryAction(item){
+  if(item.kind === 'mcp-server' && item.operation === 'install'
+    && (item.ecosystem === 'npm' || item.ecosystem === 'pypi') && isString(item.identifier)){
+    const button = node('button', 'plan-trigger', 'Preview install'); button.type = 'button';
+    button.addEventListener('click', function(){ void doPlan('Install', {
+      action:'install', kind:'mcp-server', name:item.name, to:'all',
+      coordinate:{ ecosystem:item.ecosystem, identifier:item.identifier, version:item.version }
+    }, button); });
+    return button;
+  }
+  return null;
+}
+function discoveryItem(item){
+  const article = node('article', 'discovery-item');
+  const heading = node('div', 'discovery-item-heading');
+  heading.append(node(item.kind === 'mcp-server' ? 'h3' : 'h4', '', item.name), node('span', 'trust trust-' + item.trust, 'Trust: ' + item.trust));
+  article.append(heading);
+  if(item.description) article.append(node('p', 'discovery-description', item.description));
+  const metadata = [];
+  if(item.identifier) metadata.push('Identifier: ' + item.identifier);
+  if(item.category) metadata.push('Category: ' + item.category);
+  metadata.push('Source: ' + item.source);
+  article.append(node('p', 'discovery-meta', metadata.join(' · ')));
+  const reasons = node('div', 'reason-list'); reasons.setAttribute('role','group'); reasons.setAttribute('aria-label','Recommendation reasons for ' + item.name);
+  item.reasons.forEach(function(reason){ reasons.append(node('span', 'reason', reason)); });
+  if(reasons.childNodes.length) article.append(reasons);
+  const actions = node('div', 'discovery-actions');
+  const sourceUrl = safeHttpUrl(item.url);
+  if(item.kind === 'skill'){
+    if(sourceUrl){ const link = node('a', 'detail-link', 'Open HTTPS source'); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link); }
+    actions.append(node('span', 'guidance-note', 'Local CLI guidance was not provided by this source.'));
+  } else if(item.kind === 'plugin') {
+    if(sourceUrl){ const link = node('a', 'detail-link', 'Open marketplace source'); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link); }
+    actions.append(node('span', 'guidance-note', sourceUrl
+      ? 'Use the marketplace or CLI instructions from this source.'
+      : 'Marketplace or CLI guidance was not provided by this source.'));
+  } else if(sourceUrl){
+    const link = node('a', 'detail-link', 'Open HTTPS source'); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link);
+  }
+  const action = discoveryAction(item); if(action) actions.append(action);
+  if(actions.childNodes.length) article.append(actions);
+  return article;
+}
+function renderDiscovery(feed){
+  const view = document.querySelector('[data-view="discover"]');
+  let toolbar = document.getElementById('discovery-toolbar');
+  if(!toolbar){ toolbar = node('div', 'discovery-toolbar'); toolbar.id = 'discovery-toolbar'; view.querySelector('.placeholder-grid').before(toolbar); }
+  const kindGroup = node('div', 'discovery-filter-group'); kindGroup.setAttribute('role','group'); kindGroup.setAttribute('aria-label','Discovery kind');
+  [['all','All'],['mcp-server','MCP'],['skill','Skill'],['plugin','Plugin']].forEach(function(pair){
+    discoveryFilterButton(kindGroup, pair[0], pair[1], discoveryKind, function(value){ discoveryKind = value; });
+  });
+  const trustGroup = node('div', 'discovery-filter-group'); trustGroup.setAttribute('role','group'); trustGroup.setAttribute('aria-label','Discovery trust');
+  [['all','All trust'],['no-flags','No flags'],['caution','Caution'],['unknown','Unknown']].forEach(function(pair){
+    discoveryFilterButton(trustGroup, pair[0], pair[1], discoveryTrust, function(value){ discoveryTrust = value; });
+  });
+  const failures = node('div', 'source-failures'); failures.id = 'discovery-failures';
+  if(feed) feed.failures.forEach(function(failure){ failures.append(node('p', '', 'Source unavailable: ' + failure.source)); });
+  replaceChildren(toolbar, [kindGroup, trustGroup, failures]);
+  const targets = { 'mcp-server':document.getElementById('recommended'), skill:document.getElementById('recskills'), plugin:document.getElementById('recplugins') };
+  if(!feed){
+    Object.keys(targets).forEach(function(kind){ targets[kind].className = 'placeholder error'; targets[kind].textContent = 'Discovery unavailable.'; });
+    return;
+  }
+  const sections = discoveryViewSections(feed, { query:discoveryQuery, kind:discoveryKind, trust:discoveryTrust }, discoveryExpanded);
+  Object.keys(targets).forEach(function(kind){
+    const target = targets[kind]; const section = sections.find(function(candidate){ return candidate.kind === kind; });
+    target.className = 'discovery-list';
+    if(!section){ replaceChildren(target, []); return; }
+    const children = [];
+    if(kind === 'skill' || kind === 'plugin') children.push(node('h3', 'discovery-section-title', kind === 'skill' ? 'Skills' : 'Plugins'));
+    section.visible.forEach(function(item){ children.push(discoveryItem(item)); });
+    if(!section.visible.length) children.push(node('p', 'empty-state', 'No discovery items match your search and filters.'));
+    if(section.canExpand || section.canCollapse){
+      const toggle = node('button', 'discovery-toggle', section.canExpand ? 'Show all' : 'Collapse'); toggle.type = 'button';
+      toggle.setAttribute('data-discovery-toggle', kind);
+      toggle.setAttribute('aria-expanded', section.canCollapse ? 'true' : 'false');
+      toggle.addEventListener('click', function(){
+        discoveryExpanded[kind] = section.canExpand;
+        renderDiscovery(feedModel);
+        const replacement = document.querySelector('[data-discovery-toggle="' + kind + '"]');
+        if(replacement) replacement.focus();
+      });
+      children.push(toggle);
+    }
+    replaceChildren(target, children);
+  });
+}
 function attentionItem(title, detail, action){
   const item = node('li', 'attention-item');
   item.append(node('strong', '', title), node('span', '', detail));
@@ -677,11 +892,13 @@ function renderAttention(results){
 }
 function renderResults(results){
   inventoryModel = results.inventory;
+  feedModel = results.feed;
   if(results.inventory){ renderCapabilityMap(results.inventory); renderInventory(results.inventory); }
   else {
     const target = document.getElementById('capability-map'); target.className = 'placeholder error'; target.textContent = 'Unavailable';
     const inventoryTarget = document.getElementById('inventory'); inventoryTarget.className = 'placeholder error'; inventoryTarget.textContent = 'Inventory unavailable.';
   }
+  renderDiscovery(results.feed);
   setMetric('metric-agents', results.overview ? results.overview.agents.length + ' / ' + results.overview.presentAgents : null);
   setMetric('metric-instances', results.inventory ? results.inventory.capabilityInstances : null);
   setMetric('metric-keys', results.inventory ? results.inventory.uniqueCapabilityKeys : null);
@@ -704,7 +921,10 @@ async function refresh(){
     };
     renderResults(results);
     const failures = Object.keys(results).filter(function(key){ return results[key] === null; }).length;
-    announce(failures ? failures + ' Fleet endpoint' + (failures === 1 ? ' is' : 's are') + ' unavailable.' : 'Fleet data refreshed.', failures > 0);
+    const sourceFailures = results.feed ? results.feed.failures.length : 0;
+    if(failures) announce(failures + ' Fleet endpoint' + (failures === 1 ? ' is' : 's are') + ' unavailable.', true);
+    else if(sourceFailures) announce(sourceFailures + ' Discovery source' + (sourceFailures === 1 ? ' is' : 's are') + ' unavailable.', true);
+    else announce('Fleet data refreshed.', false);
   } catch(error){
     if(generation === refreshGeneration) announce('Fleet data is unavailable.', true);
   } finally {
@@ -786,10 +1006,15 @@ document.getElementById('rollback').addEventListener('click', function(){
 
 const globalSearch = document.getElementById('global-search');
 const searchNote = document.getElementById('search-note');
-searchNote.textContent = 'Search inventory by name, kind, agent, or public source metadata.';
+searchNote.textContent = 'Search Inventory or Discover locally by the public metadata shown in each view.';
 globalSearch.addEventListener('input', function(){
-  inventoryQuery = globalSearch.value;
-  if(inventoryModel) renderInventory(inventoryModel);
+  if(requestedView() === 'discover'){
+    discoveryQuery = globalSearch.value;
+    if(feedModel) renderDiscovery(feedModel);
+  } else {
+    inventoryQuery = globalSearch.value;
+    if(inventoryModel) renderInventory(inventoryModel);
+  }
 });
 void refresh();
 });
