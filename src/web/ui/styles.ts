@@ -3,7 +3,7 @@ export const DASHBOARD_CSS = `
     color-scheme:dark;
     --bg:#080d12; --surface:#0d141a; --surface-raised:#111a22; --border:#1d2730;
     --text:#e7edf3; --muted:#82909c; --accent:#2bd4c0; --accent-ink:#05211d;
-    --good:#44d28b; --warn:#e0a83a; --danger:#f2555a; --focus:rgba(43,212,192,.55);
+    --good:#44d28b; --warn:#e0a83a; --danger:#f2555a; --focus:#35e6d1;
     --action-bg:var(--accent); --muted-on-bg:var(--muted);
     --shadow:rgba(0,0,0,.38); --hover:rgba(255,255,255,.045);
     --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
@@ -13,7 +13,7 @@ export const DASHBOARD_CSS = `
     color-scheme:light;
     --bg:#f4f7f7; --surface:#ffffff; --surface-raised:#fbfcfc; --border:#dfe6e5;
     --text:#172222; --muted:#657572; --accent:#0d9488; --accent-ink:#ffffff;
-    --good:#168b69; --warn:#a86914; --danger:#c83f45; --focus:rgba(13,148,136,.45);
+    --good:#168b69; --warn:#a86914; --danger:#c83f45; --focus:#006b63;
     --action-bg:#08736b; --muted-on-bg:#596966;
     --shadow:rgba(20,40,40,.1); --hover:rgba(13,148,136,.06);
   }
@@ -30,7 +30,7 @@ export const DASHBOARD_CSS = `
   button.primary { border-color:var(--action-bg); background:var(--action-bg); color:var(--accent-ink); }
   button.primary:hover { filter:brightness(1.06); }
   select:disabled { cursor:not-allowed; color:var(--muted); opacity:1; }
-  :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+  :focus-visible { outline:3px solid var(--focus); outline-offset:3px; }
   [hidden] { display:none !important; }
   .visually-hidden { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
 
@@ -201,6 +201,10 @@ export const DASHBOARD_CSS = `
   .live-region:not(:empty) { padding:10px 14px; border:1px solid var(--border); }
   .live-region.error { color:var(--danger); }
 
+  @media (prefers-reduced-motion:reduce) {
+    *, *::before, *::after { scroll-behavior:auto!important; transition-duration:0.01ms!important; animation-duration:0.01ms!important; animation-iteration-count:1!important; }
+  }
+
   @media (min-width:640px) and (max-width:1023px) {
     .app-shell { grid-template-columns:88px minmax(0,1fr); }
     .rail { padding:18px 10px; align-items:stretch; }
@@ -236,12 +240,19 @@ export const DASHBOARD_CSS = `
     .nav-link { flex:none; min-height:36px; padding:7px 10px; }
     .topbar { position:static; padding:12px 14px; gap:10px; }
     .view-heading { min-width:100px; }
-    .top-actions { max-width:none; margin-left:0; flex:1; }
+    .top-actions { max-width:none; width:100%; margin-left:0; flex:1 0 100%; justify-content:flex-start; }
+    .top-actions button, .language-control, .language-control select { min-width:0; }
     #app-main { padding:22px 14px 42px; }
     .view-intro { align-items:flex-start; flex-direction:column; gap:10px; }
     .view-intro p { text-align:left; }
     .view-intro h1 { font-size:26px; }
     .card { padding:16px; }
     .fleet-map-card { padding:0; }
+    .summary-grid { grid-template-columns:1fr; }
+    .inventory-item { grid-template-columns:minmax(0,1fr); }
+    .inventory-statuses { grid-column:auto; }
+    .inventory-item .details-button { justify-self:start; }
+    .activity-item { grid-template-columns:minmax(0,1fr); }
+    .dialog-panel { max-height:calc(100dvh - 28px); overflow:auto; padding:18px; }
   }
 `;

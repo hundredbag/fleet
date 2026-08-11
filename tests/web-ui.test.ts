@@ -427,7 +427,8 @@ test('discovery workbench renders bounded local controls, truthful metadata, and
   assert.match(html, /Collapse/);
   assert.match(html, /item\.reasons\.forEach/);
   assert.match(html, /reasons\.setAttribute\('role','group'\)/);
-  assert.match(html, /Trust: ' \+ item\.trust/);
+  assert.match(html, /enumLabel\(trustLabels, item\.trust\)/);
+  assert.match(html, /recommendationReasonLabel\(reason\)/);
   assert.match(html, /failure\.source/);
   assert.doesNotMatch(html, /failure\.(?:error|message|stack)/);
   assert.match(html, /const validDiscoveryRecommendation =/);
@@ -435,13 +436,13 @@ test('discovery workbench renders bounded local controls, truthful metadata, and
   assert.match(html, /data-discovery-toggle/);
   assert.match(html, /replacement\.focus\(\)/);
   assert.match(html, /item\.ecosystem === 'npm' \|\| item\.ecosystem === 'pypi'/);
-  assert.match(html, /doPlan\('Install'/);
+  assert.match(html, /doPlan\(t\('action\.install'\)/);
   assert.match(html, /to:'all'/);
   assert.match(html, /Local CLI guidance was not provided by this source/);
   assert.match(html, /Open marketplace source/);
   assert.match(html, /Marketplace or CLI guidance was not provided by this source/);
   assert.doesNotMatch(html, /Preview delegated install/);
-  assert.match(html, /Discovery source' \+ \(sourceFailures/);
+  assert.match(html, /refresh\.sources/);
   assert.match(html, /search\.setAttribute\('aria-label', searchLabel\)/);
   assert.doesNotMatch(html, /fit score|fit percentage|recommendation grade/i);
 });
@@ -517,24 +518,23 @@ test('drift and activity render truthful grouped read models and targeted rollba
   const html = renderPage();
   assert.match(html, /get\('\/api\/activity'\)/);
   assert.match(html, /renderDrift/);
-  assert.match(html, /Modified/);
-  assert.match(html, /Missing/);
-  assert.match(html, /Unverifiable/);
-  assert.match(html, /Unmanaged/);
-  assert.match(html, /informational/i);
-  assert.match(html, /lock metadata is best-effort/i);
+  assert.match(html, /drift\.modified/);
+  assert.match(html, /drift\.missing/);
+  assert.match(html, /drift\.unverifiable/);
+  assert.match(html, /drift\.unmanaged/);
+  assert.match(html, /drift\.note/);
   assert.match(html, /renderActivity/);
   assert.match(html, /activity\.items/);
   assert.match(html, /node\('ul', 'activity-list'\)/);
   assert.match(html, /node\('li', 'activity-record'\)/);
   assert.match(html, /item\.rollbackEligible/);
   assert.match(html, /data-audit-id/);
-  assert.match(html, /Confirm rollback/);
+  assert.match(html, /rollback\.confirm/);
   assert.match(html, /postJson\('\/api\/rollback', \{ auditId:item\.id \}\)/);
-  assert.match(html, /divergence guard/i);
+  assert.match(html, /rollback\.guard/);
   assert.match(html, /rollbackPending/);
   assert.match(html, /rollbackGeneration/);
-  assert.match(html, /recorded ' \+ timestampLabel/);
+  assert.match(html, /rollback\.select/);
   assert.match(html, /result\.action === 'skipped'/);
   assert.doesNotMatch(html, /postJson\('\/api\/rollback', \{\}\)/);
 });
@@ -547,7 +547,7 @@ test('global rollback control only navigates to Activity', () => {
 
 test('overview preserves table semantics, visible modal focus, and malformed-response recovery', () => {
   const html = renderPage();
-  assert.match(html, /node\('button', 'details-button', 'Details'\)/);
+  assert.match(html, /node\('button', 'details-button', t\('action\.details'\)\)/);
   assert.doesNotMatch(html, /row\.setAttribute\('role', 'button'\)/);
   assert.match(html, /button:not\(\[disabled\]\):not\(\[hidden\]\)/);
   assert.match(html, /validInventory/);
@@ -593,10 +593,37 @@ test('renderPage uses the truthful all-present label and never claims unproven a
   assert.doesNotMatch(documentHtml, /\baligned\b/i);
 });
 
-test('renderPage exposes theme and global search controls', () => {
+test('renderPage exposes persistent Korean and English preferences without refetching', () => {
   const html = renderPage();
   assert.match(html, /id="theme"/);
   assert.match(html, /id="global-search"/);
+  assert.match(html, /id="language"[^>]*>[\s\S]*value="en"[\s\S]*value="ko"/);
+  assert.doesNotMatch(html, /id="language"[^>]*disabled/);
+  assert.match(html, /fleet_language/);
+  assert.match(html, /document\.documentElement\.lang = language/);
+  assert.match(html, /function t\(key, vars\)/);
+  assert.match(html, /languageSelect\.addEventListener\('change'/);
+  assert.match(html, /live\.textContent = ''/);
+  assert.match(html, /live\.setAttribute\('aria-live', 'polite'\)/);
+  assert.match(html, /renderResults\(cachedResults\)/);
+  assert.match(html, /cachedResults = results/);
+});
+
+test('dashboard localization and accessibility contracts cover dynamic resilient states', () => {
+  const html = renderPage();
+  assert.match(html, /data-i18n="nav\.overview"/);
+  assert.match(html, /data-i18n-placeholder="search\.fleet"/);
+  assert.match(html, /role="status" aria-live="polite"/);
+  assert.match(html, /live\.setAttribute\('role', isError \? 'alert' : 'status'\)/);
+  assert.match(html, /live\.setAttribute\('aria-live', isError \? 'assertive' : 'polite'\)/);
+  assert.match(html, /@media \(prefers-reduced-motion:reduce\)/);
+  assert.match(html, /transition-duration:0\.01ms/);
+  assert.match(html, /unknownEnum/);
+  assert.match(html, /theme\.toLight/);
+  assert.match(html, /theme\.toDark/);
+  assert.match(html, /agent\.unavailable/);
+  assert.match(html, /rollback\.confirm/);
+  assert.match(html, /discover\.showAll/);
 });
 
 test('renderPage uses semantic navigation and buttons with aria-label or visible text', () => {
@@ -656,10 +683,10 @@ test('inventory view has local search, counted kind chips, status filtering, and
   assert.match(html, /inventory-status-filter/);
   assert.match(html, /inventory-result-count/);
   assert.match(html, /kindCompare[\s\S]*a\.name\.localeCompare/);
-  assert.match(html, /No inventory items match/);
-  assert.match(html, /No capabilities were reported/);
-  assert.match(html, /Inventory unavailable/);
-  assert.match(html, /id="inventory" class="placeholder">Loading capability inventory/);
+  assert.match(html, /empty\.inventorySearch/);
+  assert.match(html, /empty\.inventory/);
+  assert.match(html, /attention\.inventoryUnavailable/);
+  assert.match(html, /data-i18n="loading\.inventory"/);
   assert.match(html, /data-inventory-kind/);
   assert.match(html, /replacement\.focus\(\)/);
   assert.match(html, /inventory-status-filter'\)\.focus\(\)/);
@@ -682,11 +709,14 @@ test('every inventory operation and MCP update uses the shared preview-only plan
   assert.match(html, /async function doPlan/);
   assert.match(html, /postJson\('\/api\/plan', body\)/);
   assert.match(html, /validPlan/);
+  assert.match(html, /preview\.summary/);
+  assert.doesNotMatch(html, /node\('p', 'plan-summary', plan\.operationSummary\)/);
+  assert.match(html, /enumLabel\(skillUpdateLabels, update\.state\)/);
   assert.match(html, /planPending/);
   assert.match(html, /startingDialogGeneration !== dialogGeneration/);
   assert.match(html, /button\.plan-trigger/);
   assert.match(html, /setAttribute\('role', 'alert'\)/);
-  assert.match(html, /doPlan\(operation\.charAt/);
-  assert.match(html, /doPlan\('Update', \{ action:'update'/);
+  assert.match(html, /doPlan\(operationLabel, payload, button\)/);
+  assert.match(html, /doPlan\(t\('action\.update'\), \{ action:'update'/);
   assert.doesNotMatch(html, /postJson\('\/api\/apply'/);
 });
