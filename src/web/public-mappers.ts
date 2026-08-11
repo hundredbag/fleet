@@ -44,13 +44,6 @@ export function safeHttpUrl(value: unknown): string | undefined {
   }
 }
 
-const PUBLIC_MARKETPLACE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,78}[A-Za-z0-9])?$/;
-
-/** Allowlisted vendor marketplace identifier; rejects paths, flags, controls, and oversized values. */
-export function publicMarketplace(value: unknown): string | undefined {
-  return typeof value === 'string' && PUBLIC_MARKETPLACE.test(value) ? value : undefined;
-}
-
 function logicalMetadata(
   item: InstalledCapability,
 ): Pick<PublicCapability, 'description' | 'tokensEst' | 'sourceLabel' | 'sourceUrl' | 'coordinate'> {
@@ -117,11 +110,9 @@ export function mapInventory(inv: Inventory, adapters: AgentAdapter[]): Inventor
             delegatedSupported: kind === 'plugin' && supportsDelegatedPlugin(adapter),
           })
         : { availability: 'unverifiable' as const, management: 'none' as const, operations: [] };
-      const marketplace = real?.kind === 'plugin' ? publicMarketplace(real.marketplace) : undefined;
       return {
         agent: agent.id,
         ...(real ? { scope: real.scope } : {}),
-        ...(marketplace ? { marketplace } : {}),
         availability:
           real && !real.enabled && cell.availability === 'installed'
             ? ('disabled' as const)
