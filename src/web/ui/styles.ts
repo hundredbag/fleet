@@ -85,6 +85,43 @@ export const DASHBOARD_CSS = `
   .placeholder { padding:18px 0; border-top:1px solid var(--border); }
   .overflow-region { max-width:100%; overflow:auto; overscroll-behavior-inline:contain; scrollbar-gutter:stable; }
   .overflow-region > * { min-width:520px; }
+  .summary-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  .metric { min-width:0; padding:15px 17px; border:1px solid var(--border); border-radius:11px; background:var(--surface); }
+  .metric span, .metric strong { display:block; }
+  .metric span { color:var(--muted-on-bg); font-size:11px; }
+  .metric strong { margin-top:5px; font-size:23px; letter-spacing:-.03em; overflow-wrap:anywhere; }
+  .overview-layout { display:grid; grid-template-columns:minmax(0,3fr) minmax(230px,1fr); gap:16px; align-items:start; }
+  .fleet-map-card { padding:0; overflow:hidden; }
+  .card-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:18px 20px 12px; }
+  .card-heading h2 { margin:3px 0 0; }
+  .kind-filters { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px; }
+  .kind-filters button { min-height:30px; padding:4px 9px; font-size:11px; }
+  .kind-filters button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,transparent); }
+  .fleet-table { width:100%; min-width:700px; border-collapse:collapse; }
+  .fleet-table th, .fleet-table td { padding:12px 13px; border-top:1px solid var(--border); text-align:left; vertical-align:top; }
+  .fleet-table thead th { color:var(--muted-on-bg); font-size:10px; text-transform:uppercase; letter-spacing:.07em; }
+  .capability-row:hover { background:var(--hover); }
+  .capability-row th strong, .kind-label, .state-label, .management-label { display:block; }
+  .details-button { margin-top:7px; min-height:28px; padding:3px 8px; font-size:10px; }
+  .kind-label { color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.08em; }
+  .state-label { font-size:12px; font-weight:700; }
+  .management-label { color:var(--muted); font-size:10px; }
+  .state-installed .state-label { color:var(--good); }
+  .state-missing .state-label, .state-disabled .state-label { color:var(--warn); }
+  .state-unavailable .state-label, .state-unverifiable .state-label { color:var(--danger); }
+  .cell-actions { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+  .cell-operation { min-height:26px; padding:2px 7px; font-size:10px; }
+  .coverage { display:inline-block; white-space:nowrap; padding:3px 7px; border:1px solid var(--border); border-radius:999px; font-size:10px; font-weight:700; }
+  .coverage-all-present { color:var(--good); }
+  .coverage-gap, .coverage-agent-only { color:var(--warn); }
+  .coverage-unverifiable { color:var(--danger); }
+  .state-legend { display:flex; flex-wrap:wrap; gap:7px 13px; padding:11px 20px 16px; border-top:1px solid var(--border); color:var(--muted); font-size:10px; }
+  .attention-card h2 { margin-top:3px; }
+  .attention-list { display:grid; gap:0; margin:0; padding:0; list-style:none; }
+  .attention-item { display:grid; gap:3px; padding:11px 0; border-top:1px solid var(--border); }
+  .attention-item span { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+  .attention-item button { justify-self:start; min-height:30px; margin-top:4px; padding:4px 8px; font-size:11px; }
+  .empty-state { color:var(--muted); text-align:center!important; }
 
   .overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:18px; background:rgba(3,7,10,.72); }
   .dialog-panel { width:min(520px,100%); padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--surface-raised); box-shadow:0 24px 80px var(--shadow); }
@@ -110,6 +147,10 @@ export const DASHBOARD_CSS = `
     .search-field { order:3; flex-basis:100%; max-width:none; }
     .top-actions { max-width:70%; }
     .placeholder-grid { grid-template-columns:1fr; }
+    .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .overview-layout { grid-template-columns:1fr; }
+    .card-heading { flex-direction:column; }
+    .kind-filters { justify-content:flex-start; }
   }
   @media (max-width:639px) {
     .app-shell { display:block; }
@@ -126,5 +167,6 @@ export const DASHBOARD_CSS = `
     .view-intro p { text-align:left; }
     .view-intro h1 { font-size:26px; }
     .card { padding:16px; }
+    .fleet-map-card { padding:0; }
   }
 `;

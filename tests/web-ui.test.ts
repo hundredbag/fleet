@@ -137,6 +137,64 @@ test('dashboard fixture flows through the real inventory and feed read models', 
   ]);
   assert.equal(feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.trust, 'no-flags');
   assert.equal(feed.recommendations.find((item) => item.name === 'caution-legacy-tools')?.trust, 'caution');
+  assert.equal(inventory.capabilityInstances, 8);
+  assert.equal(inventory.uniqueCapabilityKeys, 6);
+  const plugin = inventory.capabilities.find((capability) => capability.kind === 'plugin');
+  assert.deepEqual(
+    plugin?.instances.map((instance) => [instance.agent, instance.management, instance.operations]),
+    [
+      ['claude-code', 'delegated', ['remove']],
+      ['codex', 'delegated', ['install']],
+    ],
+  );
+});
+
+test('overview client renders one deterministic four-DTO capability map without inferring operations', () => {
+  const html = renderPage();
+  assert.match(html, /get\('\/api\/inventory'\)/);
+  assert.match(html, /get\('\/api\/overview'\)/);
+  assert.match(html, /get\('\/api\/feed\?refresh=1'\)/);
+  assert.match(html, /get\('\/api\/conflicts'\)/);
+  assert.match(html, /capability\.instances/);
+  assert.match(html, /inventory\.agents\.forEach/);
+  assert.match(html, /instance\.agent === agent\.id/);
+  assert.match(html, /matches\.length === 1/);
+  assert.match(html, /instance\.operations/);
+  assert.match(html, /capability\.coverage/);
+  assert.doesNotMatch(html, /management\s*===\s*['"]writable['"].*operations/s);
+  assert.match(html, /Promise\.allSettled/);
+});
+
+test('overview preserves table semantics, visible modal focus, and malformed-response recovery', () => {
+  const html = renderPage();
+  assert.match(html, /node\('button', 'details-button', 'Details'\)/);
+  assert.doesNotMatch(html, /row\.setAttribute\('role', 'button'\)/);
+  assert.match(html, /button:not\(\[disabled\]\):not\(\[hidden\]\)/);
+  assert.match(html, /validInventory/);
+  assert.match(html, /finally \{/);
+  assert.match(html, /refreshButton\.disabled = false/);
+});
+
+test('overview exposes truthful summary, kind filters, attention, and state vocabulary', () => {
+  const documentHtml = withoutNonRenderedContent(renderPage());
+  for (const label of ['All', 'MCP', 'Skills', 'Rules', 'Plugins', 'Read-only']) {
+    assert.match(documentHtml, new RegExp(`\\b${label}\\b`));
+  }
+  for (const label of [
+    'Installed',
+    'Missing',
+    'Disabled',
+    'Unavailable',
+    'Unsupported',
+    'Unverifiable',
+    'All present',
+    'Gap',
+    'Agent only',
+  ])
+    assert.match(documentHtml, new RegExp(`\\b${label}\\b`));
+  assert.match(documentHtml, /Capability instances/);
+  assert.match(documentHtml, /Unique capability keys/);
+  assert.match(documentHtml, /id="attention"/);
 });
 
 test('renderPage exposes every dashboard view', () => {

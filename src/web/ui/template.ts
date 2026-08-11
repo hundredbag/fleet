@@ -65,9 +65,32 @@ ${renderNav()}
     <main id="app-main" tabindex="-1">
       <section class="view" data-view="overview" aria-labelledby="view-overview-heading">
         <div class="view-intro"><div><span class="eyebrow">Current state</span><h1 id="view-overview-heading" tabindex="-1">Overview</h1></div><p>Operational entry point for your connected agent fleet.</p></div>
-        <div class="placeholder-grid">
-          <article class="card"><h2>Fleet status</h2><p>Refresh to verify access to Fleet data sources.</p></article>
-          <article class="card"><h2>Updates</h2><div id="updates" class="placeholder">Update details will appear in this view.</div></article>
+        <div class="summary-grid" aria-label="Fleet summary">
+          <article class="metric"><span>Detected / present agents</span><strong id="metric-agents">—</strong></article>
+          <article class="metric"><span>Capability instances</span><strong id="metric-instances">—</strong></article>
+          <article class="metric"><span>Unique capability keys</span><strong id="metric-keys">—</strong></article>
+          <article class="metric"><span>Updates</span><strong id="metric-updates">—</strong></article>
+          <article class="metric"><span>Drift findings</span><strong id="metric-drift">—</strong></article>
+        </div>
+        <div class="overview-layout">
+          <article class="card fleet-map-card">
+            <div class="card-heading"><div><span class="eyebrow">Server-reported state</span><h2>Capability fleet map</h2></div>
+              <div class="kind-filters" role="group" aria-label="Filter capabilities by kind">
+                <button type="button" data-kind-filter="all" aria-pressed="true">All</button>
+                <button type="button" data-kind-filter="mcp-server" aria-pressed="false">MCP</button>
+                <button type="button" data-kind-filter="skill" aria-pressed="false">Skills</button>
+                <button type="button" data-kind-filter="rule" aria-pressed="false">Rules</button>
+                <button type="button" data-kind-filter="plugin" aria-pressed="false">Plugins</button>
+                <button type="button" data-kind-filter="read-only" aria-pressed="false">Read-only</button>
+              </div>
+            </div>
+            <div class="overflow-region" tabindex="0" role="region" aria-label="Capability fleet map table"><div id="capability-map" class="placeholder">Loading capability map…</div></div>
+            <div class="state-legend" aria-label="Fleet map legend">
+              <span>Installed</span><span>Missing</span><span>Disabled</span><span>Unavailable</span><span>Unsupported</span><span>Unverifiable</span>
+              <span data-coverage-label="all-present">All present</span><span>Gap</span><span>Agent only</span>
+            </div>
+          </article>
+          <aside class="card attention-card"><span class="eyebrow">Updates and signals</span><h2>Needs attention</h2><div id="attention" class="placeholder">Loading attention items…</div></aside>
         </div>
       </section>
 
