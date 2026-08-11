@@ -252,9 +252,6 @@ export async function apiActivity(fleetHome?: string): Promise<ActivityResponse>
   const rolledBackIds = new Set(
     core.map((record) => record.rolledBackFrom).filter((id): id is string => typeof id === 'string'),
   );
-  const newestEligible = [...core]
-    .reverse()
-    .find((record) => record.op !== 'rollback' && !rolledBackIds.has(record.id))?.id;
   const items = [
     ...core.map((record) =>
       mapCoreActivity(
@@ -267,7 +264,7 @@ export async function apiActivity(fleetHome?: string): Promise<ActivityResponse>
           scope: record.scope,
         },
         rolledBackIds.has(record.id),
-        record.id === newestEligible,
+        record.id === publicAuditId(record.id) && record.op !== 'rollback' && !rolledBackIds.has(record.id),
       ),
     ),
     ...delegated.map((record) => mapDelegatedActivity(record)),

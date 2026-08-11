@@ -88,6 +88,7 @@ export interface ActionBody {
   /** for plugin sync: the source marketplace (selector = name@marketplace) */
   marketplace?: string;
   planId?: string;
+  auditId?: string;
 }
 
 const MAX_PENDING = 100;
@@ -243,8 +244,16 @@ export class ActionService {
     return mapApply(result);
   }
 
-  async rollback(): Promise<PublicRollbackResponse> {
-    const r = await rollback({ fleetHome: this.fleetHome });
+  async rollback(body: ActionBody): Promise<PublicRollbackResponse> {
+    const auditId = body.auditId;
+    if (
+      typeof auditId !== 'string' ||
+      auditId.length > 64 ||
+      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(auditId)
+    ) {
+      throw new Error('a valid auditId is required');
+    }
+    const r = await rollback({ auditId, fleetHome: this.fleetHome });
     invalidateInventoryCache();
     return mapRollback(r);
   }

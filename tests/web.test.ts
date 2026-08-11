@@ -218,9 +218,10 @@ test('activity merges newest 20, marks rolled-back core IDs, and reports delegat
     writeFileSync(join(root, 'audit.jsonl'), core.map((x) => JSON.stringify(x)).join('\n') + '\n');
     const coreOnly = await apiActivity(root);
     assert.equal(coreOnly.delegatedActions.status, 'not-present');
-    assert.equal(coreOnly.items.filter((x) => x.rollbackEligible).length, 1);
+    assert.equal(coreOnly.items.filter((x) => x.rollbackEligible).length, 10);
     assert.equal(coreOnly.items.find((x) => x.rollbackEligible)?.source, 'core-audit');
     assert.equal(coreOnly.items.find((x) => x.name === 'core-0')?.id, opaqueId(0));
+    assert.equal(coreOnly.items.find((x) => x.name === 'core-0')?.rollbackEligible, false);
     assert.doesNotMatch(JSON.stringify(coreOnly), /1700000000000-123/);
 
     const delegated = Array.from({ length: 12 }, (_, i) => ({
@@ -242,7 +243,7 @@ test('activity merges newest 20, marks rolled-back core IDs, and reports delegat
     const rolled = result.items.find((x) => x.id === opaqueId(5));
     assert.equal(rolled?.rolledBack, true);
     assert.equal(rolled?.rollbackEligible, false);
-    assert.equal(result.items.filter((x) => x.rollbackEligible).length, 1);
+    assert.ok(result.items.filter((x) => x.rollbackEligible).length > 1);
     assert.equal(result.items.find((x) => x.rollbackEligible)?.source, 'core-audit');
 
     writeFileSync(join(root, 'delegated.jsonl'), '{malformed\n');
@@ -654,6 +655,147 @@ test('web: plan → apply installs to a real agent config; planId is single-use'
     assert.equal(planned.json.operationSummary, 'install mcp-server (1 change)');
     assertPublicResponse(planned.json, '/api/plan');
     assertPublicResponse(applied.json, '/api/apply');
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web: rollback requires an explicit eligible audit ID and targets that older change', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-rollback-'));
+  const olderFile = join(dir, 'older.json');
+  const newerFile = join(dir, 'newer.json');
+  const home = join(dir, 'home');
+  const [olderAudit] = await applyChanges(
+    [
+      {
+        agent: 'codex',
+        op: 'install',
+        name: 'older',
+        kind: 'mcp-server',
+        scope: 'user',
+        file: olderFile,
+        newContent: '{}',
+      },
+    ],
+    () => {},
+    { fleetHome: home },
+  );
+  const [newerAudit] = await applyChanges(
+    [
+      {
+        agent: 'codex',
+        op: 'install',
+        name: 'newer',
+        kind: 'mcp-server',
+        scope: 'user',
+        file: newerFile,
+        newContent: '{}',
+      },
+    ],
+    () => {},
+    { fleetHome: home },
+  );
+  const older = { json: { auditId: olderAudit!.auditId } };
+  const newer = { json: { auditId: newerAudit!.auditId } };
+  const { server } = createFleetServer([], { token: 't', fleetHome: home });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const h = {
+    origin: `http://127.0.0.1:${port}`,
+    'content-type': 'application/json',
+    authorization: 'Bearer t',
+  };
+  try {
+    assert.match(older.json.auditId, /^[0-9a-f-]{36}$/i);
+    assert.match(newer.json.auditId, /^[0-9a-f-]{36}$/i);
+
+    const activity = await httpGet(port, '/api/activity', { authorization: 'Bearer t' });
+    assert.equal(
+      activity.json.items.find((item: any) => item.id === older.json.auditId).rollbackEligible,
+      true,
+    );
+    assert.equal(
+      activity.json.items.find((item: any) => item.id === newer.json.auditId).rollbackEligible,
+      true,
+    );
+    for (const body of [{}, { auditId: '../audit.jsonl' }, { auditId: 'x'.repeat(200) }]) {
+      const rejected = await post(port, '/api/rollback', h, JSON.stringify(body));
+      assert.equal(rejected.status, 400);
+      assert.deepEqual(rejected.json, { code: 'ACTION_REJECTED', messageKey: 'operation.rejected' });
+    }
+
+    const result = await post(port, '/api/rollback', h, JSON.stringify({ auditId: older.json.auditId }));
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.json, { action: 'removed' });
+    assert.equal(existsSync(newerFile), true);
+    assert.equal(existsSync(olderFile), false);
+    assertPublicResponse(result.json, '/api/rollback');
+    assert.equal(
+      (await post(port, '/api/rollback', h, JSON.stringify({ auditId: older.json.auditId }))).status,
+      400,
+    );
+    const rollbackRecord = (await apiActivity(home)).items.find((item) => item.op === 'rollback');
+    assert.ok(rollbackRecord);
+    assert.equal(
+      (await post(port, '/api/rollback', h, JSON.stringify({ auditId: rollbackRecord.id }))).status,
+      400,
+    );
+    assert.equal(
+      (
+        await post(
+          port,
+          '/api/rollback',
+          h,
+          JSON.stringify({ auditId: '00000000-0000-4000-8000-000000000099' }),
+        )
+      ).status,
+      400,
+    );
+  } finally {
+    await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web: targeted rollback reports divergence as skipped with a fixed redacted reason', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-rollback-diverged-'));
+  const file = join(dir, 'agent-config.json');
+  const home = join(dir, 'home');
+  const [applied] = await applyChanges(
+    [
+      {
+        agent: 'codex',
+        op: 'install',
+        name: 'demo',
+        kind: 'mcp-server',
+        scope: 'user',
+        file,
+        newContent: '{}',
+      },
+    ],
+    () => {},
+    { fleetHome: home },
+  );
+  writeFileSync(file, '{"user":"edit"}');
+  const { server } = createFleetServer([], { token: 't', fleetHome: home });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const result = await post(
+      port,
+      '/api/rollback',
+      {
+        origin: `http://127.0.0.1:${port}`,
+        'content-type': 'application/json',
+        authorization: 'Bearer t',
+      },
+      JSON.stringify({ auditId: applied!.auditId }),
+    );
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.json, { action: 'skipped', reasonCode: 'TARGET_DIVERGED' });
+    assert.equal(readFileSync(file, 'utf8'), '{"user":"edit"}');
+    assertPublicResponse(result.json, '/api/rollback divergence');
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });

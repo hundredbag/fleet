@@ -178,6 +178,21 @@ export const DASHBOARD_CSS = `
   .discovery-actions button, .discovery-toggle { min-height:30px; padding:4px 9px; font-size:11px; }
   .discovery-toggle { justify-self:start; margin-top:10px; }
 
+  .drift-summary { margin:0; color:var(--text)!important; font-weight:700; }
+  .drift-note, .activity-note { margin:6px 0 12px; color:var(--muted); font-size:11px; }
+  .drift-groups { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .drift-group { min-width:0; padding:12px; border:1px solid var(--border); border-radius:9px; background:var(--surface-raised); }
+  .drift-group h3 { margin:0 0 6px; font-size:12px; }
+  .drift-list { margin:0; padding-left:18px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+  .drift-list li + li { margin-top:4px; }
+  .activity-list { display:grid; gap:7px; margin:0; padding:0; list-style:none; }
+  .activity-record { min-width:0; }
+  .activity-item { width:100%; min-height:0; display:grid; grid-template-columns:minmax(130px,.7fr) minmax(150px,1.4fr) minmax(110px,1fr) auto; align-items:center; gap:8px; padding:11px 12px; border:1px solid var(--border); border-radius:9px; background:var(--surface-raised); color:var(--text); text-align:left; }
+  button.activity-item:hover { border-color:var(--accent); }
+  .activity-time, .activity-meta, .activity-outcome { color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+  .activity-outcome { justify-self:end; text-transform:capitalize; }
+  .rollback-warning { color:var(--warn); }
+
   .overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:18px; background:rgba(3,7,10,.72); }
   .dialog-panel { width:min(520px,100%); padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--surface-raised); box-shadow:0 24px 80px var(--shadow); }
   .dialog-panel h2 { margin:0 0 12px; }
@@ -208,6 +223,9 @@ export const DASHBOARD_CSS = `
     .kind-filters { justify-content:flex-start; }
     .inventory-item { grid-template-columns:1fr auto; }
     .inventory-statuses { grid-column:1 / -1; }
+    .drift-groups { grid-template-columns:1fr; }
+    .activity-item { grid-template-columns:1fr 1fr; }
+    .activity-outcome { justify-self:start; }
   }
   @media (max-width:639px) {
     .app-shell { display:block; }

@@ -513,6 +513,38 @@ test('overview client renders one deterministic four-DTO capability map without 
   assert.match(html, /Promise\.allSettled/);
 });
 
+test('drift and activity render truthful grouped read models and targeted rollback controls', () => {
+  const html = renderPage();
+  assert.match(html, /get\('\/api\/activity'\)/);
+  assert.match(html, /renderDrift/);
+  assert.match(html, /Modified/);
+  assert.match(html, /Missing/);
+  assert.match(html, /Unverifiable/);
+  assert.match(html, /Unmanaged/);
+  assert.match(html, /informational/i);
+  assert.match(html, /lock metadata is best-effort/i);
+  assert.match(html, /renderActivity/);
+  assert.match(html, /activity\.items/);
+  assert.match(html, /node\('ul', 'activity-list'\)/);
+  assert.match(html, /node\('li', 'activity-record'\)/);
+  assert.match(html, /item\.rollbackEligible/);
+  assert.match(html, /data-audit-id/);
+  assert.match(html, /Confirm rollback/);
+  assert.match(html, /postJson\('\/api\/rollback', \{ auditId:item\.id \}\)/);
+  assert.match(html, /divergence guard/i);
+  assert.match(html, /rollbackPending/);
+  assert.match(html, /rollbackGeneration/);
+  assert.match(html, /recorded ' \+ timestampLabel/);
+  assert.match(html, /result\.action === 'skipped'/);
+  assert.doesNotMatch(html, /postJson\('\/api\/rollback', \{\}\)/);
+});
+
+test('global rollback control only navigates to Activity', () => {
+  const html = renderPage();
+  assert.match(html, /location\.hash = '#activity'/);
+  assert.doesNotMatch(html, /Rollback latest change/);
+});
+
 test('overview preserves table semantics, visible modal focus, and malformed-response recovery', () => {
   const html = renderPage();
   assert.match(html, /node\('button', 'details-button', 'Details'\)/);

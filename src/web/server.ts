@@ -182,7 +182,7 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
         case '/api/apply':
           return sendJson(res, 200, await actions.apply(b));
         case '/api/rollback':
-          return sendJson(res, 200, await actions.rollback());
+          return sendJson(res, 200, await actions.rollback(b));
         default:
           return sendJson(res, 404, mapError('NOT_FOUND', 'request.notFound'));
       }

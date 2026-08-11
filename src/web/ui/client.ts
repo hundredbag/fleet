@@ -470,11 +470,14 @@ let inventorySort = 'kind';
 let dialogGeneration = 0;
 let planGeneration = 0;
 let planPending = false;
+let rollbackPending = false;
+let rollbackGeneration = 0;
 let discoveryKind = 'all';
 let discoveryTrust = 'all';
 let discoveryExpanded = { 'mcp-server':false, skill:false, plugin:false };
 let inventoryModel = null;
 let feedModel = null;
+let activityModel = null;
 const refreshButton = document.getElementById('refresh');
 const availabilityLabels = { installed:'Installed', missing:'Missing', disabled:'Disabled', unavailable:'Unavailable', unsupported:'Unsupported', unverifiable:'Unverifiable' };
 const coverageLabels = { 'all-present':'All present', gap:'Gap', 'agent-only':'Agent only', unverifiable:'Unverifiable' };
@@ -534,6 +537,22 @@ function validConflicts(value){
   return !!value && Array.isArray(value.conflicts) && value.conflicts.every(function(conflict){
     return isString(conflict.name) && isStringArray(conflict.agents) && isString(conflict.reasonCode);
   });
+}
+function validActivity(value){
+  const idPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+  return !!value && Array.isArray(value.items) && value.items.length <= 20
+    && value.delegatedActions && ['available','not-present','unavailable','malformed'].indexOf(value.delegatedActions.status) >= 0
+    && value.items.every(function(item){
+      return isString(item.id) && idPattern.test(item.id) && Number.isFinite(item.ts)
+        && ['core-audit','delegated-plugin'].indexOf(item.source) >= 0
+        && ['install','update','remove','rollback'].indexOf(item.op) >= 0
+        && isString(item.agent) && isString(item.name)
+        && (item.scope === undefined || ['user','project','local'].indexOf(item.scope) >= 0)
+        && ['applied','failed','rolled-back','unknown'].indexOf(item.outcome) >= 0
+        && typeof item.rollbackEligible === 'boolean' && typeof item.rolledBack === 'boolean'
+        && (!item.rollbackEligible || (item.source === 'core-audit' && item.op !== 'rollback' && item.outcome === 'applied' && !item.rolledBack))
+        && (!item.rolledBack || (item.source === 'core-audit' && item.outcome === 'rolled-back' && !item.rollbackEligible));
+    });
 }
 function node(tag, className, text){
   const element = document.createElement(tag);
@@ -890,6 +909,105 @@ function renderAttention(results){
   if(!list.childNodes.length) list.append(attentionItem('No attention items', 'All reported sources returned no findings.', null));
   replaceChildren(target, [list]);
 }
+function renderDrift(overview, conflicts){
+  const target = document.getElementById('conflicts');
+  target.className = 'drift-panel';
+  if(!overview){ replaceChildren(target, [node('p', 'empty-state', 'Drift unavailable.')]); return; }
+  const drift = overview.drift;
+  const summary = node('p', 'drift-summary', drift.checked + ' checked · ' + drift.findings.length + ' findings · ' + drift.unmanagedCount + ' unmanaged');
+  const note = node('p', 'drift-note', 'Unmanaged capabilities are informational: Fleet did not install them. Lock metadata is best-effort and may make an item unverifiable.');
+  const groups = node('div', 'drift-groups');
+  [['modified','Modified'],['missing','Missing'],['unverifiable','Unverifiable'],['unmanaged','Unmanaged']].forEach(function(pair){
+    const state = pair[0];
+    const section = node('section', 'drift-group drift-' + state);
+    const items = state === 'unmanaged' ? drift.unmanaged : drift.findings.filter(function(item){ return item.state === state; });
+    section.append(node('h3', '', pair[1] + ' (' + items.length + ')'));
+    const list = node('ul', 'drift-list');
+    items.forEach(function(item){
+      list.append(node('li', '', item.name + ' · ' + item.kind + ' · ' + item.agent + (item.reasonCode ? ' · ' + item.reasonCode : '')));
+    });
+    if(!items.length) list.append(node('li', 'empty-state', 'None reported.'));
+    section.append(list); groups.append(section);
+  });
+  const conflictCount = conflicts ? conflicts.conflicts.length : 0;
+  const conflictNote = node('p', 'drift-note', conflicts ? conflictCount + ' rule conflict' + (conflictCount === 1 ? '' : 's') + ' reported.' : 'Rule conflicts unavailable.');
+  replaceChildren(target, [summary, note, groups, conflictNote]);
+}
+function rollbackContent(item){
+  const content = node('div', 'rollback-preview');
+  content.append(node('p', 'plan-summary', item.op + ' · ' + item.name + ' · ' + item.agent));
+  if(item.scope) content.append(node('p', 'detail-meta', 'Scope: ' + item.scope));
+  content.append(node('p', 'rollback-warning', 'Divergence guard: rollback is skipped if the capability changed after Fleet wrote it.'));
+  return content;
+}
+function setRollbackButtonsDisabled(disabled){
+  document.querySelectorAll('button[data-audit-id]').forEach(function(button){ button.disabled = disabled; });
+}
+function beginRollback(item){
+  if(rollbackPending) return;
+  openDialog('Rollback capability change', rollbackContent(item), async function(){
+    if(rollbackPending) return;
+    rollbackPending = true;
+    const requestGeneration = ++rollbackGeneration;
+    const startingDialogGeneration = dialogGeneration;
+    dialogConfirm.disabled = true;
+    setRollbackButtonsDisabled(true);
+    try {
+      const result = await postJson('/api/rollback', { auditId:item.id });
+      const validResult = result && ['restored','removed','skipped'].indexOf(result.action) >= 0
+        && (result.reasonCode === undefined || ['TARGET_DIVERGED','ALREADY_ABSENT','UNVERIFIABLE_TARGET','OPERATION_WARNING'].indexOf(result.reasonCode) >= 0);
+      if(!validResult) throw new Error('Rollback response unavailable.');
+      if(requestGeneration !== rollbackGeneration || startingDialogGeneration !== dialogGeneration){ await refresh(); return; }
+      closeDialog();
+      announce('Rollback ' + result.action + (result.reasonCode ? ': ' + result.reasonCode : '.'), result.action === 'skipped');
+      await refresh();
+    } catch {
+      if(requestGeneration === rollbackGeneration && startingDialogGeneration === dialogGeneration){
+        closeDialog();
+        announce('Rollback was not completed.', true);
+      }
+    } finally {
+      if(requestGeneration === rollbackGeneration){
+        rollbackPending = false;
+        dialogConfirm.disabled = false;
+        setRollbackButtonsDisabled(false);
+      }
+    }
+  });
+  dialogConfirm.textContent = 'Confirm rollback';
+}
+function renderActivity(activity){
+  activityModel = activity;
+  const target = document.querySelector('[data-view="activity"] .placeholder');
+  target.className = 'activity-panel';
+  if(!activity){ replaceChildren(target, [node('p', 'empty-state', 'Activity unavailable.')]); return; }
+  const list = node('ul', 'activity-list');
+  activity.items.forEach(function(item){
+    const selectable = item.rollbackEligible && !item.rolledBack && item.source === 'core-audit';
+    const record = node('li', 'activity-record');
+    const entry = node(selectable ? 'button' : 'article', 'activity-item');
+    const timestamp = new Date(item.ts);
+    const timestampLabel = timestamp.toLocaleString();
+    if(selectable){
+      entry.type = 'button';
+      entry.setAttribute('data-audit-id', item.id);
+      entry.setAttribute('aria-label', 'Select ' + item.op + ' ' + item.name + ' on ' + item.agent
+        + (item.scope ? ', scope ' + item.scope : '') + ', from ' + item.source
+        + ', recorded ' + timestampLabel + ', for rollback');
+      entry.addEventListener('click', function(){ beginRollback(item); });
+    }
+    const time = node('time', 'activity-time', timestampLabel);
+    time.setAttribute('datetime', timestamp.toISOString());
+    entry.append(time);
+    entry.append(node('strong', '', item.op + ' · ' + item.name));
+    entry.append(node('span', 'activity-meta', item.source + ' · ' + item.agent + (item.scope ? ' · ' + item.scope : '')));
+    entry.append(node('span', 'activity-outcome', item.rolledBack ? 'Rolled back' : item.outcome));
+    record.append(entry); list.append(record);
+  });
+  if(!activity.items.length) list.append(node('li', 'empty-state', 'No activity records were reported.'));
+  const completeness = activity.delegatedActions.status === 'available' ? '' : 'Delegated activity: ' + activity.delegatedActions.status + '.';
+  replaceChildren(target, completeness ? [node('p', 'activity-note', completeness), list] : [list]);
+}
 function renderResults(results){
   inventoryModel = results.inventory;
   feedModel = results.feed;
@@ -899,6 +1017,8 @@ function renderResults(results){
     const inventoryTarget = document.getElementById('inventory'); inventoryTarget.className = 'placeholder error'; inventoryTarget.textContent = 'Inventory unavailable.';
   }
   renderDiscovery(results.feed);
+  renderDrift(results.overview, results.conflicts);
+  renderActivity(results.activity);
   setMetric('metric-agents', results.overview ? results.overview.agents.length + ' / ' + results.overview.presentAgents : null);
   setMetric('metric-instances', results.inventory ? results.inventory.capabilityInstances : null);
   setMetric('metric-keys', results.inventory ? results.inventory.uniqueCapabilityKeys : null);
@@ -911,13 +1031,14 @@ async function refresh(){
   refreshButton.disabled = true;
   announce('Refreshing Fleet data…', false);
   try {
-    const settled = await Promise.allSettled([get('/api/inventory'), get('/api/overview'), get('/api/feed?refresh=1'), get('/api/conflicts')]);
+    const settled = await Promise.allSettled([get('/api/inventory'), get('/api/overview'), get('/api/feed?refresh=1'), get('/api/conflicts'), get('/api/activity')]);
     if(generation !== refreshGeneration) return;
     const results = {
       inventory:settled[0].status === 'fulfilled' && validInventory(settled[0].value) ? settled[0].value : null,
       overview:settled[1].status === 'fulfilled' && validOverview(settled[1].value) ? settled[1].value : null,
       feed:settled[2].status === 'fulfilled' && validFeed(settled[2].value) ? settled[2].value : null,
-      conflicts:settled[3].status === 'fulfilled' && validConflicts(settled[3].value) ? settled[3].value : null
+      conflicts:settled[3].status === 'fulfilled' && validConflicts(settled[3].value) ? settled[3].value : null,
+      activity:settled[4].status === 'fulfilled' && validActivity(settled[4].value) ? settled[4].value : null
     };
     renderResults(results);
     const failures = Object.keys(results).filter(function(key){ return results[key] === null; }).length;
@@ -986,22 +1107,12 @@ document.addEventListener('keydown', function(event){
     else if(!event.shiftKey && document.activeElement === last){ event.preventDefault(); first.focus(); }
   }
 });
-document.getElementById('rollback').addEventListener('click', function(){
-  dialogConfirm.hidden = false;
-  openDialog('Rollback latest change', 'Restore the latest Fleet-managed change?', async function(){
-    dialogConfirm.disabled = true;
-    try {
-      const result = await postJson('/api/rollback', {});
-      closeDialog();
-      announce('Rollback complete: ' + (result.action || 'done'), false);
-      await refresh();
-    } catch(error){
-      closeDialog();
-      announce(error && error.message ? error.message : String(error), true);
-    } finally {
-      dialogConfirm.disabled = false;
-    }
-  });
+const rollbackButton = document.getElementById('rollback');
+rollbackButton.textContent = 'Activity';
+rollbackButton.setAttribute('aria-label', 'Open Activity to select a rollback target');
+rollbackButton.addEventListener('click', function(){
+  location.hash = '#activity';
+  activateView(true);
 });
 
 const globalSearch = document.getElementById('global-search');
