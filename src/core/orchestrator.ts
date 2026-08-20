@@ -1,14 +1,17 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { extractCoordinate } from './coords.js';
-import { updateLockFromApplied, type CapabilityOrigin } from './lock.js';
-import { gateOrigin, gateSkillSource, type GateVerdict } from './trustgate.js';
-import { loadConfig } from './config.js';
+import { relative, resolve } from 'node:path';
+import { extractCoordinate, extractRunnerPackageReferences, hasRunnerSourceEnvironment } from './coords.js';
+import { readLockState, updateLockFromApplied, type CapabilityOrigin } from './lock.js';
+import { gateOrigin, gateSkillSource, trustSnapshot, type GateVerdict } from './trustgate.js';
+import { assertMutationConfigReadable, effectiveTrustPolicy } from './config.js';
 import { readFile } from 'node:fs/promises';
 import type { AgentAdapter, AgentWriter, RuleWriter, SkillSource, SkillWriter } from './adapter.js';
-import type { AgentId, McpServerSpec, RuleCapability, Scope } from './types.js';
-import { hashDir } from './fsutil.js';
+import type { AgentId, McpServerSpec, PrimitiveKind, RuleCapability, Scope } from './types.js';
+import { hashMaterializedDir, safeJoin } from './fsutil.js';
 import { opposingRules, RESOLUTION_HINT } from './conflicts.js';
+import { inspectAdapter, inspectionAllowsMutation } from './inventory.js';
+import { FleetOperationError } from './errors.js';
+import { assertWritableScope, selectScopedCapability } from './scope.js';
 import {
   applyChanges,
   toPlannedChange,
@@ -16,6 +19,7 @@ import {
   type ApplyResult,
   type ApplyOptions,
   type ChangeValidator,
+  isRecoveryPendingError,
 } from './writer.js';
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -36,6 +40,10 @@ export interface Plan {
   origin?: CapabilityOrigin;
   /** install-time trust verdict (recorded in the lock; enforced per trustPolicy) */
   trust?: GateVerdict;
+  /** Explicit per-run policy chosen by the local caller. When absent, commit
+   * re-applies the current Fleet policy so a stored preview cannot bypass a
+   * later warn → block policy change. */
+  trustPolicyOverride?: 'warn' | 'block';
 }
 
 type WriterAdapter = AgentAdapter & AgentWriter;
@@ -51,7 +59,22 @@ export function isWriter(a: AgentAdapter): a is WriterAdapter {
 }
 
 export function writerAdapters(adapters: AgentAdapter[]): WriterAdapter[] {
-  return adapters.filter(isWriter);
+  return adapters.filter(
+    (adapter): adapter is WriterAdapter =>
+      isWriter(adapter) &&
+      adapter.capabilitySupport?.['mcp-server']?.inventory === 'supported' &&
+      adapter.capabilitySupport['mcp-server'].management === 'writable',
+  );
+}
+
+async function sourceInventory(adapters: AgentAdapter[], fromId: AgentId) {
+  const source = adapters.find((adapter) => adapter.id === fromId);
+  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
+  const snapshot = await inspectAdapter(source);
+  if (!snapshot.detected.present || snapshot.detected.inventoryStatus !== 'ok') {
+    throw new FleetOperationError('TARGET_UNAVAILABLE', `source inventory unavailable: '${fromId}'`);
+  }
+  return snapshot.items;
 }
 
 /** Names fleet refuses to mutate (its own entry once self-installed in M3). */
@@ -73,7 +96,8 @@ export async function resolveTargets(
     // 'all' = present writer agents only (don't surprise-create absent ones)
     const present: AgentId[] = [];
     for (const w of writers) {
-      if ((await w.detect()).present) present.push(w.id);
+      const { detected } = await inspectAdapter(w);
+      if (detected.present && inspectionAllowsMutation(detected)) present.push(w.id);
     }
     return present;
   }
@@ -84,8 +108,58 @@ export async function resolveTargets(
   const known = new Set(writers.map((w) => w.id));
   for (const id of ids) {
     if (!known.has(id)) throw new Error(`unknown or non-writable agent: '${id}'`);
+    const { detected } = await inspectAdapter(writers.find((writer) => writer.id === id)!);
+    if (!inspectionAllowsMutation(detected)) {
+      throw new FleetOperationError('TARGET_UNAVAILABLE', `agent state unavailable: '${id}'`);
+    }
   }
   return [...new Set(ids)];
+}
+
+async function assertTargetInventoriesAvailable(
+  adapters: AgentAdapter[],
+  targetIds: AgentId[],
+  selector?: { kind: PrimitiveKind; name: string; scope: Scope },
+): Promise<void> {
+  for (const adapter of adapters) {
+    if (!targetIds.includes(adapter.id)) continue;
+    const { detected, items } = await inspectAdapter(adapter);
+    if (!inspectionAllowsMutation(detected)) {
+      throw new FleetOperationError('TARGET_UNAVAILABLE', `agent state unavailable: '${adapter.id}'`);
+    }
+    if (selector) {
+      selectScopedCapability(items, { agent: adapter.id, ...selector });
+    }
+  }
+}
+
+async function assertPlannedTargetsAvailable(
+  adapters: AgentAdapter[],
+  changes: PlannedChange[],
+): Promise<void> {
+  for (const agent of new Set(changes.map((change) => change.agent))) {
+    const adapter = adapters.find((candidate) => candidate.id === agent);
+    if (!adapter) throw new FleetOperationError('TARGET_UNAVAILABLE', `agent state unavailable: '${agent}'`);
+    const { detected, items } = await inspectAdapter(adapter);
+    if (!inspectionAllowsMutation(detected)) {
+      throw new FleetOperationError('TARGET_UNAVAILABLE', `agent state unavailable: '${agent}'`);
+    }
+    const selectors = new Map<string, { kind: PrimitiveKind; name: string; scope: Scope }>();
+    for (const change of changes.filter((candidate) => candidate.agent === agent)) {
+      const kind = change.kind ?? 'mcp-server';
+      if (kind !== 'mcp-server' && kind !== 'skill' && kind !== 'rule') {
+        throw new FleetOperationError('UNSUPPORTED_OPERATION', 'planned capability kind is not writable');
+      }
+      selectors.set(JSON.stringify([kind, change.name, change.scope]), {
+        kind,
+        name: change.name,
+        scope: change.scope,
+      });
+    }
+    for (const selector of selectors.values()) {
+      selectScopedCapability(items, { agent, ...selector });
+    }
+  }
 }
 
 /** Apply the trust policy to a finished plan: warn → annotate every change;
@@ -128,7 +202,14 @@ export async function planInstall(
   targetIds: AgentId[],
   opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string },
 ): Promise<Plan> {
+  assertWritableScope(scope);
+  await assertTargetInventoriesAvailable(writerAdapters(adapters), targetIds, {
+    kind: 'mcp-server',
+    name,
+    scope,
+  });
   const coord = extractCoordinate(spec);
+  const runnerPackages = extractRunnerPackageReferences(spec);
   // registry-grammar check before PERSISTING as provenance — extractCoordinate
   // is match-oriented and would happily classify a credentialed URL as an id
   const NPM_ID = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
@@ -165,14 +246,59 @@ export async function planInstall(
       if (r.baseHash === undefined) {
         r.warnings = [...(r.warnings ?? []), `will create a new config for '${a.id}' at ${r.file}`];
       }
-      changes.push(toPlannedChange(a.id, 'install', name, scope, r));
+      changes.push(
+        toPlannedChange(a.id, r.before === undefined ? 'install' : 'update', name, scope, {
+          ...r,
+          kind: 'mcp-server',
+        }),
+      );
     } catch (e) {
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  const policy = opts?.trustPolicy ?? loadConfig(opts?.fleetHome).trustPolicy;
+  const policy = effectiveTrustPolicy(opts?.fleetHome, opts?.trustPolicy);
   const withCanonical = changes.map((c) => ({ ...c, canonical: c.canonical ?? spec }));
-  return applyTrustPolicy({ changes: withCanonical, skips, origin }, gateOrigin(origin), policy);
+  const packageVerdicts = runnerPackages.map((runnerPackage) =>
+    runnerPackage.coordinate
+      ? gateOrigin({
+          type: runnerPackage.ecosystem,
+          id: runnerPackage.coordinate.id,
+          ...(runnerPackage.coordinate.version ? { version: runnerPackage.coordinate.version } : {}),
+        })
+      : {
+          level: 'caution' as const,
+          reasons: [
+            `unverified ${runnerPackage.ecosystem} package source — file, URL, git, alias, or malformed package specs require manual review`,
+          ],
+          reasonCodes: ['PACKAGE_SOURCE_UNVERIFIED' as const],
+        },
+  );
+  if (hasRunnerSourceEnvironment(spec)) {
+    packageVerdicts.push({
+      level: 'caution',
+      reasons: [
+        'runner execution or package source can be redirected by process environment; verify loader, path, registry, and config inputs',
+      ],
+      reasonCodes: ['RUNNER_SOURCE_ENVIRONMENT'],
+    });
+  }
+  const trust = packageVerdicts.some((verdict) => verdict.level === 'caution')
+    ? {
+        level: 'caution' as const,
+        reasons: [...new Set(packageVerdicts.flatMap((verdict) => verdict.reasons))],
+        reasonCodes: [...new Set(packageVerdicts.flatMap((verdict) => verdict.reasonCodes))],
+      }
+    : gateOrigin(origin);
+  return applyTrustPolicy(
+    {
+      changes: withCanonical,
+      skips,
+      origin,
+      ...(opts?.trustPolicy ? { trustPolicyOverride: opts.trustPolicy } : {}),
+    },
+    trust,
+    policy,
+  );
 }
 
 /** Plan removing a server from each target agent. */
@@ -180,7 +306,14 @@ export async function planRemove(
   adapters: AgentAdapter[],
   name: string,
   targetIds: AgentId[],
+  scope: Scope = 'user',
 ): Promise<Plan> {
+  assertWritableScope(scope);
+  await assertTargetInventoriesAvailable(writerAdapters(adapters), targetIds, {
+    kind: 'mcp-server',
+    name,
+    scope,
+  });
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   for (const a of writerAdapters(adapters)) {
@@ -194,12 +327,12 @@ export async function planRemove(
       continue;
     }
     try {
-      const r = await a.renderRemove({ kind: 'mcp-server', name, scope: 'user' });
+      const r = await a.renderRemove({ kind: 'mcp-server', name, scope });
       if (await isNoop(r.file, r.newContent)) {
         skips.push({ agent: a.id, kind: 'noop', reason: 'not installed' });
         continue;
       }
-      changes.push(toPlannedChange(a.id, 'remove', name, 'user', r));
+      changes.push(toPlannedChange(a.id, 'remove', name, scope, { ...r, kind: 'mcp-server' }));
     } catch (e) {
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
@@ -213,10 +346,14 @@ export async function planSync(
   name: string,
   fromId: AgentId,
   targetIds: AgentId[],
+  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string; sourceScope?: Scope },
 ): Promise<Plan> {
-  const source = adapters.find((a) => a.id === fromId);
-  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
-  const item = (await source.readInventory()).find((i) => i.kind === 'mcp-server' && i.name === name);
+  const item = selectScopedCapability(await sourceInventory(adapters, fromId), {
+    agent: fromId,
+    kind: 'mcp-server',
+    name,
+    ...(opts?.sourceScope ? { scope: opts.sourceScope } : {}),
+  });
   if (!item || item.kind !== 'mcp-server') {
     throw new Error(`MCP server "${name}" is not installed on '${fromId}'`);
   }
@@ -226,6 +363,7 @@ export async function planSync(
     name,
     'user',
     targetIds.filter((t) => t !== fromId),
+    opts,
   );
 }
 
@@ -243,7 +381,12 @@ export function isSkillWriter(a: AgentAdapter): a is SkillWriterAdapter {
 }
 
 export function skillWriterAdapters(adapters: AgentAdapter[]): SkillWriterAdapter[] {
-  return adapters.filter(isSkillWriter);
+  return adapters.filter(
+    (adapter): adapter is SkillWriterAdapter =>
+      isSkillWriter(adapter) &&
+      adapter.capabilitySupport?.skill?.inventory === 'supported' &&
+      adapter.capabilitySupport.skill.management === 'writable',
+  );
 }
 
 /** Plan installing a skill (copy its dir) into each target agent. */
@@ -269,12 +412,25 @@ export async function planInstallSkill(
   source: SkillSource,
   name: string,
   targetIds: AgentId[],
-  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string },
+  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string; sourceRoot?: string },
 ): Promise<Plan> {
+  await assertTargetInventoriesAvailable(skillWriterAdapters(adapters), targetIds, {
+    kind: 'skill',
+    name,
+    scope: 'user',
+  });
+  if (opts?.sourceRoot) {
+    const rel = relative(resolve(opts.sourceRoot), resolve(source.dir));
+    if (!rel) throw new Error('fleet: a skill source must be below, not equal to, its source root');
+    const contained = safeJoin(opts.sourceRoot, rel);
+    if (resolve(contained) !== resolve(source.dir)) {
+      throw new Error(`fleet: skill source ${source.dir} is outside its declared source root`);
+    }
+  }
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   skipUnsupported(targetIds, skillWriterAdapters(adapters), 'skill', skips);
-  const sourceHash = await hashDir(source.dir);
+  const sourceHash = await hashMaterializedDir(source.dir);
   for (const a of skillWriterAdapters(adapters)) {
     if (!targetIds.includes(a.id)) continue;
     if (SELF_PROTECTED.has(name)) {
@@ -291,23 +447,33 @@ export async function planInstallSkill(
         skips.push({ agent: a.id, kind: 'noop', reason: 'already up to date' });
         continue;
       }
-      changes.push(toPlannedChange(a.id, 'install', name, 'user', r));
+      changes.push(
+        toPlannedChange(a.id, r.before === undefined ? 'install' : 'update', name, 'user', {
+          ...r,
+          kind: 'skill',
+        }),
+      );
     } catch (e) {
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
   }
-  const policy = opts?.trustPolicy ?? loadConfig(opts?.fleetHome).trustPolicy;
+  const policy = effectiveTrustPolicy(opts?.fleetHome, opts?.trustPolicy);
   const verdict = await gateSkillSource(source.dir);
   // bind the verdict to the bytes: the tree we INSPECTED must be the tree the
   // plan will install (renderers pinned sourceHash before the scan)
-  const postScan = await hashDir(source.dir);
+  const postScan = await hashMaterializedDir(source.dir);
   for (const c of changes) {
     if (c.sourceHash !== undefined && c.sourceHash !== postScan) {
       throw new Error(`fleet: skill source ${source.dir} changed during trust inspection; re-plan`);
     }
   }
   return applyTrustPolicy(
-    { changes, skips, origin: { type: 'dir', path: resolve(source.dir) } },
+    {
+      changes,
+      skips,
+      origin: { type: 'dir', path: resolve(source.dir) },
+      ...(opts?.trustPolicy ? { trustPolicyOverride: opts.trustPolicy } : {}),
+    },
     verdict,
     policy,
   );
@@ -319,6 +485,11 @@ export async function planRemoveSkill(
   name: string,
   targetIds: AgentId[],
 ): Promise<Plan> {
+  await assertTargetInventoriesAvailable(skillWriterAdapters(adapters), targetIds, {
+    kind: 'skill',
+    name,
+    scope: 'user',
+  });
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   skipUnsupported(targetIds, skillWriterAdapters(adapters), 'skill', skips);
@@ -334,7 +505,7 @@ export async function planRemoveSkill(
     }
     try {
       const r = await a.renderRemoveSkill({ kind: 'skill', name, scope: 'user' });
-      changes.push(toPlannedChange(a.id, 'remove', name, 'user', r));
+      changes.push(toPlannedChange(a.id, 'remove', name, 'user', { ...r, kind: 'skill' }));
     } catch (e) {
       const reason = msg(e);
       skips.push({ agent: a.id, kind: /not installed/.test(reason) ? 'noop' : 'error', reason });
@@ -349,10 +520,19 @@ export async function planSyncSkill(
   name: string,
   fromId: AgentId,
   targetIds: AgentId[],
+  opts?: {
+    trustPolicy?: 'warn' | 'block';
+    fleetHome?: string;
+    sourceRoot?: string;
+    sourceScope?: Scope;
+  },
 ): Promise<Plan> {
-  const source = adapters.find((a) => a.id === fromId);
-  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
-  const item = (await source.readInventory()).find((i) => i.kind === 'skill' && i.name === name);
+  const item = selectScopedCapability(await sourceInventory(adapters, fromId), {
+    agent: fromId,
+    kind: 'skill',
+    name,
+    ...(opts?.sourceScope ? { scope: opts.sourceScope } : {}),
+  });
   if (!item || item.kind !== 'skill') {
     throw new Error(`skill "${name}" is not installed on '${fromId}'`);
   }
@@ -362,6 +542,7 @@ export async function planSyncSkill(
     src,
     name,
     targetIds.filter((t) => t !== fromId),
+    opts,
   );
 }
 
@@ -379,7 +560,12 @@ export function isRuleWriter(a: AgentAdapter): a is RuleWriterAdapter {
 }
 
 export function ruleWriterAdapters(adapters: AgentAdapter[]): RuleWriterAdapter[] {
-  return adapters.filter(isRuleWriter);
+  return adapters.filter(
+    (adapter): adapter is RuleWriterAdapter =>
+      isRuleWriter(adapter) &&
+      adapter.capabilitySupport?.rule?.inventory === 'supported' &&
+      adapter.capabilitySupport.rule.management === 'writable',
+  );
 }
 
 /** Plan installing a rule (managed instruction block) into each target agent. */
@@ -389,6 +575,11 @@ export async function planInstallRule(
   body: string,
   targetIds: AgentId[],
 ): Promise<Plan> {
+  await assertTargetInventoriesAvailable(ruleWriterAdapters(adapters), targetIds, {
+    kind: 'rule',
+    name,
+    scope: 'user',
+  });
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   skipUnsupported(targetIds, ruleWriterAdapters(adapters), 'rule', skips);
@@ -408,9 +599,9 @@ export async function planInstallRule(
         skips.push({ agent: a.id, kind: 'noop', reason: 'already up to date' });
         continue;
       }
-      // impact analysis (best-effort): warn if this rule opposes an always-on
-      // rule already there. MUST NOT block the install — a malformed MCP config
-      // would make readInventory throw, and that's unrelated to writing a rule.
+      // The target snapshot already passed the fail-closed inventory preflight.
+      // This second read is only best-effort impact analysis for a warning; a
+      // transient failure here does not make the already-rendered rule unsafe.
       try {
         const existing = (await a.readInventory()).filter((i): i is RuleCapability => i.kind === 'rule');
         const opp = opposingRules(existing, body, name);
@@ -426,7 +617,12 @@ export async function planInstallRule(
       } catch {
         /* impact analysis is best-effort; never block the install */
       }
-      changes.push(toPlannedChange(a.id, 'install', name, 'user', r));
+      changes.push(
+        toPlannedChange(a.id, r.before === undefined ? 'install' : 'update', name, 'user', {
+          ...r,
+          kind: 'rule',
+        }),
+      );
     } catch (e) {
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
@@ -441,6 +637,11 @@ export async function planRemoveRule(
   name: string,
   targetIds: AgentId[],
 ): Promise<Plan> {
+  await assertTargetInventoriesAvailable(ruleWriterAdapters(adapters), targetIds, {
+    kind: 'rule',
+    name,
+    scope: 'user',
+  });
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
   skipUnsupported(targetIds, ruleWriterAdapters(adapters), 'rule', skips);
@@ -460,7 +661,7 @@ export async function planRemoveRule(
         skips.push({ agent: a.id, kind: 'noop', reason: 'not installed' });
         continue;
       }
-      changes.push(toPlannedChange(a.id, 'remove', name, 'user', r));
+      changes.push(toPlannedChange(a.id, 'remove', name, 'user', { ...r, kind: 'rule' }));
     } catch (e) {
       skips.push({ agent: a.id, kind: 'error', reason: msg(e) });
     }
@@ -474,10 +675,14 @@ export async function planSyncRule(
   name: string,
   fromId: AgentId,
   targetIds: AgentId[],
+  opts?: { sourceScope?: Scope },
 ): Promise<Plan> {
-  const source = adapters.find((a) => a.id === fromId);
-  if (!source) throw new Error(`unknown source agent: '${fromId}'`);
-  const item = (await source.readInventory()).find((i) => i.kind === 'rule' && i.name === name);
+  const item = selectScopedCapability(await sourceInventory(adapters, fromId), {
+    agent: fromId,
+    kind: 'rule',
+    name,
+    ...(opts?.sourceScope ? { scope: opts.sourceScope } : {}),
+  });
   if (!item || item.kind !== 'rule') {
     throw new Error(`rule "${name}" is not installed on '${fromId}'`);
   }
@@ -520,6 +725,8 @@ export interface ExecuteResult {
   /** set when a commit failed partway: how many changes were applied first */
   failedAfter?: number;
   error?: string;
+  /** Original and/or partially published state needs manual inspection. */
+  recoveryPending?: true;
   /** the change applied but recording provenance in fleet.lock failed */
   lockWarning?: string;
 }
@@ -534,32 +741,69 @@ export async function execute(
   plan: Plan,
   opts: { commit: boolean; fleetHome?: string },
 ): Promise<ExecuteResult> {
-  const base = { changes: plan.changes, skips: plan.skips };
+  const executionPlan: Plan = plan.trust
+    ? {
+        ...plan,
+        changes: plan.changes.map((change) => ({ ...change, trust: trustSnapshot(plan.trust!) })),
+      }
+    : plan;
+  const base = { changes: executionPlan.changes, skips: plan.skips };
   if (!opts.commit) return { ...base, committed: false, applied: [] };
   if (plan.changes.length === 0) return { ...base, committed: true, applied: [] };
-  // the lock is metadata — its failure must never mask a successful apply
+  try {
+    assertMutationConfigReadable(opts.fleetHome);
+  } catch (error) {
+    return { ...base, committed: true, applied: [], failedAfter: 0, error: msg(error) };
+  }
+  // A lock fold failure after the target changed must never mask the real
+  // apply. Pre-existing damaged provenance is handled separately, before any
+  // mutation and under the same operation lock.
   const foldLock = async (applied: ApplyResult[]): Promise<string | undefined> => {
-    if (applied.length === 0) return undefined;
+    // fleet.lock is provenance, so an applied mutation whose audit append
+    // failed must not be laundered into a normal lock entry with a nonexistent
+    // audit id.
+    const recorded = applied.filter((result) => result.auditRecorded);
+    if (recorded.length === 0) return undefined;
     try {
-      await updateLockFromApplied(applied, plan.origin ?? { type: 'manual' }, opts.fleetHome, plan.trust);
+      await updateLockFromApplied(recorded, plan.origin ?? { type: 'manual' }, opts.fleetHome, plan.trust);
       return undefined;
     } catch (e) {
       return `applied, but fleet.lock update failed: ${msg(e)}`;
     }
   };
+  let lockWarning: string | undefined;
   try {
-    const applied = await applyPlan(adapters, plan, { fleetHome: opts.fleetHome });
-    const lockWarning = await foldLock(applied);
+    const applied = await applyPlan(adapters, executionPlan, {
+      fleetHome: opts.fleetHome,
+      beforeApplyLocked: async () => {
+        const config = assertMutationConfigReadable(opts.fleetHome);
+        const trustPolicy = effectiveTrustPolicy(
+          opts.fleetHome,
+          plan.trustPolicyOverride ?? config.trustPolicy,
+        );
+        if (trustPolicy === 'block' && plan.trust?.level === 'caution') {
+          throw new Error('fleet: current trust policy blocks this caution-level plan; preview again');
+        }
+        const lock = await readLockState(opts.fleetHome);
+        if (lock.status !== 'available' && lock.status !== 'not-present') {
+          throw new Error('fleet: fleet.lock provenance is unavailable or malformed; refusing mutation');
+        }
+        await assertPlannedTargetsAvailable(adapters, executionPlan.changes);
+      },
+      whileLocked: async (results) => {
+        lockWarning = await foldLock(results);
+      },
+    });
     return { ...base, committed: true, applied, ...(lockWarning ? { lockWarning } : {}) };
   } catch (err) {
     const applied = (err as { applied?: ApplyResult[] }).applied ?? [];
-    const lockWarning = await foldLock(applied);
     return {
       ...base,
       committed: true,
       applied,
       failedAfter: applied.length,
       error: msg(err),
+      ...(isRecoveryPendingError(err) ? { recoveryPending: true as const } : {}),
       ...(lockWarning ? { lockWarning } : {}),
     };
   }

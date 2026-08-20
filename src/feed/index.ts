@@ -7,6 +7,10 @@ import { SkillsMpSource, ClaudeSkillsInfoSource } from './sources/skill-registri
 import { LocalMarketplacesSource } from './sources/local-marketplaces.js';
 import { FleetHubSource } from './sources/hub.js';
 
+export function feedSourceEnabled(config: FleetConfig, sourceId: string): boolean {
+  return config.feedSources === null || config.feedSources.includes(sourceId);
+}
+
 /**
  * The default live feed sources. Always on: the MCP Registry (novelty/version/
  * identifier), the skill registries (skills.sh installs + SkillsMP description/
@@ -32,5 +36,5 @@ export function defaultSources(config: FleetConfig = loadConfig()): FeedSource[]
   if (config.hubUrl) sources.push(new FleetHubSource(config.hubUrl));
   const pulseKey = process.env.PULSEMCP_API_KEY;
   if (pulseKey) sources.push(new PulseMcpSource({ apiKey: pulseKey }));
-  return sources;
+  return sources.filter((source) => feedSourceEnabled(config, source.id));
 }

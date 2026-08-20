@@ -3,7 +3,7 @@ import { readdir, readFile, realpath, stat, lstat } from 'node:fs/promises';
 import { join, relative, sep, resolve } from 'node:path';
 import type { SkillCapability } from './types.js';
 import type { CapabilityRef, RenderResult, SkillSource } from './adapter.js';
-import { hashDir, safeJoin } from './fsutil.js';
+import { hashDir, hashMaterializedDir, safeJoin } from './fsutil.js';
 
 /**
  * Skills are directory-shaped capabilities (a dir containing SKILL.md). Reading
@@ -40,22 +40,34 @@ export function parseSkillFrontmatter(text: string): SkillMeta {
  */
 export async function listSkillDirs(
   root: string,
-  opts: { allowedRoots?: string[] } = {},
+  opts: { allowedRoots?: string[]; strict?: boolean } = {},
 ): Promise<{ name: string; path: string }[]> {
-  if (!existsSync(root)) return [];
+  try {
+    const rootInfo = await lstat(root);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+      if (opts.strict) throw new Error(`skills root is not a regular directory: ${root}`);
+      return [];
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (opts.strict) throw error;
+    return [];
+  }
   const out: { name: string; path: string }[] = [];
   const visited = new Set<string>(); // realpath cycle guard for symlinked dirs
   let realRoot: string;
   try {
     realRoot = await realpath(root);
-  } catch {
+  } catch (error) {
+    if (opts.strict) throw error;
     return [];
   }
   const allowed = [realRoot];
   for (const r of opts.allowedRoots ?? []) {
     try {
       allowed.push(await realpath(r));
-    } catch {
+    } catch (error) {
+      if (opts.strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       /* absent allowed root */
     }
   }
@@ -66,7 +78,8 @@ export async function listSkillDirs(
     let real;
     try {
       real = await realpath(dir);
-    } catch {
+    } catch (error) {
+      if (opts.strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return; // dangling symlink
     }
     if (visited.has(real)) return;
@@ -78,7 +91,8 @@ export async function listSkillDirs(
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (opts.strict) throw error;
       return;
     }
     // SKILL.md must be a REGULAR file (a FIFO here would block inventory forever)
@@ -87,7 +101,8 @@ export async function listSkillDirs(
       // lstat: a TERMINAL SKILL.md symlink could point outside containment —
       // require a real regular file (dir-level links are the interop path)
       hasSkillMd = (await lstat(join(dir, 'SKILL.md'))).isFile();
-    } catch {
+    } catch (error) {
+      if (opts.strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       hasSkillMd = false;
     }
     if (hasSkillMd) {
@@ -103,7 +118,8 @@ export async function listSkillDirs(
         // agent's skills dir — follow dir-links or those skills are invisible
         try {
           if ((await stat(join(dir, e.name))).isDirectory()) await walk(join(dir, e.name), depth + 1);
-        } catch {
+        } catch (error) {
+          if (opts.strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
           /* dangling — skip */
         }
       }
@@ -113,12 +129,16 @@ export async function listSkillDirs(
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function readSkillMeta(skillDir: string): Promise<SkillMeta & { tokensEst?: number }> {
+export async function readSkillMeta(
+  skillDir: string,
+  opts: { strict?: boolean } = {},
+): Promise<SkillMeta & { tokensEst?: number }> {
   try {
     const text = await readFile(join(skillDir, 'SKILL.md'), 'utf8');
     // bytes/4 ≈ tokens — a deliberately rough, comparable number
     return { ...parseSkillFrontmatter(text), tokensEst: Math.ceil(Buffer.byteLength(text, 'utf8') / 4) };
-  } catch {
+  } catch (error) {
+    if (opts.strict) throw error;
     return {};
   }
 }
@@ -127,12 +147,12 @@ export async function readSkillMeta(skillDir: string): Promise<SkillMeta & { tok
 export async function readSkillsInventory(
   agent: string,
   skillsRoot: string,
-  opts: { allowedRoots?: string[] } = {},
+  opts: { allowedRoots?: string[]; strict?: boolean } = {},
 ): Promise<SkillCapability[]> {
   const dirs = await listSkillDirs(skillsRoot, opts);
   const out: SkillCapability[] = [];
   for (const d of dirs) {
-    const { tokensEst, ...meta } = await readSkillMeta(d.path);
+    const { tokensEst, ...meta } = await readSkillMeta(d.path, { strict: opts.strict });
     out.push({
       kind: 'skill',
       name: d.name,
@@ -164,7 +184,7 @@ export async function renderSkillInstall(
     fsKind: 'dir',
     dirOp: 'install',
     sourceDir: source.dir,
-    sourceHash: await hashDir(source.dir), // pin the bytes the preview showed
+    sourceHash: await hashMaterializedDir(source.dir), // pin the tree copyDir will materialize
     newContent: '', // unused for dir kind
     before: exists ? ref.name : undefined,
     after: ref.name,

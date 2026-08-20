@@ -39,7 +39,7 @@ export function renderShell({ css, client }: ShellAssets): string {
       </svg>
       <div><strong>Fleet</strong><span data-i18n="brand.control">Capability control</span></div>
     </div>
-    <div class="safety-state"><span class="status-dot good" aria-hidden="true"></span><span><strong data-i18n="safety.active">Safety active</strong><small data-i18n="safety.preview">Preview before apply</small></span></div>
+    <div class="safety-state"><span class="status-dot good" aria-hidden="true"></span><span><strong data-i18n="safety.active">Managed changes</strong><small data-i18n="safety.preview">Preview, then confirm</small></span></div>
     <nav class="view-nav" aria-label="Fleet views" data-i18n-aria="a11y.views">
 ${renderNav()}
     </nav>

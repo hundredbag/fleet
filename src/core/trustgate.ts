@@ -15,6 +15,35 @@ import type { CapabilityOrigin } from './lock.js';
 export interface GateVerdict {
   level: 'ok' | 'caution';
   reasons: string[];
+  reasonCodes: TrustReasonCode[];
+}
+
+export const TRUST_REASON_CODES = [
+  'PACKAGE_UNPINNED',
+  'PACKAGE_FLOATING_VERSION',
+  'PACKAGE_SOURCE_UNVERIFIED',
+  'RUNNER_SOURCE_ENVIRONMENT',
+  'SKILL_ROOT_SYMLINK',
+  'SKILL_FILE_TOO_LARGE',
+  'SKILL_HIDDEN_UNICODE',
+  'SKILL_EXECUTABLE_FILES',
+  'SKILL_SCRIPT_FILES',
+  'SKILL_SYMLINKS',
+] as const;
+
+export type TrustReasonCode = (typeof TRUST_REASON_CODES)[number];
+export interface TrustSnapshot {
+  level: GateVerdict['level'];
+  reasonCodes: TrustReasonCode[];
+}
+
+const TRUST_REASON_CODE_SET = new Set<unknown>(TRUST_REASON_CODES);
+export function isTrustReasonCode(value: unknown): value is TrustReasonCode {
+  return TRUST_REASON_CODE_SET.has(value);
+}
+
+export function trustSnapshot(verdict: GateVerdict): TrustSnapshot {
+  return { level: verdict.level, reasonCodes: [...new Set(verdict.reasonCodes)] };
 }
 
 // Unicode invisible to human review: zero-widths, bidi controls (incl. ALM
@@ -54,6 +83,7 @@ function looksBinary(buf: Buffer): boolean {
  */
 export async function gateSkillSource(dir: string): Promise<GateVerdict> {
   const reasons: string[] = [];
+  const reasonCodes: TrustReasonCode[] = [];
   let executables = 0;
   let scripts = 0;
   let symlinks = 0;
@@ -62,6 +92,7 @@ export async function gateSkillSource(dir: string): Promise<GateVerdict> {
   try {
     if ((await lstat(dir)).isSymbolicLink()) {
       reasons.push('the skill source directory itself is a symlink');
+      reasonCodes.push('SKILL_ROOT_SYMLINK');
     }
   } catch {
     /* unreadable root surfaces via readdir below */
@@ -86,6 +117,7 @@ export async function gateSkillSource(dir: string): Promise<GateVerdict> {
       if (st.mode & 0o111) executables++;
       if (st.size > INSPECT_CAP) {
         reasons.push(`${r} is >1 MiB — too large to inspect`);
+        reasonCodes.push('SKILL_FILE_TOO_LARGE');
         continue;
       }
       const buf = await readFile(full);
@@ -103,12 +135,25 @@ export async function gateSkillSource(dir: string): Promise<GateVerdict> {
 
   if (hiddenUnicodeIn) {
     reasons.push(`hidden/bidirectional unicode in ${hiddenUnicodeIn} (content invisible to review)`);
+    reasonCodes.push('SKILL_HIDDEN_UNICODE');
   }
-  if (executables > 0) reasons.push(`${executables} executable file(s) — skills run with your shell access`);
-  else if (scripts > 0) reasons.push(`${scripts} script file(s) — review before the agent can run them`);
-  if (symlinks > 0) reasons.push(`${symlinks} symlink(s) — may reference content outside this tree`);
+  if (executables > 0) {
+    reasons.push(`${executables} executable file(s) — skills run with your shell access`);
+    reasonCodes.push('SKILL_EXECUTABLE_FILES');
+  } else if (scripts > 0) {
+    reasons.push(`${scripts} script file(s) — review before the agent can run them`);
+    reasonCodes.push('SKILL_SCRIPT_FILES');
+  }
+  if (symlinks > 0) {
+    reasons.push(`${symlinks} symlink(s) — may reference content outside this tree`);
+    reasonCodes.push('SKILL_SYMLINKS');
+  }
 
-  return { level: reasons.length > 0 ? 'caution' : 'ok', reasons };
+  return {
+    level: reasons.length > 0 ? 'caution' : 'ok',
+    reasons,
+    reasonCodes: [...new Set(reasonCodes)],
+  };
 }
 
 // pinned = IMMUTABLE exact version only. Tags (@latest/@next), ranges (^1, ~2),
@@ -124,6 +169,7 @@ export function gateOrigin(origin: CapabilityOrigin): GateVerdict {
         reasons: [
           `unpinned ${origin.type} package — the runner fetches whatever is latest at each start (postmark-mcp turned malicious at version 16)`,
         ],
+        reasonCodes: ['PACKAGE_UNPINNED'],
       };
     }
     if (!EXACT_SEMVER.test(origin.version)) {
@@ -132,8 +178,9 @@ export function gateOrigin(origin: CapabilityOrigin): GateVerdict {
         reasons: [
           `'${origin.version}' is a tag/range, not an exact version — it floats to whatever gets published`,
         ],
+        reasonCodes: ['PACKAGE_FLOATING_VERSION'],
       };
     }
   }
-  return { level: 'ok', reasons: [] };
+  return { level: 'ok', reasons: [], reasonCodes: [] };
 }

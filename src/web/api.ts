@@ -1,15 +1,12 @@
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import type { AgentAdapter } from '../core/adapter.js';
 import { analyzeConflicts } from '../core/conflicts.js';
 import { detectDrift } from '../core/drift.js';
-import { SELECTOR_RE } from '../core/delegate.js';
+import { readDelegatedLedger } from '../core/delegate.js';
 import { buildInventory } from '../core/inventory.js';
 import { skillUpdatesFromLock } from '../core/skill-updates.js';
+import { isPublicAgentId, isPublicCapabilityName } from '../core/redact.js';
 import type { Inventory, PrimitiveKind } from '../core/types.js';
-import { readAudit } from '../core/writer.js';
+import { readAuditLedger, rollbackEligibleAuditIds } from '../core/writer.js';
 import { cachedDiscover } from '../feed/cache.js';
 import { discover, updatesForInventory } from '../feed/feed.js';
 import { defaultSources } from '../feed/index.js';
@@ -32,6 +29,11 @@ import type {
   OverviewResponse,
 } from './types.js';
 import { operationAllowed, supportsDelegatedPlugin } from './operations.js';
+import { pluginCoordinate } from '../core/plugin-coordinate.js';
+import { loadConfig } from '../core/config.js';
+import { inspectionAllowsMutation } from '../core/inventory.js';
+import { writerAdapters } from '../core/orchestrator.js';
+import { isValidWebPackageCoordinate } from './package-coordinate.js';
 
 const invCaches = new WeakMap<object, { time: number; epoch: number; promise: Promise<Inventory> }>();
 let invalidateEpoch = 0;
@@ -65,18 +67,52 @@ function supportsFeedOperation<O extends 'install' | 'update'>(
   operation: O,
   agent?: string,
 ): O | null {
+  if (operation === 'install') {
+    // The discovery button previews `to: all`, so every adapter that the core
+    // would include in that selector must accept this as a new install.
+    const targets = writerAdapters(adapters).filter((adapter) => {
+      const state = inv.agents.find((candidate) => candidate.id === adapter.id);
+      return Boolean(state?.present && inspectionAllowsMutation(state));
+    });
+    if (targets.length === 0) return null;
+    return targets.every((adapter) => {
+      const state = inv.agents.find((candidate) => candidate.id === adapter.id)!;
+      const instances = inv.items.filter(
+        (item) => item.kind === kind && item.name === name && item.agent === adapter.id,
+      );
+      return operationAllowed(
+        {
+          adapter,
+          agent: state,
+          kind,
+          hasInstance: instances.length > 0,
+          ...(instances.length === 1 ? { scope: instances[0]!.scope } : {}),
+          hasSourceInstance: true,
+        },
+        operation,
+      );
+    })
+      ? operation
+      : null;
+  }
   return adapters.some((adapter) => {
     if (agent && adapter.id !== agent) return false;
     const state = inv.agents.find((candidate) => candidate.id === adapter.id);
     if (!state || !state.present || state.inventoryStatus !== 'ok') return false;
+    const instances = inv.items.filter(
+      (item) => item.kind === kind && item.name === name && item.agent === adapter.id,
+    );
+    // Feed update coordinates do not carry a scope/context selector. Never
+    // advertise an action that a later preview would have to resolve by array order.
+    if (instances.length !== 1) return false;
+    const instance = instances[0];
     return operationAllowed(
       {
         adapter,
         agent: state,
         kind,
-        hasInstance: inv.items.some(
-          (item) => item.kind === kind && item.name === name && item.agent === adapter.id,
-        ),
+        hasInstance: Boolean(instance),
+        ...(instance ? { scope: instance.scope } : {}),
         hasSourceInstance: true,
         delegatedSupported: kind === 'plugin' && supportsDelegatedPlugin(adapter),
       },
@@ -95,11 +131,14 @@ export async function apiFeed(
   const inv = await snapshotInventory(adapters);
   const discovery = sources
     ? { ...(await discover(sources)), fromCache: false }
-    : await cachedDiscover(defaultSources(), { refresh: opts?.refresh, fleetHome: opts?.fleetHome });
-  const updates = updatesForInventory(inv, discovery.items).updates.filter(
-    (update) =>
-      supportsFeedOperation(adapters, inv, 'mcp-server', update.name, 'update', update.agent) === 'update',
-  );
+    : await cachedDiscover(defaultSources(loadConfig(opts?.fleetHome)), {
+        refresh: opts?.refresh,
+        fleetHome: opts?.fleetHome,
+      });
+  const updates = updatesForInventory(inv, discovery.items).updates.map((update) => ({
+    ...update,
+    operation: supportsFeedOperation(adapters, inv, 'mcp-server', update.name, 'update', update.agent),
+  }));
   const ranked = await recommend(inv, discovery.items);
   const mixed = [
     ...ranked.filter((item) => !item.item.kind || item.item.kind === 'mcp-server').slice(0, 30),
@@ -128,7 +167,18 @@ export async function apiFeed(
       trust: rankedItem.trust.level,
       url: item.url,
       updatedAt: item.updatedAt,
-      operation: supportsFeedOperation(adapters, inv, kind, item.name, 'install'),
+      // Discovery has a coordinate-driven Web planner only for MCP servers.
+      // Skills require an explicit local directory and plugins require an
+      // exact marketplace, so advertising install for either would be false.
+      operation:
+        kind === 'mcp-server' &&
+        isValidWebPackageCoordinate({
+          ecosystem: item.ecosystem,
+          identifier: item.identifier,
+          version: item.version,
+        })
+          ? supportsFeedOperation(adapters, inv, kind, item.name, 'install')
+          : null,
     };
   });
   const skillUpdates = await skillUpdatesFromLock(inv, opts?.fleetHome);
@@ -138,6 +188,7 @@ export async function apiFeed(
     recommendations,
     failures: discovery.failures,
     fromCache: discovery.fromCache,
+    sourceWithheld: discovery.withheld,
   });
 }
 
@@ -154,80 +205,49 @@ interface DelegatedLedgerRecord {
   op: string;
   agent: string;
   name: string;
-  succeeded: boolean;
+  marketplace?: string;
+  outcome: 'applied' | 'nothing-to-do' | 'failed' | 'unknown';
 }
 
-const OPAQUE_ID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const SAFE_AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 async function readDelegatedActivity(fleetHome?: string): Promise<{
   records: DelegatedLedgerRecord[];
   status: ActivityResponse['delegatedActions']['status'];
 }> {
-  const file = join(fleetHome ?? join(homedir(), '.fleet'), 'delegated.jsonl');
-  if (!existsSync(file)) return { records: [], status: 'not-present' };
-  const output: DelegatedLedgerRecord[] = [];
-  let malformed = false;
-  let text: string;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch {
-    return { records: [], status: 'unavailable' };
-  }
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const value = JSON.parse(line) as Record<string, unknown>;
-      if (
-        typeof value.id !== 'string' ||
-        !OPAQUE_ID.test(value.id) ||
-        typeof value.time !== 'string' ||
-        typeof value.agent !== 'string' ||
-        (value.agent !== 'claude-code' && value.agent !== 'codex') ||
-        (value.op !== 'install' && value.op !== 'remove') ||
-        typeof value.selector !== 'string' ||
-        !SELECTOR_RE.test(value.selector) ||
-        value.selector.includes('..') ||
-        !Number.isSafeInteger(value.exitCode) ||
-        (value.exitCode as number) < 0 ||
-        (value.exitCode as number) > 255
-      ) {
-        malformed = true;
-        continue;
-      }
-      const ts = Date.parse(value.time);
-      if (!Number.isFinite(ts)) {
-        malformed = true;
-        continue;
-      }
-      const lastMarketplace = value.selector.lastIndexOf('@');
-      const name = lastMarketplace > 0 ? value.selector.slice(0, lastMarketplace) : value.selector;
-      if (!/^(@[\w][\w.-]*\/)?[\w][\w.-]*$/.test(name) || name.includes('..')) {
-        malformed = true;
-        continue;
-      }
-      output.push({
+  const ledger = await readDelegatedLedger(fleetHome);
+  return {
+    status: ledger.status,
+    records: ledger.records.map((value) => {
+      const coordinate = pluginCoordinate(value.selector);
+      return {
         id: value.id,
-        ts,
+        ts: Date.parse(value.time),
         op: value.op,
         agent: value.agent,
-        name,
-        succeeded: value.exitCode === 0,
-      });
-    } catch {
-      malformed = true; // retain valid rows, but never imply the ledger was complete.
-    }
-  }
-  return { records: output, status: malformed ? 'malformed' : 'available' };
+        name: coordinate.name,
+        ...(coordinate.marketplace ? { marketplace: coordinate.marketplace } : {}),
+        outcome: value.pending
+          ? 'unknown'
+          : value.exitCode !== 0
+            ? 'failed'
+            : value.effect === 'changed'
+              ? 'applied'
+              : value.effect === 'unchanged'
+                ? 'nothing-to-do'
+                : 'unknown',
+      };
+    }),
+  };
 }
 
 export async function apiActivity(fleetHome?: string): Promise<ActivityResponse> {
-  const [rawCore, delegatedResult] = await Promise.all([
-    readAudit(fleetHome),
+  const [coreResult, delegatedResult] = await Promise.all([
+    readAuditLedger(fleetHome),
     readDelegatedActivity(fleetHome),
   ]);
+  const rawCore = coreResult.records;
   const delegated = delegatedResult.records;
-  const logicalName = /^(@[\w][\w.-]*\/)?[\w][\w. @/-]*$/;
   const core = rawCore.filter(
     (record) =>
       typeof record.id === 'string' &&
@@ -239,11 +259,9 @@ export async function apiActivity(fleetHome?: string): Promise<ActivityResponse>
         record.op === 'rollback') &&
       typeof record.agent === 'string' &&
       SAFE_AGENT_ID.test(record.agent) &&
-      logicalName.test(record.agent) &&
+      isPublicAgentId(record.agent) &&
       typeof record.name === 'string' &&
-      logicalName.test(record.name) &&
-      !record.agent.includes('..') &&
-      !record.name.includes('..') &&
+      isPublicCapabilityName(record.name) &&
       (record.rolledBackFrom === undefined || publicAuditId(record.rolledBackFrom) !== undefined) &&
       (record.scope === undefined ||
         record.scope === 'user' ||
@@ -253,6 +271,10 @@ export async function apiActivity(fleetHome?: string): Promise<ActivityResponse>
   const rolledBackIds = new Set(
     core.map((record) => record.rolledBackFrom).filter((id): id is string => typeof id === 'string'),
   );
+  // Compute eligibility from the complete verified core history, not only the
+  // public subset. A withheld newer record must still prevent an older backup
+  // from being advertised as safe to restore.
+  const rollbackEligibleIds = rollbackEligibleAuditIds(rawCore);
   const items = [
     ...core.map((record) =>
       mapCoreActivity(
@@ -260,17 +282,32 @@ export async function apiActivity(fleetHome?: string): Promise<ActivityResponse>
           id: publicAuditId(record.id)!,
           ts: record.ts,
           op: record.op,
+          kind:
+            record.kind === 'skill' || record.isDir
+              ? 'skill'
+              : record.kind === 'rule'
+                ? 'rule'
+                : 'mcp-server',
           agent: record.agent,
           name: record.name,
           scope: record.scope,
+          trust: record.trust,
         },
         rolledBackIds.has(record.id),
-        record.id === publicAuditId(record.id) && record.op !== 'rollback' && !rolledBackIds.has(record.id),
+        coreResult.status === 'available' &&
+          record.id === publicAuditId(record.id) &&
+          record.op !== 'rollback' &&
+          !rolledBackIds.has(record.id) &&
+          rollbackEligibleIds.has(record.id),
       ),
     ),
     ...delegated.map((record) => mapDelegatedActivity(record)),
   ]
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20);
-  return { items, delegatedActions: { status: delegatedResult.status } };
+  return {
+    items,
+    coreActions: { status: coreResult.status, withheldCount: rawCore.length - core.length },
+    delegatedActions: { status: delegatedResult.status },
+  };
 }

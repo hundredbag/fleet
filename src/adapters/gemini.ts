@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { AgentAdapter, AgentWriter, CapabilityRef, RenderResult } from '../core/adapter.js';
 import type { DetectedAgent, InstalledCapability, McpServerSpec } from '../core/types.js';
-import { asStringArray, asStringRecord } from '../core/coerce.js';
+import { probeConfigurationPaths, probeExecutable } from '../core/detection.js';
+import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
 import {
   loadJsonDoc,
   getServers,
@@ -13,9 +14,56 @@ import {
   mergePreservingUnmanaged,
   MANAGED_JSON_KEYS,
 } from '../core/json-config.js';
+import { assertWritableScope } from '../core/scope.js';
 
 const GEMINI_LABEL = 'gemini';
 const DEFAULT_GEMINI_JSON = join(homedir(), '.gemini', 'settings.json');
+
+function isStringRecord(value: unknown): boolean {
+  return isPlainObject(value) && Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function assertGeminiMcpEntry(value: unknown): asserts value is Record<string, unknown> {
+  if (!isPlainObject(value)) throw new Error('gemini: MCP server entry is not an object');
+  const transportFields = [value.httpUrl, value.url, value.command].filter(
+    (entry) => entry !== undefined,
+  ).length;
+  if (transportFields !== 1) throw new Error('gemini: MCP transport is ambiguous or missing');
+  if (value.httpUrl !== undefined) {
+    if (typeof value.httpUrl !== 'string' || value.httpUrl.length === 0) {
+      throw new Error('gemini: MCP httpUrl is invalid');
+    }
+  } else if (value.url !== undefined) {
+    if (typeof value.url !== 'string' || value.url.length === 0) {
+      throw new Error('gemini: MCP url is invalid');
+    }
+  } else if (typeof value.command !== 'string' || value.command.length === 0) {
+    throw new Error('gemini: stdio MCP server entry has no command');
+  }
+  if (
+    value.args !== undefined &&
+    (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === 'string'))
+  ) {
+    throw new Error('gemini: MCP args are invalid');
+  }
+  if (value.env !== undefined && !isStringRecord(value.env)) {
+    throw new Error('gemini: MCP environment is invalid');
+  }
+  if (value.headers !== undefined && !isStringRecord(value.headers)) {
+    throw new Error('gemini: MCP headers are invalid');
+  }
+  if (value.httpUrl !== undefined || value.url !== undefined) {
+    if (value.args !== undefined || value.env !== undefined) {
+      throw new Error('gemini: remote MCP server entry contains stdio fields');
+    }
+  } else if (value.headers !== undefined) {
+    throw new Error('gemini: stdio MCP server entry contains remote fields');
+  }
+}
+
+function assertGeminiMcpServers(servers: Record<string, unknown>): void {
+  for (const entry of Object.values(servers)) assertGeminiMcpEntry(entry);
+}
 
 /** Recover a normalized `bearerTokenEnvVar` from a `Bearer $VAR` header. */
 function recoverBearer(headers: Record<string, string> | undefined): {
@@ -84,6 +132,7 @@ function toGeminiEntry(spec: McpServerSpec, warnings: string[]): Record<string, 
 }
 
 export class GeminiAdapter implements AgentAdapter, AgentWriter {
+  readonly contractVersion = 1;
   readonly id = 'gemini';
   readonly displayName = 'Gemini CLI';
   readonly supportsWrite = true;
@@ -98,50 +147,62 @@ export class GeminiAdapter implements AgentAdapter, AgentWriter {
     subagent: { inventory: 'unsupported', management: 'none' },
   } as const;
 
-  constructor(private readonly settingsPath: string = DEFAULT_GEMINI_JSON) {}
+  constructor(
+    private readonly settingsPath: string = DEFAULT_GEMINI_JSON,
+    private readonly executable: string = 'gemini',
+  ) {}
 
   async detect(): Promise<DetectedAgent> {
-    const present = existsSync(this.settingsPath);
+    const configuration = await probeConfigurationPaths([{ path: this.settingsPath, kind: 'file' }]);
     return {
       id: this.id,
       displayName: this.displayName,
-      present,
+      present: configuration.present,
       configPaths: [this.settingsPath],
-      note: present ? undefined : 'not configured on this machine',
+      runtimeStatus: await probeExecutable(this.executable),
+      configurationStatus: configuration.status,
+      note: configuration.note ?? (configuration.present ? undefined : 'not configured on this machine'),
     };
   }
 
   async readInventory(): Promise<InstalledCapability[]> {
     if (!existsSync(this.settingsPath)) return [];
-    let data: { mcpServers?: Record<string, unknown> };
+    let data: Record<string, unknown>;
     try {
-      data = JSON.parse(await readFile(this.settingsPath, 'utf8'));
+      const parsed: unknown = JSON.parse(await readFile(this.settingsPath, 'utf8'));
+      if (!isPlainObject(parsed)) throw new Error('root is not an object');
+      data = parsed;
     } catch {
       throw new Error(`gemini: ${this.settingsPath} is not valid JSON`);
     }
+    if (data.mcpServers !== undefined && !isPlainObject(data.mcpServers)) {
+      throw new Error('gemini: mcpServers is not an object');
+    }
     // Gemini has no per-server disable flag → enabled is always true.
-    return Object.entries(data.mcpServers ?? {}).map(([name, raw]) => ({
-      kind: 'mcp-server' as const,
-      name,
-      agent: this.id,
-      scope: 'user' as const,
-      enabled: true,
-      spec: parseGeminiEntry(raw),
-      source: { file: this.settingsPath },
-      raw,
-    }));
+    return Object.entries(data.mcpServers ?? {}).map(([name, raw]) => {
+      assertGeminiMcpEntry(raw);
+      return {
+        kind: 'mcp-server' as const,
+        name,
+        agent: this.id,
+        scope: 'user' as const,
+        enabled: true,
+        spec: parseGeminiEntry(raw),
+        source: { file: this.settingsPath },
+        raw,
+      };
+    });
   }
 
   // --- AgentWriter (JSON) ---
 
   async renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     const warnings: string[] = [];
-    if (ref.scope !== 'user') {
-      warnings.push(`gemini: only 'user' scope is supported in M2 (got '${ref.scope}')`);
-    }
     const entry = toGeminiEntry(spec, warnings); // may throw for unsupported transport
     const { doc, text } = await loadJsonDoc(this.settingsPath, GEMINI_LABEL);
     const servers = getServers(doc, this.settingsPath, GEMINI_LABEL);
+    assertGeminiMcpServers(servers);
     const before = servers[ref.name];
     const after = mergePreservingUnmanaged(before, entry, MANAGED_JSON_KEYS);
     doc.mcpServers = { ...servers, [ref.name]: after };
@@ -149,11 +210,13 @@ export class GeminiAdapter implements AgentAdapter, AgentWriter {
   }
 
   async renderRemove(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     if (!existsSync(this.settingsPath)) {
       throw new Error(`gemini: nothing to remove — config not found at ${this.settingsPath}`);
     }
     const { doc, text } = await loadJsonDoc(this.settingsPath, GEMINI_LABEL);
     const servers = getServers(doc, this.settingsPath, GEMINI_LABEL);
+    assertGeminiMcpServers(servers);
     const before = servers[ref.name];
     const warnings: string[] = [];
     if (before === undefined) warnings.push(`gemini: "${ref.name}" is not installed`);
@@ -165,5 +228,8 @@ export class GeminiAdapter implements AgentAdapter, AgentWriter {
 
   validate(content: string): void {
     validateJsonObject(content, GEMINI_LABEL);
+    const doc = JSON.parse(content) as Record<string, unknown>;
+    const servers = getServers(doc, this.settingsPath, GEMINI_LABEL);
+    assertGeminiMcpServers(servers);
   }
 }

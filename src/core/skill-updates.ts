@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import type { Inventory, SkillCapability } from './types.js';
 import { readLock } from './lock.js';
-import { hashDir } from './fsutil.js';
+import { hashDir, hashDirLegacy, hashMaterializedDir } from './fsutil.js';
 
 /**
  * Skill update detection from PROVENANCE (the mattpocock/skills #196 answer:
@@ -35,15 +36,20 @@ export async function skillUpdatesFromLock(inv: Inventory, fleetHome?: string): 
   const originHashMemo = new Map<string, string | undefined>(); // fan-out installs share origins
   for (const e of Object.values(lock.entries)) {
     if (e.kind !== 'skill' || e.origin.type !== 'dir' || !e.contentHash) continue;
+    if (e.hashScheme !== 'canonical-v1' && e.hashScheme !== 'canonical-v2') continue;
     if (!existsSync(e.origin.path)) continue; // origin gone — nothing to compare
-    let originNow = originHashMemo.get(e.origin.path);
-    if (!originHashMemo.has(e.origin.path)) {
+    const originMemoKey = JSON.stringify([e.origin.path, e.hashScheme]);
+    let originNow = originHashMemo.get(originMemoKey);
+    if (!originHashMemo.has(originMemoKey)) {
       try {
-        originNow = await hashDir(e.origin.path);
+        originNow =
+          e.hashScheme === 'canonical-v1'
+            ? await hashDirLegacy(e.origin.path)
+            : await hashMaterializedDir(e.origin.path);
       } catch {
         originNow = undefined; // unreadable/racing origin — skip THIS entry only
       }
-      originHashMemo.set(e.origin.path, originNow);
+      originHashMemo.set(originMemoKey, originNow);
     }
     if (originNow === undefined || originNow === '' || originNow === e.contentHash) continue;
     let state: SkillUpdate['state'];
@@ -60,13 +66,19 @@ export async function skillUpdatesFromLock(inv: Inventory, fleetHome?: string): 
       if (!live) state = 'update+missing';
       else {
         let liveHash: string | undefined;
+        let liveTopologyChanged = false;
         try {
-          liveHash = await hashDir(live.path);
+          liveTopologyChanged = (await lstat(live.path)).isSymbolicLink();
+          if (!liveTopologyChanged) {
+            liveHash =
+              e.hashScheme === 'canonical-v1' ? await hashDirLegacy(live.path) : await hashDir(live.path);
+          }
         } catch {
           liveHash = undefined;
         }
-        state =
-          liveHash === undefined
+        state = liveTopologyChanged
+          ? 'update+local-edits'
+          : liveHash === undefined
             ? 'update+unverifiable'
             : liveHash !== e.contentHash
               ? 'update+local-edits'

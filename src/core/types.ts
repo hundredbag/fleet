@@ -24,8 +24,8 @@ export type McpServerSpec =
       command: string;
       args?: string[];
       /**
-       * Environment variables. NOTE: values may be secrets. The human matrix
-       * never prints them; `--json` emits them verbatim (see README).
+       * Environment variables. NOTE: values may be secrets. Public inventory
+       * summaries omit this field; raw adapter data stays inside the core.
        */
       env?: Record<string, string>;
     }
@@ -149,16 +149,37 @@ export function surfaceOf(kind: PrimitiveKind): Surface {
 }
 
 /** An agent runtime detected (or not) on this machine. */
+export type AgentRuntimeStatus = 'available' | 'not-found' | 'unverifiable';
+export type AgentConfigurationStatus = 'configured' | 'not-configured' | 'unavailable';
+export type AgentSetupStatus =
+  | 'ready'
+  | 'installed-unconfigured'
+  | 'configured-runtime-missing'
+  | 'configured-runtime-unverifiable'
+  | 'not-detected'
+  | 'detection-unavailable'
+  | 'configuration-unavailable'
+  | 'inventory-unavailable';
+
 export interface DetectedAgent {
   id: AgentId;
   displayName: string;
+  /** Existing compatibility signal: at least one known configuration/capability path exists. */
   present: boolean;
   /** config files/dirs the adapter inspects (shown for transparency) */
   configPaths: string[];
+  /** Optional for BYO adapters; built-ins probe without executing the vendor CLI. */
+  runtimeStatus?: AgentRuntimeStatus;
+  /** Optional for BYO adapters; built-ins classify path topology/readability. */
+  configurationStatus?: AgentConfigurationStatus;
   note?: string;
 }
 
 export interface InventoryAgent extends DetectedAgent {
+  /** Present on snapshots produced by buildInventory(); optional for additive adapter compatibility. */
+  runtimeStatus?: AgentRuntimeStatus;
+  configurationStatus?: AgentConfigurationStatus;
+  setupStatus?: AgentSetupStatus;
   inventoryStatus: 'ok' | 'not-present' | 'detect-failed' | 'read-failed';
 }
 

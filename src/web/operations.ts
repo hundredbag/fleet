@@ -1,5 +1,6 @@
 import type { AgentAdapter } from '../core/adapter.js';
-import type { InventoryAgent, PrimitiveKind } from '../core/types.js';
+import { supportsPluginDelegation } from '../core/delegate.js';
+import type { InventoryAgent, PrimitiveKind, Scope } from '../core/types.js';
 import type { Availability, Management, Operation } from './types.js';
 
 export interface CapabilityCellInput {
@@ -7,6 +8,7 @@ export interface CapabilityCellInput {
   agent: InventoryAgent;
   kind: PrimitiveKind;
   hasInstance: boolean;
+  scope?: Scope;
   hasSourceInstance: boolean;
   delegatedSupported?: boolean;
 }
@@ -31,12 +33,7 @@ function hasWriter(adapter: AgentAdapter, kind: PrimitiveKind): boolean {
 
 /** Delegation is limited to vendor CLIs for which fleet has a validated argv implementation. */
 export function supportsDelegatedPlugin(adapter: AgentAdapter): boolean {
-  const support = adapter.capabilitySupport?.plugin;
-  return (
-    (adapter.id === 'claude-code' || adapter.id === 'codex') &&
-    support?.inventory === 'supported' &&
-    support.management === 'delegated'
-  );
+  return supportsPluginDelegation(adapter);
 }
 
 export function capabilityCell(input: CapabilityCellInput): {
@@ -50,19 +47,52 @@ export function capabilityCell(input: CapabilityCellInput): {
   }
   const support = adapter.capabilitySupport?.[kind];
   if (!support) return { availability: 'unverifiable', management: 'none', operations: [] };
-  if (support.inventory === 'unsupported') {
+  const inventory =
+    support.inventory === 'supported' ||
+    support.inventory === 'unsupported' ||
+    support.inventory === 'unverifiable'
+      ? support.inventory
+      : 'unverifiable';
+  const management: Management = ['writable', 'read-only', 'delegated', 'none'].includes(support.management)
+    ? support.management
+    : 'none';
+  if (inventory === 'unverifiable') {
+    return { availability: 'unverifiable', management, operations: [] };
+  }
+  if (inventory === 'unsupported') {
     return { availability: 'unsupported', management: 'none', operations: [] };
   }
-  if (!agent.present) return { availability: 'unavailable', management: support.management, operations: [] };
-  if (support.management === 'read-only') {
+  const canInitialize =
+    !agent.present &&
+    agent.configurationStatus === 'not-configured' &&
+    agent.runtimeStatus === 'available' &&
+    ((management === 'writable' && hasWriter(adapter, kind)) ||
+      (management === 'delegated' && input.delegatedSupported === true));
+  if (!agent.present && !canInitialize) {
+    return { availability: 'unavailable', management, operations: [] };
+  }
+  if (management === 'read-only') {
     return { availability: hasInstance ? 'installed' : 'missing', management: 'read-only', operations: [] };
   }
-  if (support.management === 'delegated') {
+  // Fleet's delegated vendor argv has no project/local selector. A plugin
+  // reported in either scope is inventory-only; treating it as the default
+  // vendor scope could remove or replace a different installation.
+  if (kind === 'plugin' && hasInstance && input.scope !== 'user') {
+    return { availability: 'installed', management: 'read-only', operations: [] };
+  }
+  if (management === 'delegated') {
     const operations: Operation[] = input.delegatedSupported ? (hasInstance ? ['remove'] : ['install']) : [];
     return { availability: hasInstance ? 'installed' : 'missing', management: 'delegated', operations };
   }
-  if (support.management !== 'writable' || !hasWriter(adapter, kind)) {
+  if (management !== 'writable' || !hasWriter(adapter, kind)) {
     return { availability: hasInstance ? 'installed' : 'missing', management: 'none', operations: [] };
+  }
+  // Current MCP writers render only the user-level config. Project/local
+  // entries are inventory-only: treating the adapter's global writable bit as
+  // authority for those scopes would create a different user entry instead of
+  // updating/removing the selected capability.
+  if (CORE_WRITABLE_KINDS.has(kind) && hasInstance && input.scope && input.scope !== 'user') {
+    return { availability: 'installed', management: 'read-only', operations: [] };
   }
   let operations: Operation[] = [];
   if (kind === 'mcp-server') {

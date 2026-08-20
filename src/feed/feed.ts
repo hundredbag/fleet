@@ -1,6 +1,7 @@
-import type { Inventory } from '../core/types.js';
+import type { Inventory, Scope } from '../core/types.js';
 import type { FeedItem, FeedSource } from './source.js';
 import { extractCoordinate, coordKey } from './coords.js';
+import { cleanPublicSource, sanitizeFeedItems } from './sanitize.js';
 
 /**
  * Client-side discovery. `discover` merges public feed items from sources; the
@@ -12,21 +13,30 @@ export interface DiscoverResult {
   items: FeedItem[];
   /** sources that failed (offline/flaky) — lets the UI distinguish "nothing new"
    * from "couldn't reach the registry" */
-  failures: { source: string; error: string }[];
+  failures: { source: string; code: 'SOURCE_UNAVAILABLE' }[];
+  /** Runtime-invalid or private-coordinate entries withheld at the source boundary. */
+  withheld: number;
 }
 
 /** Merge + de-dupe (ecosystem-aware) feed items across sources. */
 export async function discover(sources: FeedSource[], opts?: { since?: string }): Promise<DiscoverResult> {
   const all: FeedItem[] = [];
-  const failures: { source: string; error: string }[] = [];
+  const failures: DiscoverResult['failures'] = [];
+  let withheld = 0;
   // Fetch sources in parallel; a slow/flaky one shouldn't add its timeout to the total.
   const settled = await Promise.allSettled(sources.map((s) => s.list(opts)));
   settled.forEach((r, i) => {
-    if (r.status === 'fulfilled') all.push(...r.value);
-    else
+    if (r.status === 'fulfilled') {
+      const raw = Array.isArray(r.value) ? r.value : [];
+      const safe = sanitizeFeedItems(raw);
+      withheld += raw.length - safe.length;
+      all.push(...safe);
+    } else
       failures.push({
-        source: sources[i]!.id,
-        error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+        source: cleanPublicSource(sources[i]!.id) ?? 'registry',
+        // Registry exceptions can include response bodies, credentials, and
+        // local proxy details. The failure class is all callers need.
+        code: 'SOURCE_UNAVAILABLE',
       });
   });
   // de-dupe by coordinate, MERGING fields across sources (registry version +
@@ -42,7 +52,7 @@ export async function discover(sources: FeedSource[], opts?: { since?: string })
     const prior = byKey.get(key);
     byKey.set(key, prior ? coalesce(it, prior) : it);
   }
-  return { items: [...byKey.values()], failures };
+  return { items: [...byKey.values()], failures, withheld };
 }
 
 /** Merge `over` onto `base`, but only for fields `over` actually defines
@@ -72,6 +82,7 @@ function cmpSemver(a: string, b: string): number {
 export interface UpdateFinding {
   name: string;
   agent: string;
+  scope: Scope;
   identifier: string;
   ecosystem: string;
   installed: string;
@@ -126,6 +137,7 @@ export function updatesForInventory(inv: Inventory, items: FeedItem[]): UpdatesR
       updates.push({
         name: i.name,
         agent: i.agent,
+        scope: i.scope,
         identifier: coord.id,
         ecosystem: coord.ecosystem,
         installed: coord.version,

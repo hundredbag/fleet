@@ -1,7 +1,17 @@
-import type { DetectedAgent, InstalledCapability, McpServerSpec, PrimitiveKind, Scope } from './types.js';
+import type {
+  DetectedAgent,
+  InstalledCapability,
+  McpServerSpec,
+  PluginCapability,
+  PrimitiveKind,
+  Scope,
+} from './types.js';
+
+/** Machine-readable compatibility boundary for in-process BYO adapters. */
+export const FLEET_ADAPTER_CONTRACT_VERSION = 1 as const;
 
 export interface CapabilitySurface {
-  inventory: 'supported' | 'unsupported';
+  inventory: 'supported' | 'unsupported' | 'unverifiable';
   management: 'writable' | 'read-only' | 'delegated' | 'none';
 }
 
@@ -15,6 +25,8 @@ export interface CapabilitySurface {
  * the safety mechanics (backup, atomic write, validate, audit, rollback).
  */
 export interface AgentAdapter {
+  /** Required on externally loaded adapters; built-ins declare the same contract. */
+  readonly contractVersion?: typeof FLEET_ADAPTER_CONTRACT_VERSION;
   readonly id: string;
   readonly displayName: string;
 
@@ -29,6 +41,17 @@ export interface AgentAdapter {
 
   /** Read all installed capabilities (v1: MCP servers). Pure read. */
   readInventory(): Promise<InstalledCapability[]>;
+
+  /** Optional mutation-grade plugin verifier. Malformed or unreadable vendor
+   * state must reject instead of being reported as an absent plugin. */
+  readPluginInventory?(): Promise<PluginCapability[]>;
+}
+
+/** Authoring type for the currently supported dynamically loaded contract. The
+ * looser base interface remains for additive compatibility inside the core. */
+export interface AgentAdapterV1 extends AgentAdapter {
+  readonly contractVersion: typeof FLEET_ADAPTER_CONTRACT_VERSION;
+  readonly capabilitySupport: Partial<Record<PrimitiveKind, CapabilitySurface>>;
 }
 
 /** Identifies a single capability slot to install/remove on one agent. */

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { AgentAdapter } from '../core/adapter.js';
-import type { McpServerSpec } from '../core/types.js';
+import type { McpServerSpec, Scope } from '../core/types.js';
 import { buildInventory } from '../core/inventory.js';
 import {
   planInstall,
@@ -15,11 +15,28 @@ import {
   type Plan,
 } from '../core/orchestrator.js';
 import { rollback } from '../core/writer.js';
-import { planPluginAction, runDelegated, SELECTOR_RE, type DelegatedPlan } from '../core/delegate.js';
+import { replaceRunnerPackageVersion } from '../core/coords.js';
+import { isPublicAgentId, isPublicCapabilityName } from '../core/redact.js';
+import {
+  DelegatedOutcomeUnknownError,
+  planPluginActions,
+  runDelegated,
+  type DelegatedPlan,
+} from '../core/delegate.js';
+import { pluginCoordinate } from '../core/plugin-coordinate.js';
 import { invalidateInventoryCache } from './api.js';
 import { operationAllowed, supportsDelegatedPlugin } from './operations.js';
-import { mapApply, mapDelegatedApply, mapDelegatedPlan, mapPlan, mapRollback } from './public-mappers.js';
+import {
+  isPublicMutationIdentity,
+  mapApply,
+  mapDelegatedApply,
+  mapDelegatedPlan,
+  mapPlan,
+  mapRollback,
+} from './public-mappers.js';
 import type { Operation, PublicApplyResponse, PublicPlanResponse, PublicRollbackResponse } from './types.js';
+import { assertWritableScope, parseScope, selectScopedCapability } from '../core/scope.js';
+import { assertValidWebPackageCoordinate, type WebPackageCoordinate } from './package-coordinate.js';
 
 /**
  * The dashboard's mutation service: a server-enforced preview→confirm two-step.
@@ -30,32 +47,14 @@ import type { Operation, PublicApplyResponse, PublicPlanResponse, PublicRollback
  * later executes.
  */
 
-interface Coordinate {
-  ecosystem?: string;
-  identifier?: string;
-  version?: string;
-}
-
-// Conservative grammars: reject whitespace, leading '-', ':' (git specs), '/'
-// (paths/urls beyond an npm scope), and anything not a plain package name.
-const NPM_NAME = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
-const PYPI_NAME = /^[a-z0-9][a-z0-9._-]*$/i;
-const VERSION = /^[a-z0-9][a-z0-9.+-]*$/i;
-
 function validateVersion(v: string | undefined): void {
-  if (v !== undefined && v !== '' && !VERSION.test(v)) throw new Error(`refusing unsafe version '${v}'`);
+  if (v !== undefined && v !== '' && !/^[a-z0-9][a-z0-9.+-]*$/i.test(v)) {
+    throw new Error(`refusing unsafe version '${v}'`);
+  }
 }
 
-function validateCoordinate(c: Coordinate | undefined): asserts c is Coordinate & { identifier: string } {
-  if (!c || !c.identifier) throw new Error('install requires a package coordinate');
-  const id = c.identifier;
-  const ok = c.ecosystem === 'npm' ? NPM_NAME.test(id) : c.ecosystem === 'pypi' ? PYPI_NAME.test(id) : false;
-  if (!ok) throw new Error(`refusing unsafe package identifier '${id}' (ecosystem '${c.ecosystem ?? '?'}')`);
-  validateVersion(c.version);
-}
-
-function specFromCoordinate(c: Coordinate | undefined): McpServerSpec {
-  validateCoordinate(c);
+function specFromCoordinate(c: WebPackageCoordinate | undefined): McpServerSpec {
+  assertValidWebPackageCoordinate(c);
   const pkg = c.version ? `${c.identifier}@${c.version}` : c.identifier;
   if (c.ecosystem === 'npm') return { transport: 'stdio', command: 'npx', args: ['-y', pkg] };
   return { transport: 'stdio', command: 'uvx', args: [pkg] };
@@ -67,14 +66,9 @@ function bumpVersion(spec: McpServerSpec, version: string): McpServerSpec {
     throw new Error('only stdio (npx/uvx) servers can be version-updated from the dashboard');
   }
   validateVersion(version);
-  const args = [...(spec.args ?? [])];
-  const idx = args.findIndex((a) => !a.startsWith('-') && a !== 'run');
-  if (idx < 0) throw new Error('could not locate the package argument to update');
-  const cur = args[idx]!;
-  const at = cur.lastIndexOf('@');
-  const base = at > 0 ? cur.slice(0, at) : cur;
-  args[idx] = version ? `${base}@${version}` : base;
-  return { ...spec, args }; // preserves command, env, other args
+  const updated = replaceRunnerPackageVersion(spec, version);
+  if (!updated) throw new Error('could not locate a valid package argument to update');
+  return updated;
 }
 
 export interface ActionBody {
@@ -84,7 +78,10 @@ export interface ActionBody {
   name?: string;
   to?: unknown;
   from?: unknown;
-  coordinate?: Coordinate;
+  /** Exact target/source scope for scoped MCP inventory operations. */
+  scope?: unknown;
+  fromScope?: unknown;
+  coordinate?: WebPackageCoordinate;
   /** for plugin sync: the source marketplace (selector = name@marketplace) */
   marketplace?: string;
   planId?: string;
@@ -123,27 +120,36 @@ export class ActionService {
 
     // plugins live outside the core write engine — a delegated vendor-CLI action
     if (kind === 'plugin') return this.planPlugin(body, name);
+    if (!isPublicCapabilityName(name)) throw new Error('refusing non-public capability identity');
     const coreKind = kind as 'mcp-server' | 'skill' | 'rule';
 
     let plan: Plan;
     switch (body.action) {
       case 'install': {
+        if (kind !== 'mcp-server') {
+          throw new Error(`${kind} install requires its dedicated local source input`);
+        }
         const spec = specFromCoordinate(body.coordinate);
         const targets = await resolveTargets(this.adapters, toTargets(body.to), coreKind);
-        await this.assertAllowed(kind, name, 'install', targets);
+        await this.assertAllowed(kind, name, 'install', targets, { targetScope: 'user' });
         plan = await planInstall(this.adapters, spec, name, 'user', targets, { fleetHome: this.fleetHome });
         break;
       }
       case 'update': {
+        if (kind !== 'mcp-server') throw new Error(`${kind} update is not supported by this endpoint`);
         const agent = toTargets(body.to);
-        const existing = (await buildInventory(this.adapters)).items.find(
-          (i) => i.kind === 'mcp-server' && i.name === name && i.agent === agent,
-        );
+        const requestedScope = parseScope(body.scope);
+        const existing = selectScopedCapability((await buildInventory(this.adapters)).items, {
+          agent,
+          kind: 'mcp-server',
+          name,
+          ...(requestedScope ? { scope: requestedScope } : {}),
+        });
         if (!existing || existing.kind !== 'mcp-server')
           throw new Error(`'${name}' is not an installed MCP server on ${agent}`);
         const spec = bumpVersion(existing.spec, String(body.coordinate?.version ?? ''));
         const targets = await resolveTargets(this.adapters, agent, coreKind);
-        await this.assertAllowed(kind, name, 'update', targets);
+        await this.assertAllowed(kind, name, 'update', targets, { targetScope: existing.scope });
         plan = await planInstall(this.adapters, spec, name, existing.scope, targets, {
           fleetHome: this.fleetHome,
         });
@@ -153,28 +159,45 @@ export class ActionService {
         // "install what claude has onto codex too" — kind-routed cross-agent copy
         const targets = await resolveTargets(this.adapters, toTargets(body.to), coreKind);
         const from = String(body.from ?? '');
-        await this.assertAllowed(kind, name, 'sync', targets, from);
+        if (!isPublicAgentId(from)) throw new Error('refusing non-public source agent identity');
+        const sourceScope = parseScope(body.fromScope, 'fromScope');
+        await this.assertAllowed(kind, name, 'sync', targets, {
+          targetScope: kind === 'mcp-server' ? 'user' : undefined,
+          sourceAgent: from,
+          sourceScope,
+        });
         plan =
           kind === 'skill'
-            ? await planSyncSkill(this.adapters, name, from, targets)
+            ? await planSyncSkill(this.adapters, name, from, targets, {
+                fleetHome: this.fleetHome,
+                sourceScope,
+              })
             : kind === 'rule'
-              ? await planSyncRule(this.adapters, name, from, targets)
-              : await planSync(this.adapters, name, from, targets);
+              ? await planSyncRule(this.adapters, name, from, targets, { sourceScope })
+              : await planSync(this.adapters, name, from, targets, {
+                  fleetHome: this.fleetHome,
+                  sourceScope,
+                });
         break;
       }
       case 'remove': {
+        const targetScope = parseScope(body.scope) ?? 'user';
+        assertWritableScope(targetScope);
         const targets = await resolveTargets(this.adapters, toTargets(body.from), coreKind);
-        await this.assertAllowed(kind, name, 'remove', targets);
+        await this.assertAllowed(kind, name, 'remove', targets, { targetScope });
         plan =
           kind === 'skill'
             ? await planRemoveSkill(this.adapters, name, targets)
             : kind === 'rule'
               ? await planRemoveRule(this.adapters, name, targets)
-              : await planRemove(this.adapters, name, targets);
+              : await planRemove(this.adapters, name, targets, targetScope);
         break;
       }
       default:
         throw new Error(`unknown action '${body.action ?? ''}'`);
+    }
+    if (!plan.changes.every((change) => isPublicMutationIdentity(change))) {
+      throw new Error('refusing a plan with a non-public mutation target');
     }
     const stored = this.store({ type: 'core', plan });
     return mapPlan(
@@ -182,7 +205,6 @@ export class ActionService {
       stored.expiresAt,
       plan,
       this.summary(body.action!, kind, plan.changes.length),
-      body.action,
     );
   }
 
@@ -197,17 +219,36 @@ export class ActionService {
     if (!agent || agent.includes(',') || agent === 'all') {
       throw new Error('plugin actions target exactly one agent');
     }
-    const selector = op === 'install' && body.marketplace ? `${name}@${body.marketplace}` : name;
-    if (!SELECTOR_RE.test(selector) || selector.includes('..')) {
-      throw new Error(`refusing unsafe plugin selector '${selector}'`);
+    const marketplace = typeof body.marketplace === 'string' ? body.marketplace : undefined;
+    const coordinate = pluginCoordinate(name, marketplace);
+    await this.assertAllowed('plugin', coordinate.name, op, [agent], {
+      marketplace: coordinate.marketplace,
+      targetScope: 'user',
+    });
+    const [dplan] = await planPluginActions(this.adapters, agent, op, coordinate.selector);
+    if (!dplan) throw new Error('plugin target is unavailable');
+    const resolvedCoordinate = pluginCoordinate(dplan.selector);
+    if (
+      !isPublicMutationIdentity({
+        agent,
+        kind: 'plugin',
+        name: resolvedCoordinate.name,
+        scope: 'user',
+        op,
+      })
+    ) {
+      throw new Error('refusing a delegated plan with a non-public mutation target');
     }
-    await this.assertAllowed('plugin', name, op, [agent]);
-    const dplan = planPluginAction(agent, op, selector); // validates again at the boundary
     const stored = this.store({ type: 'delegated', dplan });
     return mapDelegatedPlan(
       stored.planId,
       stored.expiresAt,
-      { agent, name, op },
+      {
+        agent,
+        name: resolvedCoordinate.name,
+        marketplace: resolvedCoordinate.marketplace,
+        op,
+      },
       this.summary(op, 'plugin', 1),
     );
   }
@@ -231,13 +272,46 @@ export class ActionService {
     this.plans.delete(planId);
     if (pending.expiresAt < Date.now()) throw new Error('plan expired — preview again before applying');
     if (pending.type === 'delegated') {
-      const r = await runDelegated(pending.dplan, {
-        commit: true,
-        fleetHome: this.fleetHome,
-        runner: this.runner,
-      });
-      invalidateInventoryCache();
-      return mapDelegatedApply(r.status === 'applied', Boolean(r.lockWarning));
+      try {
+        const r = await runDelegated(pending.dplan, {
+          commit: true,
+          fleetHome: this.fleetHome,
+          runner: this.runner,
+        });
+        invalidateInventoryCache();
+        const coordinate = pluginCoordinate(pending.dplan.selector);
+        return mapDelegatedApply(
+          r.status === 'preview' ? 'outcome-unknown' : r.status,
+          Boolean(r.lockWarning),
+          undefined,
+          {
+            agent: pending.dplan.agent,
+            name: coordinate.name,
+            ...(coordinate.marketplace ? { marketplace: coordinate.marketplace } : {}),
+            op: pending.dplan.op,
+            ...(r.ledgerId ? { delegatedId: r.ledgerId } : {}),
+            delegatedRecorded: Boolean(r.ledgerId),
+          },
+        );
+      } catch (error) {
+        invalidateInventoryCache();
+        const coordinate = pluginCoordinate(pending.dplan.selector);
+        return mapDelegatedApply(
+          error instanceof DelegatedOutcomeUnknownError ? 'outcome-unknown' : 'failed',
+          false,
+          error instanceof DelegatedOutcomeUnknownError,
+          {
+            agent: pending.dplan.agent,
+            name: coordinate.name,
+            ...(coordinate.marketplace ? { marketplace: coordinate.marketplace } : {}),
+            op: pending.dplan.op,
+            ...(error instanceof DelegatedOutcomeUnknownError && error.ledgerId
+              ? { delegatedId: error.ledgerId }
+              : {}),
+            delegatedRecorded: false,
+          },
+        );
+      }
     }
     const result = await execute(this.adapters, pending.plan, { commit: true, fleetHome: this.fleetHome });
     invalidateInventoryCache(); // a refresh right after apply must see the new state
@@ -267,16 +341,52 @@ export class ActionService {
     name: string,
     operation: Operation,
     targets: string[],
-    sourceAgent?: string,
+    options: {
+      targetScope?: Scope;
+      sourceAgent?: string;
+      sourceScope?: Scope;
+      marketplace?: string;
+    } = {},
   ): Promise<void> {
     const inventory = await buildInventory(this.adapters);
     const primitive = kind as import('../core/types.js').PrimitiveKind;
-    const hasSourceInstance = inventory.items.some(
-      (item) => item.kind === primitive && item.name === name && (!sourceAgent || item.agent === sourceAgent),
+    const sourceMatches = inventory.items.filter(
+      (item) =>
+        item.kind === primitive &&
+        item.name === name &&
+        (!options.marketplace || (item.kind === 'plugin' && item.marketplace === options.marketplace)) &&
+        (!options.sourceAgent || item.agent === options.sourceAgent) &&
+        (!options.sourceScope || item.scope === options.sourceScope),
     );
+    if (options.sourceAgent && primitive === 'mcp-server') {
+      selectScopedCapability(sourceMatches, {
+        agent: options.sourceAgent,
+        kind: primitive,
+        name,
+        ...(options.sourceScope ? { scope: options.sourceScope } : {}),
+      });
+    }
+    const hasSourceInstance = sourceMatches.length > 0;
     for (const target of targets) {
       const adapter = this.adapters.find((candidate) => candidate.id === target);
       const agent = inventory.agents.find((candidate) => candidate.id === target);
+      const targetMatches = inventory.items.filter(
+        (item) =>
+          item.kind === primitive &&
+          item.name === name &&
+          item.agent === target &&
+          (!options.marketplace || (item.kind === 'plugin' && item.marketplace === options.marketplace)) &&
+          (!options.targetScope || item.scope === options.targetScope),
+      );
+      const instance =
+        primitive === 'mcp-server' || primitive === 'skill' || primitive === 'rule'
+          ? selectScopedCapability(targetMatches, {
+              agent: target,
+              kind: primitive,
+              name,
+              ...(options.targetScope ? { scope: options.targetScope } : {}),
+            })
+          : targetMatches[0];
       if (
         !adapter ||
         !agent ||
@@ -285,9 +395,8 @@ export class ActionService {
             adapter,
             agent,
             kind: primitive,
-            hasInstance: inventory.items.some(
-              (item) => item.kind === primitive && item.name === name && item.agent === target,
-            ),
+            hasInstance: Boolean(instance),
+            ...(instance ? { scope: instance.scope } : {}),
             hasSourceInstance,
             delegatedSupported: primitive === 'plugin' && supportsDelegatedPlugin(adapter),
           },

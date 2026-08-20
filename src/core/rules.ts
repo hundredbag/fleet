@@ -27,15 +27,44 @@ function esc(s: string): string {
 
 /** Global, multiline, line-anchored matcher for every fleet block (name=\1). */
 function allBlocksRe(): RegExp {
-  return /^<!-- fleet:rule:([A-Za-z0-9._-]+) -->[ \t]*\r?\n([\s\S]*?)\r?\n<!-- \/fleet:rule:\1 -->[ \t]*$/gm;
+  return /^<!-- fleet:rule:([A-Za-z0-9._-]+) -->[ \t]*\r?\n([\s\S]*?)\r?\n<!-- \/fleet:rule:\1 -->[ \t]*\r?$/gm;
 }
 
 /** Line-anchored matcher for one named block (no trailing newline consumed). */
 function oneBlockRe(name: string): RegExp {
   return new RegExp(
-    `^<!-- fleet:rule:${esc(name)} -->[ \\t]*\\r?\\n[\\s\\S]*?\\r?\\n<!-- /fleet:rule:${esc(name)} -->[ \\t]*$`,
+    `^<!-- fleet:rule:${esc(name)} -->[ \\t]*\\r?\\n[\\s\\S]*?\\r?\\n<!-- /fleet:rule:${esc(name)} -->[ \\t]*\\r?$`,
     'm',
   );
+}
+
+/** Reject incomplete, nested, mismatched, malformed, or duplicate Fleet-owned
+ * markers. Healthy-empty is reserved for files with no Fleet marker lines. */
+function assertValidRuleBlocks(text: string): void {
+  const openRe = /^<!-- fleet:rule:([A-Za-z0-9._-]+) -->[ \t]*$/;
+  const closeRe = /^<!-- \/fleet:rule:([A-Za-z0-9._-]+) -->[ \t]*$/;
+  const markerRe = /^<!-- \/?fleet:rule:/;
+  const seen = new Set<string>();
+  let active: string | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    if (!markerRe.test(line)) continue;
+    const open = line.match(openRe)?.[1];
+    const close = line.match(closeRe)?.[1];
+    if (open !== undefined) {
+      if (active !== undefined || seen.has(open)) throw new Error('fleet: rule markers are ambiguous');
+      active = open;
+    } else if (close !== undefined) {
+      if (active !== close) throw new Error('fleet: rule markers are mismatched');
+      seen.add(close);
+      active = undefined;
+    } else {
+      throw new Error('fleet: rule marker is malformed');
+    }
+  }
+  if (active !== undefined) throw new Error('fleet: rule marker is incomplete');
+  if (parseRuleBlocks(text).length !== seen.size) {
+    throw new Error('fleet: rule marker structure is invalid');
+  }
 }
 
 export function parseRuleBlocks(text: string): { name: string; body: string }[] {
@@ -98,6 +127,7 @@ export async function readInstructionText(instrPath: string): Promise<string | u
 export async function readRulesInventory(agent: string, instrPath: string): Promise<RuleCapability[]> {
   if (!existsSync(instrPath)) return [];
   const text = await readFile(instrPath, 'utf8');
+  assertValidRuleBlocks(text);
   return parseRuleBlocks(text).map((b) => ({
     kind: 'rule',
     name: b.name,
@@ -124,8 +154,10 @@ export async function renderRuleInstall(
   }
   const exists = existsSync(instrPath);
   const text = exists ? await readFile(instrPath, 'utf8') : '';
+  assertValidRuleBlocks(text);
   const before = parseRuleBlocks(text).find((b) => b.name === ref.name)?.body;
   const newContent = upsertRuleBlock(text, ref.name, body);
+  assertValidRuleBlocks(newContent);
   assertOnlyFleetChanged(text, newContent);
   const warnings: string[] = [];
   if (!exists) warnings.push(`will create a new instruction file at ${instrPath}`);
@@ -149,8 +181,10 @@ export async function renderRuleRemove(instrPath: string, ref: CapabilityRef): P
   }
   const exists = existsSync(instrPath);
   const text = exists ? await readFile(instrPath, 'utf8') : '';
+  assertValidRuleBlocks(text);
   const before = parseRuleBlocks(text).find((b) => b.name === ref.name)?.body;
   const newContent = removeRuleBlock(text, ref.name);
+  assertValidRuleBlocks(newContent);
   assertOnlyFleetChanged(text, newContent);
   return {
     file: instrPath,

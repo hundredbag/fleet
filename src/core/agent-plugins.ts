@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PluginCapability } from './types.js';
+import { pluginCoordinate } from './plugin-coordinate.js';
 
 /**
  * READ-ONLY vendor-plugin readers (shapes verified on a real machine 2026-07-03).
@@ -44,9 +45,41 @@ export async function readClaudePlugins(
   pluginsDir: string,
   settingsPath: string,
 ): Promise<PluginCapability[]> {
-  const settings = (await readJson(settingsPath)) as { enabledPlugins?: Record<string, unknown> } | undefined;
+  return readClaudePluginsInternal(agentId, pluginsDir, settingsPath, false);
+}
+
+/** Mutation-grade verifier: missing means empty, while unreadable or malformed
+ * vendor settings are never converted into authoritative absence. */
+export async function readClaudePluginsStrict(
+  agentId: string,
+  pluginsDir: string,
+  settingsPath: string,
+): Promise<PluginCapability[]> {
+  return readClaudePluginsInternal(agentId, pluginsDir, settingsPath, true);
+}
+
+async function readClaudePluginsInternal(
+  agentId: string,
+  pluginsDir: string,
+  settingsPath: string,
+  strict: boolean,
+): Promise<PluginCapability[]> {
+  let settings: { enabledPlugins?: unknown } | undefined;
+  try {
+    const value: unknown = JSON.parse(await readFile(settingsPath, 'utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid settings');
+    settings = value as { enabledPlugins?: unknown };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (strict) throw new Error('claude-code: plugin settings are unavailable or invalid');
+    return [];
+  }
   const enabled = settings?.enabledPlugins;
-  if (!enabled || typeof enabled !== 'object') return [];
+  if (enabled === undefined) return [];
+  if (!enabled || typeof enabled !== 'object' || Array.isArray(enabled)) {
+    if (strict) throw new Error('claude-code: plugin settings are unavailable or invalid');
+    return [];
+  }
 
   const markets = ((await readJson(join(pluginsDir, 'known_marketplaces.json'))) ?? {}) as Record<
     string,
@@ -55,13 +88,21 @@ export async function readClaudePlugins(
   const descCache = new Map<string, Map<string, string>>();
 
   const out: PluginCapability[] = [];
-  for (const [key, on] of Object.entries(enabled)) {
+  for (const [key, on] of Object.entries(enabled as Record<string, unknown>)) {
+    if (strict && typeof on !== 'boolean') {
+      throw new Error('claude-code: plugin settings are unavailable or invalid');
+    }
     // disabled plugins still SURFACE (matrix shows ✗) — hiding them would break
     // "see everything in one place". Strict: only `true` counts as enabled.
     const isEnabled = on === true;
-    const at = key.lastIndexOf('@');
-    const name = at > 0 ? key.slice(0, at) : key;
-    const marketplace = at > 0 ? key.slice(at + 1) : undefined;
+    let coordinate;
+    try {
+      coordinate = pluginCoordinate(key);
+    } catch {
+      if (strict) throw new Error('claude-code: plugin settings are unavailable or invalid');
+      continue;
+    }
+    const { name, marketplace } = coordinate;
     let description: string | undefined;
     if (marketplace && typeof markets[marketplace]?.installLocation === 'string') {
       if (!descCache.has(marketplace)) {
@@ -87,8 +128,9 @@ export async function readClaudePlugins(
 }
 
 /**
- * Codex: plugins directory scan (guarded — shape not yet verified on a real
- * install; we only report names of plugin-looking subdirectories, never parse).
+ * Legacy/non-authoritative Codex directory probe. Built-in adapters deliberately
+ * do not publish this as installed state: directory presence is not equivalent
+ * to the vendor CLI's installed inventory. Names only; never follows symlinks.
  */
 export async function readCodexPlugins(agentId: string, pluginsDir: string): Promise<PluginCapability[]> {
   if (!existsSync(pluginsDir)) return [];

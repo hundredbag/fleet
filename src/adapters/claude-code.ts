@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type {
   AgentAdapter,
@@ -12,12 +12,12 @@ import type {
   SkillWriter,
 } from '../core/adapter.js';
 import type { DetectedAgent, InstalledCapability, McpServerSpec, Scope } from '../core/types.js';
-import { asStringArray, asStringRecord } from '../core/coerce.js';
+import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
 import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readClaudeSubagents } from '../core/subagents.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
-import { readClaudePermissions } from '../core/permissions.js';
-import { readClaudePlugins } from '../core/agent-plugins.js';
+import { readClaudePermissionsStrict } from '../core/permissions.js';
+import { readClaudePluginsStrict } from '../core/agent-plugins.js';
 import {
   loadJsonDoc,
   getServers,
@@ -26,6 +26,8 @@ import {
   mergePreservingUnmanaged,
   MANAGED_JSON_KEYS,
 } from '../core/json-config.js';
+import { probeConfigurationPaths, probeExecutable } from '../core/detection.js';
+import { assertWritableScope } from '../core/scope.js';
 
 const CLAUDE_LABEL = 'claude-code';
 const DEFAULT_CLAUDE_JSON = join(homedir(), '.claude.json');
@@ -33,6 +35,62 @@ const DEFAULT_CLAUDE_SKILLS = join(homedir(), '.claude', 'skills');
 const DEFAULT_CLAUDE_RULES = join(homedir(), '.claude', 'CLAUDE.md');
 const DEFAULT_CLAUDE_SETTINGS = join(homedir(), '.claude', 'settings.json');
 const DEFAULT_CLAUDE_PLUGINS = join(homedir(), '.claude', 'plugins');
+
+function isStringRecord(value: unknown): boolean {
+  return isPlainObject(value) && Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function assertClaudeMcpEntry(value: unknown): asserts value is Record<string, unknown> {
+  if (!isPlainObject(value)) throw new Error('claude-code: MCP server entry is not an object');
+  const type = value.type;
+  if (
+    type !== undefined &&
+    type !== 'stdio' &&
+    type !== 'http' &&
+    type !== 'sse' &&
+    type !== 'ws' &&
+    type !== 'streamable-http'
+  ) {
+    throw new Error('claude-code: MCP server entry has an invalid transport');
+  }
+  if (type === 'http' || type === 'sse' || type === 'ws' || type === 'streamable-http') {
+    if (typeof value.url !== 'string' || value.url.length === 0) {
+      throw new Error('claude-code: remote MCP server entry has no URL');
+    }
+    if (value.headers !== undefined && !isStringRecord(value.headers)) {
+      throw new Error('claude-code: remote MCP headers are invalid');
+    }
+    if (value.command !== undefined || value.args !== undefined || value.env !== undefined) {
+      throw new Error('claude-code: remote MCP server entry contains stdio fields');
+    }
+    return;
+  }
+  if (typeof value.command !== 'string' || value.command.length === 0) {
+    throw new Error('claude-code: stdio MCP server entry has no command');
+  }
+  if (
+    value.args !== undefined &&
+    (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === 'string'))
+  ) {
+    throw new Error('claude-code: stdio MCP args are invalid');
+  }
+  if (value.env !== undefined && !isStringRecord(value.env)) {
+    throw new Error('claude-code: stdio MCP environment is invalid');
+  }
+  if (value.url !== undefined || value.headers !== undefined) {
+    throw new Error('claude-code: stdio MCP server entry contains remote fields');
+  }
+}
+
+function assertClaudeMcpServers(servers: Record<string, unknown>): void {
+  for (const entry of Object.values(servers)) assertClaudeMcpEntry(entry);
+}
+
+function optionalMcpMap(value: unknown, label: string): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) throw new Error(`claude-code: ${label} is not an object`);
+  return value;
+}
 
 /**
  * Normalize a raw Claude Code MCP server entry into a structured spec.
@@ -73,6 +131,7 @@ function toClaudeEntry(spec: McpServerSpec): Record<string, unknown> {
 }
 
 export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter, RuleWriter {
+  readonly contractVersion = 1;
   readonly id = 'claude-code';
   readonly displayName = 'Claude Code';
   readonly supportsWrite = true;
@@ -93,13 +152,23 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
     private readonly rulesPath: string = DEFAULT_CLAUDE_RULES,
     private readonly settingsPath: string = DEFAULT_CLAUDE_SETTINGS,
     private readonly pluginsDir: string = DEFAULT_CLAUDE_PLUGINS,
+    private readonly executable: string = 'claude',
   ) {}
 
   async detect(): Promise<DetectedAgent> {
+    const agentsDir = join(dirname(this.settingsPath), 'agents');
+    const configuration = await probeConfigurationPaths([
+      { path: this.claudeJsonPath, kind: 'file' },
+      { path: this.skillsDir, kind: 'directory' },
+      { path: this.rulesPath, kind: 'file' },
+      { path: this.settingsPath, kind: 'file' },
+      { path: this.pluginsDir, kind: 'directory' },
+      { path: agentsDir, kind: 'directory' },
+    ]);
     return {
       id: this.id,
       displayName: this.displayName,
-      present: existsSync(this.claudeJsonPath) || existsSync(this.skillsDir) || existsSync(this.settingsPath),
+      present: configuration.present,
       configPaths: [
         this.claudeJsonPath,
         '<project>/.mcp.json',
@@ -107,7 +176,11 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
         this.rulesPath,
         this.settingsPath,
         this.pluginsDir,
+        agentsDir,
       ],
+      runtimeStatus: await probeExecutable(this.executable),
+      configurationStatus: configuration.status,
+      note: configuration.note,
     };
   }
 
@@ -116,6 +189,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
 
     const collect = (servers: Record<string, unknown> | undefined, scope: Scope, file: string) => {
       for (const [name, raw] of Object.entries(servers ?? {})) {
+        assertClaudeMcpEntry(raw);
         items.push({
           kind: 'mcp-server',
           name,
@@ -135,87 +209,116 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
       items.push(
         ...(await readSkillsInventory(this.id, this.skillsDir, {
           allowedRoots: [join(homedir(), '.agents', 'skills')],
+          strict: true,
         })),
       );
       items.push(...(await readRulesInventory(this.id, this.rulesPath)));
-      items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
-      items.push(...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'))));
-      items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
+      items.push(...(await readClaudePermissionsStrict(this.id, this.settingsPath)));
+      items.push(
+        ...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'), {
+          strict: true,
+        })),
+      );
+      items.push(...(await readClaudePluginsStrict(this.id, this.pluginsDir, this.settingsPath)));
       return items;
     }
 
-    let data: {
-      mcpServers?: Record<string, unknown>;
-      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
-    };
+    let data: Record<string, unknown>;
     try {
-      data = JSON.parse(await readFile(this.claudeJsonPath, 'utf8'));
+      const parsed: unknown = JSON.parse(await readFile(this.claudeJsonPath, 'utf8'));
+      if (!isPlainObject(parsed)) throw new Error('root is not an object');
+      data = parsed;
     } catch {
       throw new Error(`claude-code: ${this.claudeJsonPath} is not valid JSON`);
     }
 
-    collect(data.mcpServers, 'user', this.claudeJsonPath);
+    collect(optionalMcpMap(data.mcpServers, 'mcpServers'), 'user', this.claudeJsonPath);
 
     // NOTE: only projects Claude already tracks are discoverable here — a
     // .mcp.json in a never-opened project won't be found (no FS scan in v0).
-    for (const [path, proj] of Object.entries(data.projects ?? {})) {
-      collect(proj?.mcpServers, 'local', `${this.claudeJsonPath} (projects[${path}])`);
+    const projects = optionalMcpMap(data.projects, 'projects');
+    for (const [path, proj] of Object.entries(projects ?? {})) {
+      if (!isPlainObject(proj)) throw new Error('claude-code: project configuration is not an object');
+      collect(
+        optionalMcpMap(proj.mcpServers, 'project mcpServers'),
+        'local',
+        `${this.claudeJsonPath} (projects[${path}])`,
+      );
       const mcpFile = join(path, '.mcp.json');
-      if (existsSync(mcpFile)) {
+      try {
+        const info = await lstat(mcpFile);
+        if (info.isSymbolicLink() || !info.isFile()) {
+          throw new Error('unsafe tracked project MCP topology');
+        }
         try {
-          const pj = JSON.parse(await readFile(mcpFile, 'utf8')) as {
-            mcpServers?: Record<string, unknown>;
-          };
-          collect(pj.mcpServers, 'project', mcpFile);
+          const parsed: unknown = JSON.parse(await readFile(mcpFile, 'utf8'));
+          if (!isPlainObject(parsed)) throw new Error('project root is not an object');
+          collect(optionalMcpMap(parsed.mcpServers, 'project mcpServers'), 'project', mcpFile);
         } catch {
-          /* ignore malformed project .mcp.json */
+          throw new Error(`claude-code: tracked project MCP configuration is unavailable or invalid`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error(`claude-code: tracked project MCP configuration is unavailable or invalid`);
         }
       }
     }
     items.push(
       ...(await readSkillsInventory(this.id, this.skillsDir, {
         allowedRoots: [join(homedir(), '.agents', 'skills')],
+        strict: true,
       })),
     );
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
-    items.push(...(await readClaudePermissions(this.id, this.settingsPath)));
-    items.push(...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'))));
-    items.push(...(await readClaudePlugins(this.id, this.pluginsDir, this.settingsPath)));
+    items.push(...(await readClaudePermissionsStrict(this.id, this.settingsPath)));
+    items.push(
+      ...(await readClaudeSubagents(this.id, join(dirname(this.settingsPath), 'agents'), {
+        strict: true,
+      })),
+    );
+    items.push(...(await readClaudePluginsStrict(this.id, this.pluginsDir, this.settingsPath)));
     return items;
+  }
+
+  readPluginInventory() {
+    return readClaudePluginsStrict(this.id, this.pluginsDir, this.settingsPath);
   }
 
   // --- SkillWriter (directory-shaped) ---
 
-  renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+  async renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderSkillInstall(this.skillsDir, source, ref);
   }
 
-  renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+  async renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderSkillRemove(this.skillsDir, ref);
   }
 
   // --- RuleWriter (managed block in CLAUDE.md) ---
 
-  renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+  async renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderRuleInstall(this.rulesPath, body, ref);
   }
 
-  renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+  async renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderRuleRemove(this.rulesPath, ref);
   }
 
   // --- AgentWriter (M2: user scope only) ---
 
   async renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     const warnings: string[] = [];
-    if (ref.scope !== 'user') {
-      warnings.push(`claude-code: only 'user' scope is supported in M2 (got '${ref.scope}')`);
-    }
     if (spec.transport !== 'stdio' && spec.bearerTokenEnvVar) {
       warnings.push(`claude-code: no native env-var bearer token; set headers manually for "${ref.name}"`);
     }
     const { doc, text } = await loadJsonDoc(this.claudeJsonPath, CLAUDE_LABEL);
     const servers = getServers(doc, this.claudeJsonPath, CLAUDE_LABEL);
+    assertClaudeMcpServers(servers);
     const before = servers[ref.name];
     const after = mergePreservingUnmanaged(before, toClaudeEntry(spec), MANAGED_JSON_KEYS);
     doc.mcpServers = { ...servers, [ref.name]: after };
@@ -225,11 +328,13 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
   }
 
   async renderRemove(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     if (!existsSync(this.claudeJsonPath)) {
       throw new Error(`claude-code: nothing to remove — config not found at ${this.claudeJsonPath}`);
     }
     const { doc, text } = await loadJsonDoc(this.claudeJsonPath, CLAUDE_LABEL);
     const servers = getServers(doc, this.claudeJsonPath, CLAUDE_LABEL);
+    assertClaudeMcpServers(servers);
     const before = servers[ref.name];
     const warnings: string[] = [];
     if (before === undefined) warnings.push(`claude-code: "${ref.name}" is not installed`);
@@ -241,5 +346,7 @@ export class ClaudeCodeAdapter implements AgentAdapter, AgentWriter, SkillWriter
 
   validate(content: string): void {
     validateJsonObject(content, CLAUDE_LABEL);
+    const doc = JSON.parse(content) as Record<string, unknown>;
+    assertClaudeMcpServers(optionalMcpMap(doc.mcpServers, 'mcpServers') ?? {});
   }
 }

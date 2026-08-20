@@ -1,6 +1,6 @@
 import type { Inventory, McpServerCapability, RuleCapability, SkillCapability } from './types.js';
-import { readLock, specHash, lockKey, type LockEntry } from './lock.js';
-import { hashDir } from './fsutil.js';
+import { readLockState, specHash, type LockEntry } from './lock.js';
+import { hashDir, hashDirLegacy } from './fsutil.js';
 import { lstat, readlink } from 'node:fs/promises';
 import { sha256 } from './hash.js';
 
@@ -29,6 +29,7 @@ export interface DriftFinding {
 }
 
 export interface DriftReport {
+  lockStatus: 'available' | 'not-present' | 'unavailable' | 'malformed';
   checked: number;
   findings: DriftFinding[]; // non-intact only
   /** capabilities live on agents but absent from the lock (fleet didn't install them) */
@@ -43,11 +44,15 @@ function liveItemFor(inv: Inventory, e: LockEntry) {
       i.kind === e.kind &&
       i.name === e.name &&
       i.agent === e.agent &&
+      (e.kind !== 'plugin' || !e.marketplace || (i.kind === 'plugin' && i.marketplace === e.marketplace)) &&
       (e.scope === undefined || i.scope === e.scope),
   );
 }
 
-async function currentHash(item: Inventory['items'][number]): Promise<string | undefined> {
+async function currentHash(
+  item: Inventory['items'][number],
+  hashScheme: LockEntry['hashScheme'],
+): Promise<string | undefined> {
   switch (item.kind) {
     case 'skill': {
       // a skill DIR silently replaced by a symlink must not read intact —
@@ -60,7 +65,7 @@ async function currentHash(item: Inventory['items'][number]): Promise<string | u
       } catch {
         /* fall through to hashDir (absent handled by caller) */
       }
-      return hashDir(p);
+      return hashScheme === 'canonical-v1' ? hashDirLegacy(p) : hashDir(p);
     }
     case 'mcp-server':
       return specHash((item as McpServerCapability).spec);
@@ -76,7 +81,11 @@ async function currentHash(item: Inventory['items'][number]): Promise<string | u
  * bring their own inventory (one buildInventory serves doctor + drift + faces).
  */
 export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<DriftReport> {
-  const lock = await readLock(fleetHome);
+  const lockState = await readLockState(fleetHome);
+  if (lockState.status === 'unavailable' || lockState.status === 'malformed') {
+    return { lockStatus: lockState.status, checked: 0, findings: [], unmanaged: [] };
+  }
+  const lock = lockState.lock;
   const entries = Object.values(lock.entries);
   const findings: DriftFinding[] = [];
 
@@ -98,6 +107,16 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
       });
       continue;
     }
+    if (e.kind === 'plugin' && !e.marketplace) {
+      findings.push({
+        kind: e.kind,
+        name: e.name,
+        agent: e.agent,
+        state: 'unverifiable',
+        detail: 'plugin marketplace provenance is unknown',
+      });
+      continue;
+    }
     const live = liveItemFor(inv, e);
     if (!live) {
       findings.push({
@@ -113,7 +132,7 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
       // plugins: presence is all we can verify
       continue;
     }
-    if (e.hashScheme !== 'canonical-v1') {
+    if (e.hashScheme !== 'canonical-v1' && e.hashScheme !== 'canonical-v2') {
       // pre-canonical entries hashed the native rendering — comparing against
       // the normalized live spec would be a GUARANTEED false 'modified'
       findings.push({
@@ -125,7 +144,7 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
       });
       continue;
     }
-    const now = await currentHash(live);
+    const now = await currentHash(live, e.hashScheme);
     if (now === undefined) {
       findings.push({ kind: e.kind, name: e.name, agent: e.agent, state: 'unverifiable' });
     } else if (now !== e.contentHash) {
@@ -144,15 +163,23 @@ export async function detectDrift(inv: Inventory, fleetHome?: string): Promise<D
   // Scope is identity: a user-scope lock entry must NOT mask a same-name
   // project-scope rogue (the SANDWORM shape). Legacy scope-less entries claim
   // all scopes of that name so old installs aren't re-flagged.
-  const keyed = new Set(entries.map((e) => lockKey(e.kind, e.name, e.agent, e.scope ?? '*')));
-  const claimsAny = (i: { kind: string; name: string; agent: string }) =>
-    keyed.has(lockKey(i.kind, i.name, i.agent, '*'));
+  const claimedByLock = (i: Inventory['items'][number]) =>
+    entries.some(
+      (entry) =>
+        entry.kind === i.kind &&
+        entry.name === i.name &&
+        entry.agent === i.agent &&
+        (entry.scope === undefined || entry.scope === i.scope) &&
+        (entry.kind !== 'plugin' ||
+          !entry.marketplace ||
+          (i.kind === 'plugin' && i.marketplace === entry.marketplace)),
+    );
   const unmanaged = inv.items
     .filter(
       (i) => i.kind === 'mcp-server' || i.kind === 'plugin' || i.kind === 'skill' || i.kind === 'subagent',
     ) // skills: injection surface too (noise accepted)
-    .filter((i) => !keyed.has(lockKey(i.kind, i.name, i.agent, i.scope)) && !claimsAny(i))
+    .filter((i) => !claimedByLock(i))
     .map((i) => ({ kind: i.kind, name: i.name, agent: i.agent, scope: i.scope }));
 
-  return { checked: entries.length, findings, unmanaged };
+  return { lockStatus: lockState.status, checked: entries.length, findings, unmanaged };
 }

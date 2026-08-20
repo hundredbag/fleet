@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { parse as parseToml } from 'smol-toml';
@@ -15,15 +15,87 @@ import type {
 import type { DetectedAgent, InstalledCapability, McpServerSpec } from '../core/types.js';
 import { asStringArray, asStringRecord, isPlainObject } from '../core/coerce.js';
 import { sha256 } from '../core/hash.js';
-import { readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
+import { listSkillDirs, readSkillsInventory, renderSkillInstall, renderSkillRemove } from '../core/skills.js';
 import { readRulesInventory, renderRuleInstall, renderRuleRemove } from '../core/rules.js';
-import { readCodexPermissions } from '../core/permissions.js';
-import { readCodexPlugins } from '../core/agent-plugins.js';
+import { readCodexPermissionsStrict } from '../core/permissions.js';
 import { readCodexSubagents } from '../core/subagents.js';
+import { probeConfigurationPaths, probeExecutable } from '../core/detection.js';
+import { assertWritableScope } from '../core/scope.js';
 
 const DEFAULT_CODEX_TOML = join(homedir(), '.codex', 'config.toml');
 const DEFAULT_CODEX_SKILLS = join(homedir(), '.codex', 'skills');
 const DEFAULT_CODEX_RULES = join(homedir(), '.codex', 'AGENTS.md');
+
+function isStringRecord(value: unknown): boolean {
+  return isPlainObject(value) && Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function assertCodexMcpEntry(value: unknown): asserts value is Record<string, unknown> {
+  if (!isPlainObject(value)) throw new Error('codex: MCP server entry is not an object');
+  const nested = value.transport;
+  if (nested !== undefined && !isPlainObject(nested)) {
+    throw new Error('codex: MCP transport is invalid');
+  }
+  if (isPlainObject(nested)) {
+    if (nested.type !== 'streamable_http') {
+      throw new Error('codex: MCP transport type is invalid');
+    }
+    if (typeof nested.url !== 'string' || nested.url.length === 0) {
+      throw new Error('codex: MCP transport URL is invalid');
+    }
+    if (value.url !== undefined) throw new Error('codex: MCP URL is ambiguous');
+  }
+  const url = value.url ?? (isPlainObject(nested) ? nested.url : undefined);
+  if (url !== undefined) {
+    if (typeof url !== 'string' || url.length === 0) throw new Error('codex: MCP URL is invalid');
+    if (value.command !== undefined || value.args !== undefined || value.env !== undefined) {
+      throw new Error('codex: MCP transport is ambiguous');
+    }
+  } else if (typeof value.command !== 'string' || value.command.length === 0) {
+    throw new Error('codex: stdio MCP server entry has no command');
+  } else if (value.http_headers !== undefined || value.bearer_token_env_var !== undefined) {
+    throw new Error('codex: stdio MCP server entry contains remote fields');
+  }
+  if (
+    value.args !== undefined &&
+    (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === 'string'))
+  ) {
+    throw new Error('codex: MCP args are invalid');
+  }
+  if (value.env !== undefined && !isStringRecord(value.env)) {
+    throw new Error('codex: MCP environment is invalid');
+  }
+  if (value.http_headers !== undefined && !isStringRecord(value.http_headers)) {
+    throw new Error('codex: MCP headers are invalid');
+  }
+  if (value.bearer_token_env_var !== undefined && typeof value.bearer_token_env_var !== 'string') {
+    throw new Error('codex: bearer token environment variable is invalid');
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('codex: MCP enabled state is invalid');
+  }
+}
+
+function parseCodexServers(text: string, path: string): Record<string, unknown> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`codex: ${path} is not valid TOML`);
+  }
+  if (parsed.mcp_servers !== undefined && !isPlainObject(parsed.mcp_servers)) {
+    throw new Error('codex: mcp_servers is not an object');
+  }
+  for (const key of ['approval_policy', 'sandbox_mode']) {
+    const value = parsed[key];
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0)) {
+      throw new Error(`codex: ${key} is invalid`);
+    }
+  }
+  const servers = parsed.mcp_servers ?? {};
+  for (const entry of Object.values(servers)) assertCodexMcpEntry(entry);
+  return servers;
+}
 
 /**
  * Codex declares MCP servers under `[mcp_servers.<name>]` in config.toml.
@@ -155,6 +227,7 @@ function findTableBlock(lines: string[], name: string): { start: number; end: nu
 }
 
 export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, RuleWriter {
+  readonly contractVersion = 1;
   readonly id = 'codex';
   readonly displayName = 'OpenAI Codex';
   readonly supportsWrite = true;
@@ -163,7 +236,10 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     skill: { inventory: 'supported', management: 'writable' },
     rule: { inventory: 'supported', management: 'writable' },
     permission: { inventory: 'supported', management: 'read-only' },
-    plugin: { inventory: 'supported', management: 'delegated' },
+    // The current CLI exposes `plugin list --json`, but Fleet has not yet
+    // adopted and contract-tested that schema. A directory-name scan is not
+    // authoritative installed state, so do not advertise or mutate from it.
+    plugin: { inventory: 'unverifiable', management: 'delegated' },
     command: { inventory: 'unsupported', management: 'none' },
     hook: { inventory: 'unsupported', management: 'none' },
     subagent: { inventory: 'supported', management: 'read-only' },
@@ -176,27 +252,47 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     /** the cross-agent shared skills root Codex reads natively (agentskills.io
      * convention; where `npx skills add` installs) */
     private readonly sharedSkillsDir: string = join(homedir(), '.agents', 'skills'),
+    private readonly executable: string = 'codex',
   ) {}
 
   async detect(): Promise<DetectedAgent> {
+    const agentsDir = join(dirname(this.configPath), 'agents');
+    const configuration = await probeConfigurationPaths([
+      { path: this.configPath, kind: 'file' },
+      { path: this.skillsDir, kind: 'directory' },
+      { path: this.rulesPath, kind: 'file' },
+      // A populated native shared root is configuration evidence, but the
+      // conventional directory may exist while containing no Codex capability.
+      { path: this.sharedSkillsDir, kind: 'directory', countsAsPresent: false },
+      { path: agentsDir, kind: 'directory' },
+    ]);
+    let present = configuration.present;
+    let configurationStatus = configuration.status;
+    let note = configuration.note;
+    if (!present && configurationStatus !== 'unavailable') {
+      try {
+        present = (await listSkillDirs(this.sharedSkillsDir, { strict: true })).length > 0;
+        if (present) configurationStatus = 'configured';
+      } catch {
+        configurationStatus = 'unavailable';
+        note = 'the shared skill inventory cannot be inspected';
+      }
+    }
     return {
       id: this.id,
       displayName: this.displayName,
-      present: existsSync(this.configPath) || existsSync(this.skillsDir) || existsSync(this.rulesPath),
-      configPaths: [this.configPath, this.skillsDir, this.rulesPath, this.sharedSkillsDir],
+      present,
+      configPaths: [this.configPath, this.skillsDir, this.rulesPath, this.sharedSkillsDir, agentsDir],
+      runtimeStatus: await probeExecutable(this.executable),
+      configurationStatus,
+      note,
     };
   }
 
   async readInventory(): Promise<InstalledCapability[]> {
     const items: InstalledCapability[] = [];
     if (existsSync(this.configPath)) {
-      let data: { mcp_servers?: unknown };
-      try {
-        data = parseToml(await readFile(this.configPath, 'utf8')) as { mcp_servers?: unknown };
-      } catch {
-        throw new Error(`codex: ${this.configPath} is not valid TOML`);
-      }
-      const servers = isPlainObject(data.mcp_servers) ? data.mcp_servers : {};
+      const servers = parseCodexServers(await readFile(this.configPath, 'utf8'), this.configPath);
       for (const [name, raw] of Object.entries(servers)) {
         const r = (raw ?? {}) as Record<string, unknown>;
         items.push({
@@ -213,6 +309,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
     }
     const ownSkills = await readSkillsInventory(this.id, this.skillsDir, {
       allowedRoots: [this.sharedSkillsDir],
+      strict: true,
     });
     items.push(...ownSkills);
     // shared ~/.agents/skills root (read natively by Codex) — own dir wins on
@@ -227,7 +324,7 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
         /* dangling */
       }
     }
-    const shared = await readSkillsInventory(this.id, this.sharedSkillsDir);
+    const shared = await readSkillsInventory(this.id, this.sharedSkillsDir, { strict: true });
     for (const sk of shared) {
       if (ownNames.has(sk.name)) continue;
       try {
@@ -238,29 +335,34 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
       items.push(sk);
     }
     items.push(...(await readRulesInventory(this.id, this.rulesPath)));
-    items.push(...(await readCodexPermissions(this.id, this.configPath)));
-    items.push(...(await readCodexSubagents(this.id, join(this.configPath, '..', 'agents'))));
-    items.push(...(await readCodexPlugins(this.id, join(this.configPath, '..', 'plugins'))));
+    items.push(...(await readCodexPermissionsStrict(this.id, this.configPath)));
+    items.push(
+      ...(await readCodexSubagents(this.id, join(dirname(this.configPath), 'agents'), { strict: true })),
+    );
     return items;
   }
 
   // --- SkillWriter (directory-shaped) ---
 
-  renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+  async renderInstallSkill(source: SkillSource, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderSkillInstall(this.skillsDir, source, ref);
   }
 
-  renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+  async renderRemoveSkill(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderSkillRemove(this.skillsDir, ref);
   }
 
   // --- RuleWriter (managed block in AGENTS.md) ---
 
-  renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+  async renderInstallRule(body: string, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderRuleInstall(this.rulesPath, body, ref);
   }
 
-  renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+  async renderRemoveRule(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     return renderRuleRemove(this.rulesPath, ref);
   }
 
@@ -279,26 +381,19 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
   }
 
   async renderInstall(spec: McpServerSpec, ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     this.guardTransport(spec);
     const warnings: string[] = [];
-    if (ref.scope !== 'user') {
-      warnings.push(`codex: only 'user' scope is supported in M2 (got '${ref.scope}')`);
-    }
     const text = await this.readText();
 
     // preserve keys fleet doesn't model on the existing server (enabled, cwd, …)
     const extras: Record<string, unknown> = {};
     if (text !== undefined) {
-      try {
-        const parsed = parseToml(text) as { mcp_servers?: unknown };
-        const existing = isPlainObject(parsed.mcp_servers) ? parsed.mcp_servers[ref.name] : undefined;
-        if (isPlainObject(existing)) {
-          for (const [k, v] of Object.entries(existing)) {
-            if (!MANAGED_CODEX.has(k)) extras[k] = v;
-          }
+      const existing = parseCodexServers(text, this.configPath)[ref.name];
+      if (isPlainObject(existing)) {
+        for (const [k, v] of Object.entries(existing)) {
+          if (!MANAGED_CODEX.has(k)) extras[k] = v;
         }
-      } catch {
-        /* unparseable file — the engine refuses on apply; skip extras */
       }
     }
     const block = serializeCodexTable(ref.name, spec, extras);
@@ -338,10 +433,12 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
   }
 
   async renderRemove(ref: CapabilityRef): Promise<RenderResult> {
+    assertWritableScope(ref.scope);
     const text = await this.readText();
     if (text === undefined) {
       throw new Error(`codex: nothing to remove — config not found at ${this.configPath}`);
     }
+    parseCodexServers(text, this.configPath);
     const lines = text.split('\n');
     const range = findTableBlock(lines, ref.name);
     if (!range) {
@@ -365,10 +462,6 @@ export class CodexAdapter implements AgentAdapter, AgentWriter, SkillWriter, Rul
   }
 
   validate(content: string): void {
-    try {
-      parseToml(content);
-    } catch {
-      throw new Error('codex: config is not valid TOML');
-    }
+    parseCodexServers(content, this.configPath);
   }
 }

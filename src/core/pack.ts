@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
 import { readFile, lstat, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { listSkillDirs } from './skills.js';
 import { safeJoin } from './fsutil.js';
 
@@ -43,7 +42,7 @@ const MAX_ITEMS = 200;
 const SAFE_NAME = /^[A-Za-z0-9][\w.-]*(\/[A-Za-z0-9][\w.-]*)*$/;
 
 export async function readPack(dir: string): Promise<Pack> {
-  const manifestPath = join(dir, 'pack.json');
+  const manifestPath = safeJoin(dir, 'pack.json');
   if (existsSync(manifestPath)) {
     if ((await stat(manifestPath)).size > MAX_MANIFEST_BYTES) {
       throw new Error(`fleet: ${manifestPath} exceeds 1 MiB — refusing to parse`);
@@ -59,6 +58,12 @@ export async function readPack(dir: string): Promise<Pack> {
       : [];
     if (skills.length > MAX_ITEMS || (Array.isArray(doc.rules) && doc.rules.length > MAX_ITEMS)) {
       throw new Error(`fleet: ${manifestPath} lists more than ${MAX_ITEMS} items of one kind — refusing`);
+    }
+    for (const name of skills) {
+      const source = safeJoin(dir, name);
+      if (!(await lstat(source)).isDirectory()) {
+        throw new Error(`fleet: pack skill "${name}" is not a contained directory`);
+      }
     }
     const rules: PackRule[] = [];
     if (Array.isArray(doc.rules)) {

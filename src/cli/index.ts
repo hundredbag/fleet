@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { loadAdapters } from '../core/registry.js';
+import type { AdapterLoadDiagnostic } from '../core/plugins.js';
 import { buildInventory } from '../core/inventory.js';
-import { renderInventory } from './render.js';
+import { renderInventory, renderProvenanceWarning } from './render.js';
 import type { AgentAdapter } from '../core/adapter.js';
 import type { McpServerSpec } from '../core/types.js';
 import {
@@ -18,25 +19,36 @@ import {
   resolveTargets,
   type Plan,
 } from '../core/orchestrator.js';
-import { rollback, readAudit } from '../core/writer.js';
+import { rollback } from '../core/writer.js';
+import { assessImplicitRollback } from '../core/rollback-guard.js';
 import { analyzeConflicts } from '../core/conflicts.js';
-import { defaultSources } from '../feed/index.js';
+import { defaultSources, feedSourceEnabled } from '../feed/index.js';
 import { updatesForInventory } from '../feed/feed.js';
 import { cachedDiscover } from '../feed/cache.js';
 import { recommend, diversifyByCategory } from '../feed/recommend.js';
 import { SkillsShSource } from '../feed/sources/skills-sh.js';
 import { startFleetServer } from '../web/server.js';
-import { loadConfig, configPath } from '../core/config.js';
-import { planPluginAction, runDelegated, lastDelegated } from '../core/delegate.js';
-import { redactUrl, summarizeInventory } from '../core/redact.js';
+import {
+  loadConfig,
+  configPath,
+  parseTrustPolicyOverride,
+  readEffectiveConfigState,
+  teamPolicyPath,
+} from '../core/config.js';
+import { planPluginActions, runDelegated } from '../core/delegate.js';
+import { publicErrorMessage, redactUrl, scrubSecrets, summarizeInventory } from '../core/redact.js';
 import { runDoctor } from '../core/doctor.js';
-import { readLock } from '../core/lock.js';
+import { readLockState } from '../core/lock.js';
 import { detectDrift } from '../core/drift.js';
 import { skillUpdatesFromLock } from '../core/skill-updates.js';
-import { exportProfile, readProfile, resolveSecretRefs } from '../core/profile.js';
+import { exportProfile, readProfile } from '../core/profile.js';
+import { prepareProfileDesiredState, refreshProfileDesiredEntry } from '../core/profile-desired.js';
 import { readPack, readPackRuleBody, type RuleVariant } from '../core/pack.js';
+import { safeJoin } from '../core/fsutil.js';
+import { parseScope } from '../core/scope.js';
+import { FleetOperationError } from '../core/errors.js';
 
-const HELP = `fleet — unified cross-agent capability manager (v0)
+const HELP = `fleet — unified cross-agent capability manager
 
 Usage:
   fleet inventory [--json]                 Show installed capabilities (all agents)
@@ -44,32 +56,36 @@ Usage:
   fleet lock [--json]                      Provenance of fleet-installed capabilities
   fleet drift [--json]                     Diff live agent state against fleet.lock (tamper check)
   fleet pack install --from-dir <dir> \\
-    --to <ids|all> [--variant full|mini|nano]  Install a capability pack (skills + variant rules)
-  fleet export --to <dir>                  Portable profile (secret VALUES never written) for dotfiles
-  fleet import --from <dir> [--to ids|all] Plan-install a profile (dry-run; --commit to apply)
+    [--to <ids|all>] [--variant full|mini|nano] [--commit]
+                                           Install a capability pack (dry-run unless --commit)
+  fleet export --to <dir>                  Write a profile immediately; MCP env/header values become refs
+  fleet import --from <dir> [--to ids|all] [--commit]
+                                           Reconcile additive desired state; never prune omitted items
+                                           (dry-run unless --commit)
 
   fleet install <name> --to <ids|all> \\
         (--command <cmd> [--arg <a>]... | --url <url> [--sse] [--bearer-env <VAR>]) \\
         [--scope user] [--commit]          Install an MCP server (dry-run unless --commit)
 
-  fleet sync <name> --from <id> --to <ids|all> [--commit]
+  fleet sync <name> --from <id> [--from-scope user|project|local] --to <ids|all> [--commit]
                                            Copy a server from one agent to others
-  fleet remove <name> --from <ids|all> [--commit]
+  fleet remove <name> --from <ids|all> [--scope user] [--commit]
                                            Remove a server from agents
 
-  fleet skill install <name> --from-dir <path> --to <ids|all> [--commit]
-  fleet skill sync <name> --from <id> --to <ids|all> [--commit]
+  fleet skill install <name> --from-dir <path> --to <ids|all> [--trust warn|block] [--commit]
+  fleet skill sync <name> --from <id> [--from-scope user|project|local] --to <ids|all> [--commit]
   fleet skill remove <name> --from <ids|all> [--commit]
   fleet skill find <query>                 Search the skills.sh registry
 
   fleet plugin install <p[@market]> --to <ids|all> [--commit]
   fleet plugin remove <p[@market]> --from <ids|all> [--commit]
                                            Vendor plugins via the vendor's own CLI
-                                           (claude plugin / codex plugin; dry-run shows
-                                           the exact command; undo = vendor uninstall)
+                                           (currently Claude Code only; dry-run shows
+                                           the exact command; inverse guidance requires
+                                           an inventory-verified state change)
 
   fleet rule install <name> --text <instruction> --to <ids|all> [--commit]
-  fleet rule sync <name> --from <id> --to <ids|all> [--commit]
+  fleet rule sync <name> --from <id> [--from-scope user|project|local] --to <ids|all> [--commit]
   fleet rule remove <name> --from <ids|all> [--commit]
                                            Manage rules (instruction blocks in CLAUDE.md/AGENTS.md)
 
@@ -79,15 +95,17 @@ Usage:
                                              --allow-host <machine>.<tailnet>.ts.net
                                            Direct bind: --host <tailscale-ip> (auto-allows <ip>:<port>).
                                            Never bind 0.0.0.0; never expose via 'tailscale funnel'.
-  fleet config                             Show effective config (~/.fleet/config.json) + its path
+  fleet config                             Show user/team policy states and effective config
   fleet whats-new [--refresh]                          New/updatable capabilities for your agents (heuristic)
   fleet conflicts                          Flag opposing always-on rules (heuristic)
-  fleet rollback [<auditId>]               Undo the last (or a specific) change
+  fleet rollback [<auditId>]               Immediately undo an eligible core change;
+                                           newer delegated state blocks implicit core rollback
   fleet help
 
-Agents: claude-code, codex, gemini. Writes are dry-run by default; pass --commit
-to apply. File changes are backed up and reversible via 'fleet rollback';
-delegated plugin actions are undone via the vendor CLI (fleet prints the command).`;
+Built-in agents: claude-code, codex. Additional agents can be loaded through adapter plugins.
+Capability install/sync/remove, profile import, and pack install are dry-run unless --commit.
+Export writes immediately. Rollback also executes immediately; target an audit id when possible.
+Core-managed file changes use guarded, normally audit-backed rollback; delegated plugin actions use vendor recovery.`;
 
 interface ParsedArgs {
   positionals: string[];
@@ -127,6 +145,7 @@ function str(v: string | boolean | undefined): string | undefined {
 function specFromFlags(p: ParsedArgs): McpServerSpec {
   const command = str(p.flags.command);
   const url = str(p.flags.url);
+  if (command && url) throw new Error('install: provide exactly one of --command or --url');
   if (command) {
     return { transport: 'stdio', command, args: p.args.length ? p.args : undefined };
   }
@@ -156,31 +175,49 @@ function renderPlan(plan: Plan): string {
 
 async function runPlan(adapters: AgentAdapter[], plan: Plan, commit: boolean): Promise<number> {
   process.stdout.write(renderPlan(plan) + '\n');
-  const hasError = plan.skips.some((s) => s.kind === 'error');
-  const noopExit = plan.changes.length === 0 && hasError ? 1 : 0;
+  // A plan can legitimately apply to one target while another target is
+  // blocked. Exit non-zero for every error/protected skip so CLI automation
+  // never mistakes a partial desired state or policy refusal for full success.
+  const planExit = plan.skips.some((skip) => skip.kind === 'error' || skip.kind === 'protected') ? 1 : 0;
   if (!commit) {
     if (plan.changes.length > 0) {
       process.stdout.write('\n(dry-run; re-run with --commit to apply)\n');
     }
-    return noopExit;
+    return planExit;
   }
   const result = await execute(adapters, plan, { commit: true });
   if (result.error) {
-    if (result.applied.length > 0) {
+    if (result.recoveryPending) {
       process.stdout.write(
-        `\n⚠ applied ${result.applied.length} change(s) before failing; later agents were NOT changed.\n` +
-          `  undo the applied ones with: fleet rollback (run ${result.applied.length}×)\n`,
+        '\n⚠ outcome unknown: Fleet preserved recovery state but could not restore the original pathname.\n' +
+          '  Do not retry or run another mutation. Inspect fleet doctor, the reported recovery path, and the target first.\n',
       );
+    }
+    if (result.applied.length > 0) {
+      const recorded = result.applied.filter((item) => item.auditRecorded);
+      const unrecorded = result.applied.length - recorded.length;
+      process.stdout.write(`\n⚠ applied ${result.applied.length} change(s) before failing.\n`);
+      if (recorded.length > 0) {
+        process.stdout.write('  audit-recorded changes can be targeted explicitly:\n');
+        for (const item of recorded) process.stdout.write(`    fleet rollback ${item.auditId}\n`);
+      }
+      if (unrecorded > 0) {
+        process.stdout.write(
+          `  manual recovery required for ${unrecorded} unrecorded change(s); ` +
+            'do not use implicit fleet rollback for them. Inspect the error and backup location below.\n',
+        );
+      }
+      process.stdout.write('  later agents were NOT changed.\n');
     }
     throw new Error(result.error);
   }
   if (result.lockWarning) {
-    process.stdout.write(`\n⚠ ${result.lockWarning}\n`);
+    process.stdout.write(`\n${renderProvenanceWarning(true)}`);
   }
   if (result.applied.length > 0) {
     process.stdout.write(`\n✓ applied ${result.applied.length} change(s). Undo with: fleet rollback\n`);
   }
-  return noopExit;
+  return planExit;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -190,7 +227,10 @@ async function main(argv: string[]): Promise<number> {
   const p = parseArgs(rest);
   // Don't load (and thus execute) plugin adapters for commands that don't need them.
   const needsAdapters = !['config', 'help', '-h', '--help', 'rollback'].includes(cmd);
-  const adapters = needsAdapters ? await loadAdapters() : [];
+  const adapterLoadDiagnostics: AdapterLoadDiagnostic[] = [];
+  const adapters = needsAdapters
+    ? await loadAdapters(undefined, undefined, (diagnostic) => adapterLoadDiagnostics.push(diagnostic))
+    : [];
   const commit = p.flags.commit === true || p.flags.commit === 'true';
 
   switch (cmd) {
@@ -210,7 +250,8 @@ async function main(argv: string[]): Promise<number> {
       if (!name || !to) throw new Error('usage: fleet install <name> --to <ids|all> (--command … | --url …)');
       const spec = specFromFlags(p);
       const scope = str(p.flags.scope) ?? 'user';
-      if (scope !== 'user') throw new Error(`scope '${scope}' is not supported in M2 (only 'user')`);
+      if (scope !== 'user')
+        throw new Error(`scope '${scope}' is not writable; only 'user' is currently supported`);
       const targets = await resolveTargets(adapters, to);
       return runPlan(adapters, await planInstall(adapters, spec, name, scope, targets), commit);
     }
@@ -220,14 +261,24 @@ async function main(argv: string[]): Promise<number> {
       const to = str(p.flags.to);
       if (!name || !from || !to) throw new Error('usage: fleet sync <name> --from <id> --to <ids|all>');
       const targets = await resolveTargets(adapters, to);
-      return runPlan(adapters, await planSync(adapters, name, from, targets), commit);
+      return runPlan(
+        adapters,
+        await planSync(adapters, name, from, targets, {
+          sourceScope: parseScope(str(p.flags['from-scope']), 'from-scope'),
+        }),
+        commit,
+      );
     }
     case 'remove': {
       const name = p.positionals[0];
       const from = str(p.flags.from);
       if (!name || !from) throw new Error('usage: fleet remove <name> --from <ids|all>');
       const targets = await resolveTargets(adapters, from);
-      return runPlan(adapters, await planRemove(adapters, name, targets), commit);
+      return runPlan(
+        adapters,
+        await planRemove(adapters, name, targets, parseScope(str(p.flags.scope)) ?? 'user'),
+        commit,
+      );
     }
     case 'skill': {
       const sub = p.positionals[0];
@@ -238,12 +289,11 @@ async function main(argv: string[]): Promise<number> {
         if (!name || !fromDir || !to) {
           throw new Error('usage: fleet skill install <name> --from-dir <path> --to <ids|all>');
         }
-        const targets = await resolveTargets(adapters, to);
+        const targets = await resolveTargets(adapters, to, 'skill');
         return runPlan(
           adapters,
           await planInstallSkill(adapters, { name, dir: fromDir }, name, targets, {
-            trustPolicy:
-              str(p.flags.trust) === 'block' ? 'block' : str(p.flags.trust) === 'warn' ? 'warn' : undefined,
+            trustPolicy: parseTrustPolicyOverride(p.flags.trust),
           }),
           commit,
         );
@@ -254,18 +304,27 @@ async function main(argv: string[]): Promise<number> {
         if (!name || !from || !to) {
           throw new Error('usage: fleet skill sync <name> --from <agent> --to <ids|all>');
         }
-        const targets = await resolveTargets(adapters, to);
-        return runPlan(adapters, await planSyncSkill(adapters, name, from, targets), commit);
+        const targets = await resolveTargets(adapters, to, 'skill');
+        return runPlan(
+          adapters,
+          await planSyncSkill(adapters, name, from, targets, {
+            sourceScope: parseScope(str(p.flags['from-scope']), 'from-scope'),
+          }),
+          commit,
+        );
       }
       if (sub === 'remove') {
         const from = str(p.flags.from);
         if (!name || !from) throw new Error('usage: fleet skill remove <name> --from <ids|all>');
-        const targets = await resolveTargets(adapters, from);
+        const targets = await resolveTargets(adapters, from, 'skill');
         return runPlan(adapters, await planRemoveSkill(adapters, name, targets), commit);
       }
       if (sub === 'find') {
         const query = p.positionals.slice(1).join(' ').trim();
         if (query.length < 2) throw new Error('usage: fleet skill find <query>  (2+ chars)');
+        if (!feedSourceEnabled(loadConfig(), 'skills.sh')) {
+          throw new FleetOperationError('TARGET_UNAVAILABLE', 'feed source unavailable: skills.sh');
+        }
         const found = await new SkillsShSource().search(query);
         if (found.length === 0) {
           process.stdout.write('No skills found (skills.sh).\n');
@@ -295,7 +354,7 @@ async function main(argv: string[]): Promise<number> {
         if (!name || text === undefined || !to) {
           throw new Error('usage: fleet rule install <name> --text <instruction> --to <ids|all>');
         }
-        const targets = await resolveTargets(adapters, to);
+        const targets = await resolveTargets(adapters, to, 'rule');
         return runPlan(adapters, await planInstallRule(adapters, name, text, targets), commit);
       }
       if (sub === 'sync') {
@@ -304,13 +363,19 @@ async function main(argv: string[]): Promise<number> {
         if (!name || !from || !to) {
           throw new Error('usage: fleet rule sync <name> --from <agent> --to <ids|all>');
         }
-        const targets = await resolveTargets(adapters, to);
-        return runPlan(adapters, await planSyncRule(adapters, name, from, targets), commit);
+        const targets = await resolveTargets(adapters, to, 'rule');
+        return runPlan(
+          adapters,
+          await planSyncRule(adapters, name, from, targets, {
+            sourceScope: parseScope(str(p.flags['from-scope']), 'from-scope'),
+          }),
+          commit,
+        );
       }
       if (sub === 'remove') {
         const from = str(p.flags.from);
         if (!name || !from) throw new Error('usage: fleet rule remove <name> --from <ids|all>');
-        const targets = await resolveTargets(adapters, from);
+        const targets = await resolveTargets(adapters, from, 'rule');
         return runPlan(adapters, await planRemoveRule(adapters, name, targets), commit);
       }
       throw new Error('usage: fleet rule <install|sync|remove> …');
@@ -324,24 +389,45 @@ async function main(argv: string[]): Promise<number> {
         );
       }
       const to = str(p.flags.to) ?? str(p.flags.from); // remove reads --from like its siblings
-      if (!to) throw new Error('usage: fleet plugin … --to <ids|all>');
-      const targets = await resolveTargets(adapters, to);
+      if (!to) {
+        throw new Error(
+          sub === 'install'
+            ? 'usage: fleet plugin install <plugin[@marketplace]> --to <ids|all>'
+            : 'usage: fleet plugin remove <plugin[@marketplace]> --from <ids|all>',
+        );
+      }
+      // Resolve and validate every delegated target before the first vendor
+      // command runs; a late unsupported target must not create a partial apply.
+      const plans = await planPluginActions(adapters, to, sub, selector);
       let failed = false;
-      for (const agent of targets) {
+      for (const plan of plans) {
+        const agent = plan.agent;
         // per-agent isolation: one agent failing (e.g. codex not installed) must
         // not hide what already ran on the others
         try {
-          const res = await runDelegated(planPluginAction(agent, sub, selector), { commit });
+          const res = await runDelegated(plan, { commit });
           if (res.status === 'preview') {
             process.stdout.write(`  → [${agent}] would run: ${res.command}\n`);
             if (res.undoCommand) process.stdout.write(`      undo: ${res.undoCommand}\n`);
           } else {
+            const glyph =
+              res.status === 'applied'
+                ? '✓'
+                : res.status === 'nothing-to-do'
+                  ? '·'
+                  : res.status === 'failed'
+                    ? '✗'
+                    : '?';
             process.stdout.write(
-              `  ${res.status === 'applied' ? '✓' : '✗'} [${agent}] ${res.command} (exit ${res.exitCode})\n`,
+              `  ${glyph} [${agent}] ${res.command}${res.exitCode === undefined ? '' : ` (exit ${res.exitCode})`}\n`,
             );
-            if (res.status === 'failed') {
+            process.stdout.write(renderProvenanceWarning(Boolean(res.lockWarning)));
+            if (res.status === 'failed' || res.status === 'outcome-unknown') {
               failed = true;
-              process.stdout.write(`${res.outputTail ?? ''}\n`);
+              if (res.outputTail) process.stdout.write(`${res.outputTail}\n`);
+              if (res.status === 'outcome-unknown') {
+                process.stdout.write('      outcome could not be verified; inspect vendor plugin state.\n');
+              }
             }
           }
         } catch (e) {
@@ -445,11 +531,16 @@ async function main(argv: string[]): Promise<number> {
       return 0; // the listening server keeps the process alive
     }
     case 'lock': {
-      const lock = await readLock();
+      const state = await readLockState();
+      const lock = state.lock;
       const entries = Object.values(lock.entries);
       if (p.flags.json === true) {
-        process.stdout.write(JSON.stringify(lock, null, 2) + '\n');
-        return 0;
+        process.stdout.write(JSON.stringify({ status: state.status, ...lock }, null, 2) + '\n');
+        return state.status === 'unavailable' || state.status === 'malformed' ? 1 : 0;
+      }
+      if (state.status === 'unavailable' || state.status === 'malformed') {
+        process.stdout.write(`fleet.lock: ${state.status}; provenance is unavailable\n`);
+        return 1;
       }
       if (entries.length === 0) {
         process.stdout.write('fleet.lock: no fleet-installed capabilities recorded yet\n');
@@ -475,7 +566,15 @@ async function main(argv: string[]): Promise<number> {
       const report = await detectDrift(inv);
       if (p.flags.json === true) {
         process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-        return report.findings.length > 0 ? 1 : 0;
+        return report.lockStatus === 'unavailable' || report.lockStatus === 'malformed'
+          ? 1
+          : report.findings.length > 0
+            ? 1
+            : 0;
+      }
+      if (report.lockStatus === 'unavailable' || report.lockStatus === 'malformed') {
+        process.stdout.write(`fleet.lock: ${report.lockStatus}; drift cannot be verified\n`);
+        return 1;
       }
       process.stdout.write(`checked ${report.checked} fleet-installed capabilities\n`);
       if (report.findings.length === 0) {
@@ -496,7 +595,7 @@ async function main(argv: string[]): Promise<number> {
       const sub = p.positionals[0];
       if (sub !== 'install')
         throw new Error(
-          'usage: fleet pack install --from-dir <dir> --to <ids|all> [--variant full|mini|nano]',
+          'usage: fleet pack install --from-dir <dir> [--to <ids|all>] [--variant full|mini|nano] [--commit]',
         );
       const dir = str(p.flags['from-dir']);
       if (!dir) throw new Error('pack install: --from-dir <dir> is required (a git checkout of the pack)');
@@ -505,7 +604,9 @@ async function main(argv: string[]): Promise<number> {
         throw new Error(`--variant must be full|mini|nano (got '${variantFlag}')`);
       }
       const pack = await readPack(dir);
-      const targets = await resolveTargets(adapters, str(p.flags.to) ?? 'all');
+      const targetArg = str(p.flags.to) ?? 'all';
+      const skillTargets = pack.skills.length ? await resolveTargets(adapters, targetArg, 'skill') : [];
+      const ruleTargets = pack.rules.length ? await resolveTargets(adapters, targetArg, 'rule') : [];
       process.stdout.write(
         `pack "${pack.name}": ${pack.skills.length} skills, ${pack.rules.length} rules (variant: ${variantFlag})\n`,
       );
@@ -515,9 +616,10 @@ async function main(argv: string[]): Promise<number> {
           adapters,
           await planInstallSkill(
             adapters,
-            { name: skillName, dir: `${dir}/${skillName}` },
+            { name: skillName, dir: safeJoin(dir, skillName) },
             skillName,
-            targets,
+            skillTargets,
+            { sourceRoot: dir },
           ),
           commit,
         );
@@ -532,7 +634,7 @@ async function main(argv: string[]): Promise<number> {
         }
         const code = await runPlan(
           adapters,
-          await planInstallRule(adapters, ruleName, body, targets),
+          await planInstallRule(adapters, ruleName, body, ruleTargets),
           commit,
         );
         rc = Math.max(rc, code);
@@ -542,13 +644,13 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'export': {
       const dir = str(p.flags.to);
-      if (!dir) throw new Error('export: --to <dir> is required (your dotfiles repo)');
+      if (!dir) throw new Error('export: --to <dir> is required (a profile directory in your dotfiles repo)');
       const inv = await buildInventory(adapters);
-      const { profile, conflicts } = await exportProfile(inv, dir);
+      const { profile, conflicts, warnings } = await exportProfile(inv, dir);
       process.stdout.write(
-        `exported to ${dir}: ${profile.servers.length} MCP servers (secrets as refs), ` +
+        `exported to ${dir}: ${profile.servers.length} MCP servers (env/header values as refs), ` +
           `${profile.rules.length} rules, ${profile.skills.length} skills\n` +
-          `  secret VALUES are never written — commit the dir to git safely.\n`,
+          `  Review URLs, command arguments, rule bodies, and skill files for credentials before committing.\n`,
       );
       if (conflicts.length > 0) {
         process.stdout.write(
@@ -560,78 +662,93 @@ async function main(argv: string[]): Promise<number> {
           `  \u26a0 EXCLUDED ${c.kind} "${c.name}": definitions diverge across ${c.agents.join(', ')} — align and re-export\n`,
         );
       }
-      return conflicts.length > 0 ? 1 : 0;
+      for (const warning of warnings) process.stdout.write(`  \u26a0 ${warning}\n`);
+      return conflicts.length > 0 || warnings.length > 0 ? 1 : 0;
     }
     case 'import': {
       const dir = str(p.flags.from);
       if (!dir) throw new Error('import: --from <dir> is required');
       const profile = await readProfile(dir);
-      const targets = await resolveTargets(adapters, str(p.flags.to) ?? 'all');
+      const targetArg = str(p.flags.to) ?? 'all';
+      const serverTargets = profile.servers.length ? await resolveTargets(adapters, targetArg) : [];
+      const skillTargets = profile.skills.length ? await resolveTargets(adapters, targetArg, 'skill') : [];
+      const ruleTargets = profile.rules.length ? await resolveTargets(adapters, targetArg, 'rule') : [];
+      const desired = await prepareProfileDesiredState(
+        adapters,
+        profile,
+        dir,
+        { servers: serverTargets, skills: skillTargets, rules: ruleTargets },
+        { env: process.env },
+      );
       let rc = 0;
-      // resolve EVERYTHING before the first mutation — missing secrets abort a
-      // --commit up front instead of failing halfway through
-      const resolved: { name: string; spec: McpServerSpec }[] = [];
-      for (const srv of profile.servers) {
-        const { spec, missing } = resolveSecretRefs(srv.spec, process.env, srv.requiredSecrets);
-        if (missing.length > 0) {
-          process.stdout.write(
-            `\u2717 ${srv.name}: missing secrets on this machine: ${missing.join(', ')} — export them as env vars and re-run\n`,
-          );
-          rc = 1;
-          continue;
-        }
-        if (spec.transport !== 'stdio' && spec.bearerTokenEnvVar && !process.env[spec.bearerTokenEnvVar]) {
-          process.stdout.write(
-            `\u26a0 ${srv.name}: bearerTokenEnvVar '${spec.bearerTokenEnvVar}' is not set on this machine — the server will land configured but broken\n`,
-          );
-        }
-        resolved.push({ name: srv.name, spec });
-      }
-      if (rc > 0 && commit) {
+      process.stdout.write(
+        `profile desired state: additive (no pruning) — ${desired.summary.desiredInstances} target instance(s), ` +
+          `${desired.summary.changes} change(s), ${desired.summary.satisfied} already satisfied, ` +
+          `${desired.summary.blocked} blocked\n`,
+      );
+      for (const warning of desired.warnings) process.stdout.write(`\u26a0 ${warning}\n`);
+      for (const missing of desired.missingSecrets) {
         process.stdout.write(
-          'aborting --commit: resolve the missing secrets first (dry-run works without them)\n',
+          `\u2717 ${missing.server}: missing secrets on this machine: ${missing.names.join(', ')} — export them as env vars and re-run\n`,
+        );
+      }
+      if (desired.missingSecrets.length > 0) {
+        process.stdout.write(
+          'no profile item was planned or applied because the desired state is unresolved\n',
         );
         return 1;
       }
-      for (const srv of resolved) {
-        const code = await runPlan(
-          adapters,
-          await planInstall(adapters, srv.spec, srv.name, 'user', targets),
-          commit,
-        );
-        rc = Math.max(rc, code);
-      }
-      for (const name of profile.skills) {
-        const code = await runPlan(
-          adapters,
-          await planInstallSkill(adapters, { name, dir: `${dir}/skills/${name}` }, name, targets),
-          commit,
-        );
-        rc = Math.max(rc, code);
-      }
-      // rules last: skills/servers they might reference land first
-      for (const rule of profile.rules) {
-        const code = await runPlan(
-          adapters,
-          await planInstallRule(adapters, rule.name, rule.body, targets),
-          commit,
-        );
-        rc = Math.max(rc, code);
+      let completedEntries = 0;
+      for (const entry of desired.entries) {
+        try {
+          // Every entry was pre-planned above. Refresh only at commit time so an
+          // earlier item that shares the same config file does not stale the next
+          // item's base hash.
+          const plan = commit ? await refreshProfileDesiredEntry(adapters, entry) : entry.plan;
+          rc = Math.max(rc, await runPlan(adapters, plan, commit));
+          completedEntries++;
+        } catch (error) {
+          if (commit) {
+            process.stdout.write(
+              `profile reconciliation stopped after ${completedEntries}/${desired.entries.length} completed item(s); ` +
+                'earlier successful changes remain applied and audited, and later items were not attempted\n',
+            );
+          }
+          throw error;
+        }
       }
       if (!commit)
-        process.stdout.write('\n(dry-run — add --commit to apply; the trust gate re-scans everything)\n');
+        process.stdout.write(
+          '\n(dry-run — add --commit to apply this additive desired state; omitted capabilities are untouched)\n',
+        );
       return rc;
     }
     case 'doctor': {
-      const report = await runDoctor({ adapters }); // reuse — don't load BYO factories twice
+      const report = await runDoctor({ adapters, adapterLoadDiagnostics }); // reuse — don't load BYO factories twice
       const icon = { ok: '\u2713', warn: '\u26a0', error: '\u2717' } as const;
+      const recoveryText: Record<string, string> = {
+        INSTALL_OR_CONFIGURE_AGENT:
+          'install the agent runtime or initialize one of its known configuration paths',
+        INITIALIZE_AGENT_CONFIGURATION: 'initialize the agent configuration before managing capabilities',
+        CHECK_AGENT_INSTALLATION: 'verify the local agent installation and executable search path',
+        CHECK_ADAPTER: 'inspect the local adapter configuration and retry detection',
+        REPAIR_AGENT_CONFIGURATION: 'repair the local agent configuration before changing capabilities',
+        RECOVER_PENDING_CHANGE: 'inspect the pending recovery state before another mutation',
+        REPAIR_FLEET_STATE: 'repair or restore Fleet state before another mutation',
+        RESTORE_BACKUP: 'restore the referenced backup before relying on rollback',
+        WAIT_OR_CLEAR_STALE_LOCK:
+          'wait for the active operation; clear the lock only after confirming none is running',
+        REPAIR_FLEET_CONFIG: 'repair Fleet config.json and referenced local adapter paths',
+        REPAIR_TEAM_POLICY: 'repair or remove the local team-policy.json ceiling',
+      };
       let cat = '';
       for (const f of report.findings) {
         if (f.category !== cat) {
           cat = f.category;
           process.stdout.write(`\n[${cat}]\n`);
         }
-        process.stdout.write(`  ${icon[f.level]} ${f.message}\n`);
+        process.stdout.write(`  ${icon[f.level]} [${f.code}] ${scrubSecrets(f.message)}\n`);
+        if (f.recovery) process.stdout.write(`      next: ${recoveryText[f.recovery]}\n`);
       }
       process.stdout.write(
         `\n${report.exitCode === 0 ? 'healthy' : report.exitCode === 1 ? 'warnings — see above' : 'ERRORS — see above'}\n`,
@@ -639,11 +756,19 @@ async function main(argv: string[]): Promise<number> {
       return report.exitCode;
     }
     case 'config': {
-      const cfg = loadConfig();
+      const state = readEffectiveConfigState();
+      const cfg = state.config;
       const shown = { ...cfg, hubUrl: cfg.hubUrl ? redactUrl(cfg.hubUrl) : null };
-      process.stdout.write(`config: ${configPath()}\n`);
+      process.stdout.write(`config: ${configPath()} (${state.configState.status})\n`);
+      process.stdout.write(`team policy: ${teamPolicyPath()} (${state.policyState.status})\n`);
+      process.stdout.write('effective config:\n');
       process.stdout.write(JSON.stringify(shown, null, 2) + '\n');
-      return 0;
+      return state.configState.status === 'read-failed' ||
+        state.configState.status === 'invalid' ||
+        state.policyState.status === 'read-failed' ||
+        state.policyState.status === 'invalid'
+        ? 1
+        : 0;
     }
     case 'conflicts': {
       const findings = analyzeConflicts(await buildInventory(adapters));
@@ -662,20 +787,22 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case 'rollback': {
-      // a delegated plugin action can't be file-rolled-back — point at the vendor undo
-      if (!p.positionals[0]) {
-        const [del, audit] = await Promise.all([lastDelegated(), readAudit()]);
-        const lastTs = audit[audit.length - 1]?.ts ?? 0;
-        if (del && Date.parse(del.time) > lastTs) {
-          process.stdout.write(
-            `last change was a delegated plugin action (${del.argv.join(' ')});\n` +
-              (del.undoArgv ? `undo it with: ${del.undoArgv.join(' ')}\n` : 'undo it via the vendor CLI.\n'),
-          );
-          return 0;
-        }
+      const auditId = p.positionals[0];
+      const res = await rollback({
+        auditId,
+        ...(!auditId ? { implicitGuard: (audit) => assessImplicitRollback(audit) } : {}),
+      });
+      if (res.guardRefusal) {
+        const core = res.guardRefusal.reasonCode === 'CORE_HISTORY_UNVERIFIABLE';
+        process.stdout.write(
+          `${core ? 'core audit history' : 'delegated plugin history or outcome'} is unverifiable or newer; ` +
+            'refusing implicit core rollback.\n' +
+            `${core ? 'repair the audit history' : 'inspect vendor plugin state'} before choosing a recovery action.\n`,
+        );
+        return 1;
       }
-      const res = await rollback({ auditId: p.positionals[0] });
       process.stdout.write(`rollback: ${res.action} ${res.file}${res.reason ? ` (${res.reason})` : ''}\n`);
+      process.stdout.write(renderProvenanceWarning(Boolean(res.lockWarning)));
       return 0;
     }
     case 'help':
@@ -694,6 +821,6 @@ main(process.argv.slice(2))
     process.exitCode = code;
   })
   .catch((err) => {
-    process.stderr.write(`fleet: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`fleet: ${publicErrorMessage(err)}\n`);
     process.exitCode = 1;
   });

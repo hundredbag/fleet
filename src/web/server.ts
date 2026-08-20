@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentAdapter } from '../core/adapter.js';
 import type { FeedSource } from '../feed/source.js';
+import type { Runner } from '../core/delegate.js';
 import {
   makeToken,
   tokenMatches,
@@ -13,6 +14,7 @@ import { apiActivity, apiConflicts, apiFeed, apiInventory, apiOverview } from '.
 import { ActionService } from './actions.js';
 import { mapError } from './public-mappers.js';
 import { renderPage } from './ui.js';
+import { publicErrorCode, publicPayload } from '../core/redact.js';
 
 /**
  * The local web dashboard daemon — a thin, co-equal face over core. GET is
@@ -29,6 +31,8 @@ export interface ServeOpts {
   fleetHome?: string;
   /** extra Host/Origin values to accept (e.g. a Tailscale MagicDNS name). Exact match. */
   allowHosts?: string[];
+  /** injectable delegated vendor runner (tests/embedders). */
+  pluginRunner?: Runner;
 }
 
 interface HttpError extends Error {
@@ -75,12 +79,16 @@ function readJsonBody(req: IncomingMessage, limit = 64 * 1024): Promise<unknown>
 
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
   if (res.headersSent || res.writableEnded) return; // never double-send
+  // Complete the untrusted-value scrub and serialization before committing
+  // headers. If either fails, the outer request boundary can still send its
+  // fixed 500 DTO instead of leaving a headers-sent response hanging.
+  const serialized = JSON.stringify(publicPayload(body));
   res.writeHead(code, {
     'content-type': 'application/json',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
   });
-  res.end(JSON.stringify(body));
+  res.end(serialized);
 }
 
 const CSP =
@@ -88,7 +96,7 @@ const CSP =
 
 export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}) {
   const token = opts.token ?? makeToken();
-  const actions = new ActionService(adapters, opts.fleetHome);
+  const actions = new ActionService(adapters, opts.fleetHome, opts.pluginRunner);
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch(() => {
       sendJson(res, 500, mapError('INTERNAL_ERROR', 'internal.error'));
@@ -186,7 +194,10 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
         default:
           return sendJson(res, 404, mapError('NOT_FOUND', 'request.notFound'));
       }
-    } catch {
+    } catch (error) {
+      if (publicErrorCode(error) === 'RECOVERY_PENDING') {
+        return sendJson(res, 409, mapError('RECOVERY_PENDING', 'operation.recoveryPending'));
+      }
       return sendJson(res, 400, mapError('ACTION_REJECTED', 'operation.rejected'));
     }
   }

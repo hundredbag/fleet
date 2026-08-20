@@ -1,5 +1,5 @@
-import { existsSync, lstatSync } from 'node:fs';
-import { readdir, readFile, mkdir, copyFile, rm, stat, lstat, readlink, symlink } from 'node:fs/promises';
+import { constants, existsSync, lstatSync } from 'node:fs';
+import { chmod, readdir, mkdir, rm, stat, lstat, readlink, symlink, open, realpath } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute, sep, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -57,19 +57,132 @@ export async function listFilesRecursive(dir: string): Promise<string[]> {
   return out.sort();
 }
 
+async function readRegularSnapshot(path: string): Promise<{ bytes: Buffer; mode: number }> {
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`fleet: unsupported directory entry type at ${path}`);
+    return { bytes: await handle.readFile(), mode: info.mode & 0o7777 };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeRegularSnapshot(path: string, snapshot: { bytes: Buffer; mode: number }): Promise<void> {
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(snapshot.bytes);
+    await handle.sync();
+    await handle.chmod(snapshot.mode);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Recursively copy a directory tree from `src` to `dst`, preserving files
  * (incl. their mode), symlinks (recreated verbatim), and empty directories.
  */
 export async function copyDir(src: string, dst: string): Promise<void> {
-  await mkdir(dst, { recursive: true });
+  const srcMode = (await stat(src)).mode & 0o7777;
+  await mkdir(dst, { recursive: true, mode: srcMode });
   const entries = await readdir(src, { withFileTypes: true });
   for (const e of entries) {
     const s = join(src, e.name);
     const d = join(dst, e.name);
-    if (e.isSymbolicLink()) await symlink(await readlink(s), d);
-    else if (e.isDirectory()) await copyDir(s, d);
-    else if (e.isFile()) await copyFile(s, d);
+    // Re-check the pathname without following it. Dirent d_type can be absent
+    // or synthesized by a filesystem/sandbox and must not classify a device,
+    // FIFO, or socket as a regular file that copyFile/readFile could block on.
+    const info = await lstat(s);
+    if (info.isSymbolicLink()) await symlink(await readlink(s), d);
+    else if (info.isDirectory()) await copyDir(s, d);
+    else if (info.isFile()) {
+      await writeRegularSnapshot(d, await readRegularSnapshot(s));
+    } else {
+      throw new Error(`fleet: unsupported directory entry type at ${s}`);
+    }
+  }
+  // mkdir modes are filtered by umask; set the exact source mode after the
+  // children exist so backups/staging preserve directory permissions too.
+  await chmod(dst, srcMode);
+  const handle = await open(dst, 'r');
+  try {
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EBADF') throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+export class ExclusiveDirectoryCopyError extends Error {
+  constructor(
+    message: string,
+    /** True once this operation atomically created the destination root. */
+    readonly targetCreated: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** Copy a directory into a destination that must not already exist. Every
+ * child is also created exclusively, so a concurrent entry is never replaced.
+ * The destination can be partially populated on failure; targetCreated tells
+ * the caller to retain its write-ahead recovery marker instead of deleting a
+ * tree that may now contain concurrent state. */
+export async function copyDirExclusive(src: string, dst: string): Promise<void> {
+  let targetCreated = false;
+  try {
+    const rootInfo = await lstat(src);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+      throw new Error(`fleet: refusing to publish non-directory source ${src}`);
+    }
+    const rootMode = rootInfo.mode & 0o7777;
+    await mkdir(dst, { mode: 0o700 });
+    targetCreated = true;
+
+    const copyContents = async (source: string, destination: string): Promise<void> => {
+      const entries = await readdir(source, { withFileTypes: true });
+      for (const entry of entries) {
+        const from = join(source, entry.name);
+        const to = join(destination, entry.name);
+        const info = await lstat(from);
+        if (info.isSymbolicLink()) {
+          await symlink(await readlink(from), to);
+        } else if (info.isDirectory()) {
+          const mode = info.mode & 0o7777;
+          await mkdir(to, { mode: 0o700 });
+          await copyContents(from, to);
+          await chmod(to, mode);
+          const handle = await open(to, 'r');
+          try {
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+        } else if (info.isFile()) {
+          await writeRegularSnapshot(to, await readRegularSnapshot(from));
+        } else {
+          throw new Error(`fleet: unsupported directory entry type at ${from}`);
+        }
+      }
+    };
+
+    await copyContents(src, dst);
+    await chmod(dst, rootMode);
+    const handle = await open(dst, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    throw new ExclusiveDirectoryCopyError(
+      error instanceof Error ? error.message : String(error),
+      targetCreated,
+    );
   }
 }
 
@@ -80,34 +193,59 @@ export async function copyDir(src: string, dst: string): Promise<void> {
  * Mode-only, symlink-target and structure changes all alter the hash, which is
  * what the concurrency, no-op and rollback-divergence guards need.
  */
-export async function hashDir(dir: string): Promise<string> {
+async function hashDirectory(dir: string, includeRootMode: boolean): Promise<string> {
   if (!existsSync(dir)) return '';
   const lines: string[] = [];
+  if (includeRootMode) {
+    const rootMode = ((await lstat(dir)).mode & 0o7777).toString(8);
+    lines.push(JSON.stringify(['D', '.', rootMode]));
+  }
   async function walk(d: string): Promise<void> {
     const entries = await readdir(d, { withFileTypes: true });
     for (const e of entries) {
       const full = join(d, e.name);
       const rel = relative(dir, full);
+      const info = await lstat(full);
       // JSON-encoded fields — a filename containing \n or a crafted "L x -> y"
       // suffix cannot collide with another tree's manifest
-      if (e.isSymbolicLink()) {
+      if (info.isSymbolicLink()) {
         lines.push(JSON.stringify(['L', rel, await readlink(full)]));
-      } else if (e.isDirectory()) {
-        const mode = ((await lstat(full)).mode & 0o7777).toString(8);
+      } else if (info.isDirectory()) {
+        const mode = (info.mode & 0o7777).toString(8);
         lines.push(JSON.stringify(['D', rel, mode]));
         await walk(full);
-      } else if (e.isFile()) {
-        const mode = ((await lstat(full)).mode & 0o7777).toString(8);
-        const digest = createHash('sha256')
-          .update(await readFile(full))
-          .digest('hex');
+      } else if (info.isFile()) {
+        const snapshot = await readRegularSnapshot(full);
+        const mode = snapshot.mode.toString(8);
+        const digest = createHash('sha256').update(snapshot.bytes).digest('hex');
         lines.push(JSON.stringify(['F', rel, mode, digest]));
+      } else {
+        throw new Error(`fleet: unsupported directory entry type at ${full}`);
       }
     }
   }
   await walk(dir);
   lines.sort();
   return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+/** Current directory hash includes the root directory mode as well as every child. */
+export async function hashDir(dir: string): Promise<string> {
+  return hashDirectory(dir, true);
+}
+
+/** Hash the directory generation that copyDir() would materialize. A
+ * symlinked source root is followed by copyDir(), so its referent directory
+ * mode—not the symlink inode mode—must be part of the pinned source hash.
+ * Symlinks below the root remain entries and are never followed. */
+export async function hashMaterializedDir(dir: string): Promise<string> {
+  return hashDirectory(await realpath(dir), true);
+}
+
+/** Read compatibility for canonical-v1 skill lock entries created before root
+ * mode became part of the manifest. New writes must always use hashDir(). */
+export async function hashDirLegacy(dir: string): Promise<string> {
+  return hashDirectory(dir, false);
 }
 
 export async function removeDir(dir: string): Promise<void> {

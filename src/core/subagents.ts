@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile } from 'node:fs/promises';
 import { join, basename, extname } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import type { SubagentCapability } from './types.js';
@@ -54,23 +54,40 @@ function unquote(v: string): string {
 }
 
 /** Claude Code: one .md per subagent, YAML-ish frontmatter. */
-export async function readClaudeSubagents(agent: string, dir: string): Promise<SubagentCapability[]> {
-  if (!existsSync(dir)) return [];
+export async function readClaudeSubagents(
+  agent: string,
+  dir: string,
+  opts: { strict?: boolean } = {},
+): Promise<SubagentCapability[]> {
+  if (opts.strict) {
+    try {
+      const root = await lstat(dir);
+      if (root.isSymbolicLink() || !root.isDirectory()) {
+        throw new Error('unsafe subagent directory topology');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error('claude-code: subagent definitions are unavailable');
+    }
+  } else if (!existsSync(dir)) return [];
   const out: SubagentCapability[] = [];
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
+    if (opts.strict) throw new Error('claude-code: subagent definitions are unavailable');
     return [];
   }
   for (const e of entries) {
     if (extname(e.name) !== '.md') continue;
     const path = join(dir, e.name);
-    // dotfiles layouts symlink definitions in — follow, but require a REGULAR
-    // file (stat follows; a FIFO/dir named *.md is rejected)
     try {
-      if (!(await stat(path)).isFile()) continue;
+      if (!(await lstat(path)).isFile()) {
+        if (opts.strict) throw new Error('invalid subagent definition topology');
+        continue;
+      }
     } catch {
+      if (opts.strict) throw new Error('claude-code: subagent definitions are unavailable');
       continue; // dangling
     }
     try {
@@ -94,28 +111,47 @@ export async function readClaudeSubagents(agent: string, dir: string): Promise<S
         source: { file: path },
       });
     } catch {
-      /* unreadable definition — skip; doctor surfaces adapter-level problems */
+      if (opts.strict) throw new Error('claude-code: subagent definitions are unavailable');
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Codex: one .toml per subagent role. */
-export async function readCodexSubagents(agent: string, dir: string): Promise<SubagentCapability[]> {
-  if (!existsSync(dir)) return [];
+export async function readCodexSubagents(
+  agent: string,
+  dir: string,
+  opts: { strict?: boolean } = {},
+): Promise<SubagentCapability[]> {
+  if (opts.strict) {
+    try {
+      const root = await lstat(dir);
+      if (root.isSymbolicLink() || !root.isDirectory()) {
+        throw new Error('unsafe subagent directory topology');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error('codex: subagent definitions are unavailable or invalid');
+    }
+  } else if (!existsSync(dir)) return [];
   const out: SubagentCapability[] = [];
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
+    if (opts.strict) throw new Error('codex: subagent definitions are unavailable or invalid');
     return [];
   }
   for (const e of entries) {
     if (extname(e.name) !== '.toml') continue;
     const path = join(dir, e.name);
     try {
-      if (!(await stat(path)).isFile()) continue;
+      if (!(await lstat(path)).isFile()) {
+        if (opts.strict) throw new Error('invalid subagent definition topology');
+        continue;
+      }
     } catch {
+      if (opts.strict) throw new Error('codex: subagent definitions are unavailable or invalid');
       continue; // dangling
     }
     try {
@@ -136,7 +172,7 @@ export async function readCodexSubagents(agent: string, dir: string): Promise<Su
         // metadata only may cross faces
       });
     } catch {
-      /* invalid TOML — skip this definition */
+      if (opts.strict) throw new Error('codex: subagent definitions are unavailable or invalid');
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));

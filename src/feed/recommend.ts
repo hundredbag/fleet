@@ -1,4 +1,5 @@
 import type { Inventory } from '../core/types.js';
+import { isPublicCapabilityName } from '../core/redact.js';
 import type { FeedItem } from './source.js';
 import { extractCoordinate, coordKey } from './coords.js';
 import { assessTrust, type TrustAssessment } from './trust.js';
@@ -112,7 +113,9 @@ function scoreOne(item: FeedItem, ctx: ScoreContext): Scored {
   );
   if (overlap.length > 0) {
     score += Math.min(3, overlap.length);
-    reasons.push(`related to your setup (${overlap.slice(0, 3).join(', ')})`);
+    // The matching tokens are derived from local inventory and can encode
+    // private package names or paths. Expose only the reason class.
+    reasons.push('related');
   }
   return { score, reasons };
 }
@@ -138,14 +141,19 @@ export async function recommend(
   const agents = new Set<string>();
   for (const i of inv.items) {
     agents.add(i.agent);
-    for (const t of tokensOf(i.name)) installedTokens.add(t);
-    if (i.kind === 'skill') installedSkillNames.add(i.name.toLowerCase());
-    if (i.kind === 'plugin') installedPluginNames.add(i.name.toLowerCase());
-    if (i.kind !== 'mcp-server') continue;
+    // Permission names are full command/path expressions, not logical public
+    // identifiers. Coordinates can likewise come from hidden MCP argv. Neither
+    // is allowed to influence public recommendation reasons.
+    const publicIdentity = i.kind !== 'permission' && isPublicCapabilityName(i.name);
+    if (publicIdentity) {
+      for (const t of tokensOf(i.name)) installedTokens.add(t);
+    }
+    if (publicIdentity && i.kind === 'skill') installedSkillNames.add(i.name.toLowerCase());
+    if (publicIdentity && i.kind === 'plugin') installedPluginNames.add(i.name.toLowerCase());
+    if (!publicIdentity || i.kind !== 'mcp-server') continue;
     const c = extractCoordinate(i.spec);
     if (c?.confidence === 'high') {
       installedCoords.add(coordKey(c.ecosystem, c.id));
-      for (const t of tokensOf(c.id)) installedTokens.add(t);
     }
   }
 

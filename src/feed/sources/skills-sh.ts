@@ -1,6 +1,7 @@
 import type { FeedItem, FeedSource } from '../source.js';
 import type { HttpSourceOpts } from './mcp-registry.js';
 import { defaultClassifier, type Classifier } from '../classify.js';
+import { sanitizeFeedItems } from '../sanitize.js';
 
 /**
  * skills.sh (the Vercel skills registry) as a FeedSource for SKILLS.
@@ -70,7 +71,9 @@ export class SkillsShSource implements FeedSource {
     if (!res.ok) throw new Error(`skills.sh: HTTP ${res.status}`);
     const data: any = await res.json();
     const skills = Array.isArray(data?.skills) ? data.skills : [];
-    return skills.map((s: any) => mapSkill(s, classify)).filter((x: FeedItem | null): x is FeedItem => !!x);
+    return sanitizeFeedItems(
+      skills.map((s: any) => mapSkill(s, classify)).filter((x: FeedItem | null): x is FeedItem => !!x),
+    );
   }
 
   /** Seed-sweep listing: parallel category searches, merged + deduped by id. */
