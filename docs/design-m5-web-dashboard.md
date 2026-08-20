@@ -1,35 +1,62 @@
-# M5 — local web dashboard (STUB)
+# M5 — local web dashboard
 
-> Stub. Finalize just before building.
+> Implemented local management surface. [README.md](../README.md) and
+> [USAGE.md](USAGE.md) define the operator-facing contract.
 
 ## Goal
 
-The human-pretty view: a local web dashboard served by the same daemon —
-the capability × agent matrix + one-click actions + the discovery feed.
+The human-facing view: a token-gated local dashboard over the same core — the
+capability × agent matrix, discovery, drift, activity, and explicit
+preview/confirm/apply management.
 
 ## Scope
 
-- Read first (render the matrix in a browser), then wire actions to the M2
-  engine via a dry-run **preview → commit** flow.
-- Feed panel (M4) once available.
+- Five views: Overview, Inventory, Discover, Drift, and Activity.
+- Inventory/Discover actions use the shared M2 engine through
+  **dry-run preview → explicit confirmation → single-use apply**.
+- Activity performs only targeted eligible core rollback; delegated vendor
+  history is never presented as core rollback.
+- Public DTOs contain allowlisted logical identity/status fields and stable
+  codes, not target paths, raw config, env/header values, vendor output, or
+  caught error text.
 
 ## Approach (sketch)
 
-- One local daemon hosts: MCP server (M3) + a small REST API over the core +
-  static UI. localhost-only.
-- UI framework TBD (lean minimal — vanilla/lit or small React); decide at build.
+- `fleet serve` hosts a dependency-free HTML/CSS/vanilla-JS UI and thin REST
+  API over the shared core.
+- Loopback is the default. Every request requires the random session token;
+  Host/Origin/content-type/body-size checks protect the write endpoints.
+- The browser obtains a short-lived plan from `/api/plan`; `/api/apply`
+  consumes it once. Replayed/expired/stale plans are refused by the server.
+- Apply results distinguish `applied`, `partial`, `nothing-to-do`, `failed`,
+  and `outcome-unknown`, including per-target provenance recording and fixed
+  recovery classes. An unverified response tells the operator to refresh
+  Inventory and Activity before retrying.
+- Search/filter/sort are local over public metadata. English/Korean and
+  light/dark preferences persist without changing the server state.
 
 ## Key risks / open questions
 
-- Keep a single shared core across CLI / MCP / web (no logic drift).
-- Auth/exposure (bind localhost; never remote without auth).
-- Secrets in the UI (mask env/headers; mirror CLI's no-print stance).
-- Daemon lifecycle (start/stop, port selection), bundling/distribution.
+- Non-loopback binding expands exposure; the token remains the only
+  authentication gate and must not be placed behind a public tunnel.
+- A lost apply response is outcome-unknown from the browser's perspective;
+  the UI must not invite an immediate duplicate request.
+- Vendor CLI delegation and local file writes have different recovery models;
+  result DTOs and Activity preserve that distinction.
+- “No local flags” is local static evidence, never a safety or quality grade.
 
 ## Acceptance
 
-- Browser shows the live cross-agent matrix; one-click install shows a dry-run
-  diff then commits; feed visible.
+- Browser shows the live cross-agent matrix and bounded discovery feed.
+- Every advertised mutation shows the exact logical targets and fixed warning
+  codes before the confirm control is available.
+- Confirm consumes one plan and renders the actual result/provenance state.
+- Empty plans cannot be applied; concurrent dialog mutations are disabled.
+- Activity offers rollback only for an exact eligible audit ID, and the
+  confirmation preserves kind, timestamp, scope, and ID. A lost response is an
+  unknown outcome followed by Inventory/Activity refresh, never a claimed failure.
+- Keyboard focus, dialog trapping, responsive tables, and bilingual labels
+  remain usable without exposing private fields.
 
 ## Depends on
 

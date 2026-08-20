@@ -1,6 +1,4 @@
-# M6 — trust / quality gate (STUB)
-
-> Stub. Finalize just before building.
+# M6 — local trust evidence gate
 
 ## Goal
 
@@ -9,27 +7,37 @@ because the AI can auto-install (Snyk: ~37% of agent skills had ≥1 flaw).
 
 ## Scope
 
-- v1 = **wrap an existing signal** (registry metadata, Snyk-style advisories,
-  signing/provenance). Do NOT build our own scanner.
+- v1 uses deterministic local facts for mutation gating and separately labels
+  registry metadata assessments. It is not a malware scanner or quality score.
 - Gate consulted before the M2 engine applies an install; warn or block per
   policy.
 
-## Approach (sketch)
+## Implemented model
 
-- `TrustSource` interface → `TrustVerdict { level, reasons, sourceUrl }`.
-- Orchestrator consults sources before `applyChanges`; policy decides warn/block.
+- `GateVerdict { level, reasons, reasonCodes }` is produced during planning.
+- Stable codes cover package pinning/source ambiguity, runner-source environment
+  redirection, and observable skill-tree facts such as scripts, executable bits,
+  symlinks, oversized files, and hidden Unicode.
+- `warn` annotates the preview; `block` converts changes to protected skips.
+  Commit rechecks the current policy under the shared mutation lock.
+- The full local explanation remains local. A stable-code snapshot is appended
+  to the audit record, while `fleet.lock` stores the install-time verdict for
+  current provenance/drift consumers.
+- MCP lock status and Web Activity expose only allowlisted level/reason codes.
+  Historical audit evidence is independent of a later lock update/removal.
+- Feed trust uses the separate `caution | unknown | no-flags` vocabulary and
+  stable metadata reason codes. “No flags” never means safe.
 
 ## Key risks / open questions
 
 - Avoid a false sense of security (a "pass" isn't a guarantee) — message carefully.
-- Signal source availability / offline → fail-open or fail-closed?
+- External advisory/signature sources remain future work; their unavailable
+  state must never be presented as a local pass.
 - Enforce in orchestrator (not the low-level engine) so dry-run shows the verdict.
 - warn-vs-block default (lean warn + explicit override for block).
 
-## Acceptance
-
-- Installing a flagged server surfaces the verdict and warns/blocks per policy;
-  verdict shown in dry-run plans and the feed.
+Malformed trust evidence in lock/audit state is treated as malformed provenance;
+mutation or rollback paths that require that state fail closed.
 
 ## Depends on
 

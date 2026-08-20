@@ -6,13 +6,13 @@ of the primitives fleet manages (commands + skills + MCP servers + hooks):
 | Agent                    | Concept                | Install                                            |
 | ------------------------ | ---------------------- | -------------------------------------------------- |
 | Claude Code              | Plugins (marketplaces) | `/plugin`, `claude plugin install <name>@<market>` |
-| Codex                    | Plugins                | `/plugins` in the CLI                              |
+| Codex                    | Plugins                | `codex plugin add <name>@<market>`                 |
 | Gemini CLI → Antigravity | Extensions → plugins   | `gemini extensions install <repo>`                 |
 
 The formats are mutually incompatible — the per-agent-silo problem fleet exists
 to solve, reproduced at the bundle level.
 
-## Part A — read-only inventory (BUILT)
+## Part A — read-only inventory (Claude built; Codex intentionally unavailable)
 
 Plugins installed on an agent must show up in the fleet matrix, or "see
 everything in one place" is false. New `plugin` kind (read-only):
@@ -22,8 +22,11 @@ everything in one place" is false. New `plugin` kind (read-only):
   marketplace registration in `~/.claude/plugins/known_marketplaces.json`;
   descriptions enriched from each marketplace's
   `.claude-plugin/marketplace.json`. fleet reads, never writes, these.
-- **Codex**: guarded scan of `~/.codex/plugins` subdirectory names (shape not
-  yet verified on a real install — names only, nothing parsed).
+- **Codex**: Fleet does not publish a plugin inventory yet. Current Codex exposes
+  `plugin list --json` and plugin packages contain `.codex-plugin/plugin.json`,
+  but Fleet has not adopted and regression-tested that JSON schema. A directory
+  scan is not authoritative installed state, so the adapter reports plugin
+  inventory as `unverifiable` and exposes no install/remove operation.
 - Surfaces: CLI matrix "Plugins (read-only)" section, `summarizeInventory`
   plugins list, dashboard matrix rows.
 
@@ -34,8 +37,10 @@ state). Instead, installs are DELEGATED: fleet runs the vendor's own command.
 
 ### Verified vendor commands (real machine)
 
-Both CLIs expose non-interactive plugin management, and both use the SAME
-`PLUGIN[@MARKETPLACE]` selector convention (a gift for Part C equivalence):
+Both CLIs expose non-interactive plugin management and accept a
+`PLUGIN[@MARKETPLACE]` selector at their CLI boundary. Fleet keeps the logical
+plugin name and marketplace identifier as separate fields internally; the joined
+selector is never used as the capability name.
 
 |                | Claude Code 2.1.196                                         | Codex 0.142.5                                      |
 | -------------- | ----------------------------------------------------------- | -------------------------------------------------- |
@@ -43,40 +48,45 @@ Both CLIs expose non-interactive plugin management, and both use the SAME
 | remove         | `claude plugin uninstall <p>` `[-s scope]`                  | `codex plugin remove <p>`                          |
 | enable/disable | `claude plugin enable/disable <p>`                          | —                                                  |
 | update         | `claude plugin update <p>`                                  | (marketplace upgrade)                              |
-| list (verify)  | `claude plugin list --json` (+`--available`)                | `codex plugin list` (table)                        |
+| list (verify)  | `claude plugin list --json` (+`--available`)                | `codex plugin list --json` (+`--available`)        |
 | marketplaces   | `claude plugin marketplace add/list/remove/update`          | `codex plugin marketplace add/list/upgrade/remove` |
 
-Codex ships an `openai-curated` marketplace snapshot out of the box (linear,
-gmail, google-calendar, atlassian-rovo, … visible in `codex plugin list`).
+Codex plugin packages and local marketplaces are documented in the official
+[plugin concepts](https://developers.openai.com/plugins/concepts/plugins) and
+[plugin build guide](https://learn.chatgpt.com/docs/build-plugins). Fleet still
+requires a tested inventory adapter before treating that CLI output as state.
 
 ### Execution architecture
 
-- New adapter capability `PluginManager` (optional, like the writers):
-  `planPluginInstall/Remove(selector) → DelegatedAction` — PURE (builds argv,
-  executes nothing). `DelegatedAction = { agent, argv, undoArgv?, describe }`.
-- Core `delegate.ts` executes a DelegatedAction: `spawn` with an **argv array,
+- Explicit adapter `capabilitySupport.plugin.management = delegated` metadata
+  plus Fleet's allowlisted built-in vendor argv table selects eligible targets.
+  Planning reads inventory and records the required pre-state before any vendor
+  command can run.
+- Core `delegate.ts` executes a delegated plan: `spawn` with an **argv array,
   never a shell** (no shell-injection surface), cwd-neutral, ~120s timeout,
   stdout/stderr tail captured. Selector validated first:
-  `/^[\w@][\w.\/-]*(@[\w.-]+)?$/`, reject leading `-` (no flag smuggling).
-- Preview→confirm shows the EXACT argv + marketplace provenance + trust signal
-  (plugins bundle hooks/commands = executing code — the highest-trust confirm).
-- Audit record kind `delegated`: argv, undoArgv, exit code, output tail.
-  Rollback = run `undoArgv` (vendor uninstall) — best-effort by nature.
-- HONEST LIMITS: no byte-level hash-guard/backup for delegated changes; undo
-  relies on the vendor's uninstall being correct; vendor CLI may still prompt in
-  edge cases (treat non-zero exit/timeout as failure, surface output tail).
-- Post-apply verification: re-read the inventory (Claude: settings.json
-  enabledPlugins; cross-check available via `claude plugin list --json`).
+  `^(@[\w][\w.-]*\/)?[\w][\w.-]*(@[\w][\w.-]*)?$`, also rejecting `..`
+  (no path traversal or flag smuggling).
+- Preview→confirm shows the exact argv and a code-execution warning. The current
+  implementation does not independently prove marketplace provenance or assign
+  a plugin trust score, so the operator must verify the selector/vendor source.
+- The private delegated ledger stores only allowlisted argv identity, exit code,
+  verified pre-state, and effect (`changed | unchanged | unverifiable`); vendor
+  output is scrubbed and is not persisted.
+- HONEST LIMITS: no byte-level hash-guard/backup. Fleet re-reads inventory before
+  and after execution, but a vendor bundle can have effects that inventory does
+  not describe. Only an exit-0 plus inventory-verified `changed` result may carry
+  inverse guidance; failed, no-op, legacy, or unverifiable outcomes require
+  manual vendor-state inspection.
 
 ### Open items for the implementation
 
-1. Codex INSTALLED-plugin state location (config.toml? cache dir?) — verify by
-   performing a real `codex plugin add` + `remove` during implementation, then
-   fix `readCodexPlugins` if the Part-A guess (`~/.codex/plugins`) is wrong.
+1. Define and fixture-test the Codex `plugin list --json` schema, including
+   installed-vs-available state, marketplace identity, enabled state, and version
+   compatibility. Only then change inventory from `unverifiable` to `supported`.
 2. Claude `plugin install` prompting behavior on an unregistered marketplace —
    test; fleet should require the marketplace to be registered first (or run
    `marketplace add` as a separate previewed step).
-3. `codex plugin list` has no `--json` — parse the table or rely on file reads.
 
 ## Part C — cross-agent equivalence (LATER)
 

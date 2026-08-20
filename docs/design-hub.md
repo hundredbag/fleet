@@ -25,7 +25,8 @@ fields the client can't compute cheaply: `popularity`, `status`, and a
 `security` verdict `{ level: 'caution'|'no-flags'|'unknown', reasons: string[] }`.
 
 Enable on the client by setting `hubUrl` in `~/.fleet/config.json`. The hub then
-joins the default sources automatically (see `defaultSources`).
+joins the available default sources (see `defaultSources`), unless an explicit
+`feedSources` allowlist omits `hub`.
 
 ## Built vs deferred
 

@@ -55,12 +55,21 @@ via feed/coords) — core never imports feed.
 ## Write path
 
 - `execute()` (the single commit entrypoint): after a successful apply, upsert
-  an entry per applied change; `remove` ops delete the entry. Lock write
-  failures degrade to a warning on the result (`lockWarning`) — the install
-  already happened; the lock is metadata, not a gate.
+  an entry per applied change; `remove` ops delete the entry. A lock that is
+  already malformed or unavailable blocks the mutation before any target is
+  changed, so existing provenance cannot be silently discarded. A lock write
+  failure discovered only after the target changed degrades to a warning on
+  the result (`lockWarning`) — the install already happened and must not be
+  reported as absent or reverted implicitly. Public MCP/Web DTOs project this
+  as the fixed `PROVENANCE_WARNING` code; CLI prints a fixed provenance warning.
 - `runDelegated()` (vendor CLI path): applied installs upsert a plugin entry;
-  removes delete it.
+  removes delete it. The same preflight blocks the vendor when existing lock
+  provenance is damaged.
 - The lock file itself is written atomically (tmp+rename) under fleet's home.
+- Rollback remains available as a target-recovery operation when lock
+  provenance is damaged. If target recovery completes but lock-entry cleanup
+  fails, the result remains restored/removed and carries the same fixed
+  `PROVENANCE_WARNING` instead of hiding incomplete metadata cleanup.
 
 ## Read path (v1)
 

@@ -11,12 +11,14 @@ v0 was read-only. M2 makes fleet **mutate real agent configs** (install / remove
    is **dry-run by default**; writing requires explicit `--commit`.
 2. **Format knowledge in adapters; safety mechanics in the engine.** An adapter
    renders the _new file content_ from the current file + the op (it owns
-   JSON/TOML quirks). The engine owns backup, atomic write, validation, audit,
+   JSON/TOML quirks). The engine owns backup, staged no-clobber commit, validation, audit,
    rollback (identical for every adapter).
 3. **Never destroy.** Engine backs up the file before writing, writes
-   atomically (tmp + `rename`), re-parses the result to confirm validity, and
-   restores the backup if validation fails. Config files are edited, never
-   deleted; only the `mcpServers` / `mcp_servers` section changes.
+   stages and validates the result before a guarded pathname commit, and
+   leaves the prior target untouched if validation fails. A later commit
+   failure preserves a detached original or an explicit recovery-pending
+   marker instead of claiming automatic recovery. Config files are edited,
+   never deleted; only the `mcpServers` / `mcp_servers` section changes.
 4. **Honest translation.** Cross-agent sync renders a normalized spec into each
    target's native form. When a target can't express something (e.g. Codex has
    no SSE; Claude has no env-var bearer token), the writer **emits a warning and
@@ -64,16 +66,26 @@ interface PlannedChange extends RenderResult {
 interface ApplyResult {
   change: PlannedChange;
   auditId: string;
+  auditRecorded: boolean;
   backup: string;
+  wroteHash: string;
 }
 ```
 
-- `applyChanges(changes, { fleetHome }): Promise<ApplyResult[]>` — for each:
-  backup → write tmp in same dir → `rename` over original → re-read+parse to
-  validate → on failure restore backup & throw → append audit record.
-- `rollback(auditId?, { fleetHome })` — restore the backup for an audit id (or
-  the most recent) and append a rollback record.
-- State dir `fleetHome` defaults to `~/.fleet/` (`backups/`, `audit.jsonl`);
+- `applyChanges(changes, validate, { fleetHome }): Promise<ApplyResult[]>` — for
+  each file change: validate current and proposed bytes → capture and fsync the
+  backup → fsync a same-directory stage → durably record an `audit-pending/`
+  marker → detach and verify the exact old inode → publish the stage with an
+  atomic no-clobber hard link → append/fsync the audit record → remove the
+  pending marker. A recovery-pending failure is never reported as an ordinary
+  no-change failure.
+- `rollback({ auditId?, fleetHome })` — restore/remove only an eligible audit
+  change whose current target still matches Fleet's recorded hash, type, and
+  mode, then append a rollback record. Damaged, incomplete, or duplicate audit
+  history blocks both explicit and implicit rollback.
+- State dir `fleetHome` defaults to `~/.fleet/` (`backups/`, `audit.jsonl`,
+  `audit-pending/`); write-ahead and completion filenames are fsynced through
+  their ancestor directory boundaries before the corresponding marker is cleared;
   **injectable** for tests.
 
 ## AgentWriter interface (`core/adapter.ts`)
@@ -113,11 +125,21 @@ best-effort with explicit warnings.
   adapters, self-protection checks) + CLI (`install`/`remove`/`sync`/`rollback`,
   dry-run default) + audit.
 
-`local`/`project` scope writes come after user scope is proven.
+`local`/`project` scope writes come after user scope is proven. Until a writer
+owns those exact destinations, every mutation layer rejects them; an adapter
+must never write its user file while labelling audit/lock metadata as project or
+local scope.
+
+Fleet has no active editor/project context. Inventory therefore preserves
+user/project/local as separate identities and does not guess the vendor's
+effective precedence. A sync source with more than one scoped candidate must
+include an exact source scope; multiple private contexts inside that scope stay
+ambiguous rather than being selected by discovery order.
 
 ## Self-protection
 
-- Engine validates parse-ability after every write; corrupt → auto-restore.
+- Engine validates the exact rendered bytes before touching the target and
+  refuses a commit when the guarded pathname or captured inode changes.
 - Refuse to write if the target file exists but doesn't parse (don't clobber a
   file we can't safely round-trip) — warn and skip.
 - (M3) fleet will refuse to remove its own MCP entry once self-installed.

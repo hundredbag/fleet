@@ -1,5 +1,8 @@
 # GUI + live feed — design (the product's discover→install→update loop)
 
+> Historical planning snapshot. The implementation shipped with differences.
+> [README.md](../README.md) and [USAGE.md](USAGE.md) define current behavior.
+
 > Realignment (2026-07-01) after re-grounding the vision. The product is an app
 > that manages many local agents' capabilities — **see everything, discover new,
 > one-click install to some/all agents, see & one-click updates.** Three
@@ -8,7 +11,7 @@
 ## What's already built (the engine) vs what this adds
 
 Engine done: cross-agent inventory (mcp/skill/rule), safe install/sync/remove
-(dry-run→commit, backup, atomic, audit, rollback, hash-guard), update DETECTION
+(dry-run→commit, backup, staged no-clobber commit, audit, rollback, hash-guard), update DETECTION
 (feed core: coords + semver), conflict analysis. **This milestone adds the two
 missing pieces of the user's vision: the LIVE feed (real discover/update data)
 and the GUI face** — plus wires the feed into all three faces equally.

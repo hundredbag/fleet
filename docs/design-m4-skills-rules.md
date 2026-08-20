@@ -36,9 +36,9 @@ The `kind`-discriminated union (built in v0 for exactly this) gains:
 
 ## Engine extension (capabilities are now files/dirs, not just config entries)
 
-Current engine writes ONE text file atomically (tmp→fsync→rename, backup, validate, rollback). Add:
+Current engine stages and fsyncs one text file, then publishes it with a guarded no-clobber commit (backup, validate, rollback). Add:
 
-- **Directory install**: stage the skill dir to a temp dir, back up any existing dir, atomically swap (rename), rollback = restore/remove. Same audit/lock/hash-guard discipline.
+- **Directory install**: stage and hash the skill dir, durably back up any existing dir, detach and verify that exact target, then publish the staged tree with exclusive root/child creation. Recursive cleanup runs only on the detached path after the result/audit boundary. Rollback uses the same discipline. Hashing and copying reject FIFO, socket, and device entries instead of silently omitting them.
 - Instruction files are single text files → the existing file path mostly applies (append/merge a marked block rather than overwrite — see Part B).
 
 ## Part A — Skills
@@ -68,7 +68,7 @@ Targets (behavioral, markdown): Claude `~/.claude/CLAUDE.md`; Codex `~/.codex/AG
 - Rules sync = append/merge a **marked block**, not whole-file overwrite (don't clobber agent-specific content).
 - Grouped skill structures handled; very deep nesting may be limited (note if so).
 - Semantic-opposition detection is shallow without LLM/hub — v1 flags _candidates_, doesn't claim certainty.
-- Directory atomic-swap + rollback is the riskiest new engine bit → heaviest test focus + dedicated review.
+- Directory staged commit + rollback is the riskiest engine bit → heaviest test focus + dedicated review.
 
 ## Parts & review cadence
 
