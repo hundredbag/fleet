@@ -2,14 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Script, runInNewContext } from 'node:vm';
 import type { AgentAdapter } from '../src/core/adapter.js';
+import { isPublicCapabilityName } from '../src/core/redact.js';
 import { apiFeed, apiInventory } from '../src/web/api.js';
-import { mapFeed } from '../src/web/public-mappers.js';
+import { mapFeed, mapOverview } from '../src/web/public-mappers.js';
 import { renderPage } from '../src/web/ui.js';
 import {
+  APPLY_RESPONSE_VALIDATOR_BROWSER_SOURCE,
   DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE,
   DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE,
   INVENTORY_OPERATION_PAYLOAD_BROWSER_SOURCE,
   INVENTORY_VIEW_ITEMS_BROWSER_SOURCE,
+  PUBLIC_IDENTITY_VALIDATOR_BROWSER_SOURCE,
+  ROLLBACK_RESPONSE_VALIDATOR_BROWSER_SOURCE,
   discoveryViewSections,
   inventoryOperationPayload,
   inventoryViewItems,
@@ -19,6 +23,260 @@ import {
   dashboardFailingFeedSource,
   dashboardFeedSources,
 } from './fixtures/web-dashboard.js';
+
+test('browser and server use the same public capability-name boundary', () => {
+  const publicName = runInNewContext(`${PUBLIC_IDENTITY_VALIDATOR_BROWSER_SOURCE}; publicName`) as (
+    value: unknown,
+  ) => boolean;
+  for (const name of [
+    'demo',
+    'group/child',
+    '분류/도구',
+    'mcp:foo',
+    '~',
+    'foo c:bar',
+    'foo .config/name',
+    '${HOME}/private',
+    'urn:name',
+    'token=abcdef',
+    'Bearer abcdefgh',
+  ]) {
+    assert.equal(publicName(name), isPublicCapabilityName(name), name);
+  }
+});
+
+test('generated apply validator accepts bounded result DTOs and rejects unknown states', () => {
+  const validApply = runInNewContext(`(${APPLY_RESPONSE_VALIDATOR_BROWSER_SOURCE})`) as (
+    value: unknown,
+  ) => boolean;
+  const id = '00000000-0000-4000-8000-000000000001';
+  const valid = {
+    schemaVersion: 2,
+    auditId: id,
+    applied: 1,
+    auditRecorded: 1,
+    unrecordedApplied: 0,
+    skipped: 0,
+    warningCodes: [],
+    outcome: 'applied',
+    records: [
+      {
+        agent: 'codex',
+        kind: 'mcp-server',
+        name: 'demo',
+        scope: 'user',
+        op: 'install',
+        auditRecorded: true,
+        auditId: id,
+      },
+    ],
+  };
+  assert.equal(validApply(valid), true);
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 0,
+      skipped: 1,
+      outcome: 'outcome-unknown',
+      warningCodes: ['OUTCOME_UNKNOWN'],
+      recoveryClass: 'vendor-state-inspection',
+      records: [
+        {
+          agent: 'claude-code',
+          kind: 'plugin',
+          name: 'demo',
+          marketplace: 'official',
+          scope: 'user',
+          op: 'install',
+          delegatedRecorded: false,
+          delegatedId: id,
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(validApply({ ...valid, outcome: 'success' }), false);
+  assert.equal(
+    validApply({
+      ...valid,
+      auditId: undefined,
+      auditRecorded: 0,
+      unrecordedApplied: 1,
+      outcome: 'partial',
+      warningCodes: ['AUDIT_WRITE_FAILED'],
+      recoveryClass: 'manual-config-recovery',
+      records: [{ ...valid.records[0], auditRecorded: false, auditId: undefined }],
+    }),
+    true,
+  );
+  assert.equal(validApply({ ...valid, warningCodes: ['RAW_ERROR'] }), false);
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], scope: '/private' }] }), false);
+  assert.equal(validApply({ ...valid, applied: -1 }), false);
+  assert.equal(validApply({ ...valid, applied: 0, auditRecorded: 0, outcome: 'applied' }), false);
+  assert.equal(validApply({ ...valid, auditRecorded: 2 }), false);
+  assert.equal(validApply({ ...valid, auditId: undefined }), false);
+  assert.equal(validApply({ ...valid, records: [] }), false);
+  assert.equal(validApply({ ...valid, records: [null] }), false);
+  assert.equal(
+    validApply({
+      ...valid,
+      records: [{ ...valid.records[0], auditRecorded: false, auditId: undefined }],
+    }),
+    false,
+  );
+  for (const delegatedWithoutTarget of [
+    { outcome: 'failed', warningCodes: ['OPERATION_FAILED'] },
+    { outcome: 'nothing-to-do', warningCodes: ['NO_CHANGE'] },
+    {
+      outcome: 'outcome-unknown',
+      warningCodes: ['OUTCOME_UNKNOWN'],
+      recoveryClass: 'vendor-state-inspection',
+    },
+  ]) {
+    assert.equal(
+      validApply({
+        schemaVersion: 2,
+        applied: 0,
+        skipped: 1,
+        records: [],
+        ...delegatedWithoutTarget,
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    validApply({
+      ...valid,
+      auditId: undefined,
+      auditRecorded: 0,
+      unrecordedApplied: 1,
+      outcome: 'partial',
+      records: [{ ...valid.records[0], auditRecorded: false, auditId: undefined }],
+    }),
+    false,
+  );
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], agent: '/private/agent' }] }), false);
+  assert.equal(
+    validApply({ ...valid, records: [{ ...valid.records[0], name: '/home/private/capability' }] }),
+    false,
+  );
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], name: '${HOME}/private' }] }), false);
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], name: '그룹/스킬' }] }), true);
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], name: 'urn:name' }] }), false);
+  assert.equal(validApply({ ...valid, records: [{ ...valid.records[0], name: 'token=abcdef' }] }), false);
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 1,
+      skipped: 0,
+      warningCodes: [],
+      outcome: 'applied',
+      records: [
+        {
+          agent: 'codex',
+          kind: 'mcp-server',
+          name: 'demo',
+          scope: 'user',
+          op: 'install',
+          auditRecorded: false,
+        },
+      ],
+    }),
+    false,
+  );
+  const pluginRecord = {
+    agent: 'claude-code',
+    kind: 'plugin',
+    name: 'demo',
+    scope: 'user',
+    op: 'install',
+  };
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 1,
+      skipped: 0,
+      warningCodes: [],
+      outcome: 'applied',
+      records: [{ ...pluginRecord, delegatedRecorded: false }],
+    }),
+    false,
+  );
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 0,
+      skipped: 1,
+      warningCodes: ['NO_CHANGE'],
+      outcome: 'nothing-to-do',
+      records: [{ ...pluginRecord, delegatedRecorded: true }],
+    }),
+    false,
+  );
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 0,
+      skipped: 1,
+      warningCodes: ['OUTCOME_UNKNOWN'],
+      outcome: 'outcome-unknown',
+      recoveryClass: 'manual-config-recovery',
+      records: [{ ...pluginRecord, delegatedRecorded: false, delegatedId: id }],
+    }),
+    false,
+  );
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 1,
+      skipped: 0,
+      warningCodes: ['OPERATION_WARNING'],
+      outcome: 'applied',
+      recoveryClass: 'vendor-state-inspection',
+      records: [{ ...pluginRecord, delegatedRecorded: true, delegatedId: id }],
+    }),
+    false,
+  );
+  assert.equal(
+    validApply({
+      schemaVersion: 2,
+      applied: 0,
+      skipped: 1,
+      warningCodes: ['NO_CHANGE'],
+      outcome: 'nothing-to-do',
+      recoveryClass: 'vendor-state-inspection',
+      records: [{ ...pluginRecord, delegatedRecorded: false, delegatedId: id }],
+    }),
+    false,
+  );
+  assert.equal(
+    validApply({
+      ...valid,
+      records: [{ ...valid.records[0], delegatedRecorded: true }],
+    }),
+    false,
+  );
+});
+
+test('generated rollback validator requires the versioned bounded result contract', () => {
+  const validRollback = runInNewContext(`(${ROLLBACK_RESPONSE_VALIDATOR_BROWSER_SOURCE})`) as (
+    value: unknown,
+  ) => boolean;
+  assert.equal(validRollback({ schemaVersion: 2, action: 'restored' }), true);
+  assert.equal(
+    validRollback({
+      schemaVersion: 2,
+      action: 'removed',
+      reasonCode: 'AUDIT_WRITE_FAILED',
+      provenanceRecorded: false,
+      recoveryClass: 'audit-history-repair',
+    }),
+    true,
+  );
+  assert.equal(validRollback({ action: 'restored' }), false);
+  assert.equal(validRollback({ schemaVersion: 2, action: 'restored', reasonCode: '/private/error' }), false);
+  assert.equal(validRollback({ schemaVersion: 2, action: 'skipped', provenanceRecorded: false }), false);
+});
 
 const VOID_ELEMENTS = new Set([
   'area',
@@ -96,6 +354,15 @@ test('dashboard fixture flows through the real inventory and feed read models', 
       ['codex', true],
     ],
   );
+  assert.ok(
+    inventory.agents.every(
+      (agent) =>
+        agent.runtimeStatus === 'available' &&
+        agent.configurationStatus === 'configured' &&
+        agent.setupStatus === 'ready' &&
+        agent.inventoryAvailable,
+    ),
+  );
   const playwright = inventory.capabilities.find(
     (capability) => capability.kind === 'mcp-server' && capability.name === 'playwright',
   );
@@ -146,12 +413,16 @@ test('dashboard fixture flows through the real inventory and feed read models', 
       kind: 'mcp-server',
       name: 'playwright',
       agent: 'claude-code',
-      from: '1.0.0',
+      scope: 'user',
       to: '2.0.0',
       operation: 'update',
     },
   ]);
   assert.equal(feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.trust, 'no-flags');
+  assert.equal(
+    feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.operation,
+    'install',
+  );
   assert.equal(
     feed.recommendations.find((item) => item.name === 'trusted-browser-tools')?.updatedAt,
     '2099-01-01T00:00:00.000Z',
@@ -167,6 +438,247 @@ test('dashboard fixture flows through the real inventory and feed read models', 
       ['codex', 'delegated', ['install']],
     ],
   );
+});
+
+test('Web discovery advertises only package-backed installs accepted by the exact all-target preview', async () => {
+  const writable = (id: string, installed: boolean): AgentAdapter =>
+    ({
+      id,
+      displayName: id,
+      supportsWrite: true,
+      capabilitySupport: { 'mcp-server': { inventory: 'supported', management: 'writable' } },
+      async detect() {
+        return {
+          id,
+          displayName: id,
+          present: true,
+          configPaths: [],
+          runtimeStatus: 'available',
+          configurationStatus: 'configured',
+        };
+      },
+      async readInventory() {
+        return installed
+          ? [
+              {
+                kind: 'mcp-server' as const,
+                name: 'coordinate-clash',
+                agent: id,
+                scope: 'user' as const,
+                enabled: true,
+                spec: { transport: 'stdio' as const, command: 'npx', args: ['installed-other@1.0.0'] },
+                source: { file: 'fixture' },
+              },
+            ]
+          : [];
+      },
+      async renderInstall() {
+        throw new Error('not reached');
+      },
+      async renderRemove() {
+        throw new Error('not reached');
+      },
+      validate() {},
+    }) as AgentAdapter;
+  const feed = await apiFeed(
+    [writable('writer-a', true), writable('writer-b', false)],
+    [
+      {
+        id: 'actionability-fixture',
+        async list() {
+          return [
+            {
+              name: 'coordinate-clash',
+              source: 'actionability-fixture',
+              ecosystem: 'npm' as const,
+              identifier: 'different-package',
+              popularity: 100,
+            },
+            {
+              name: 'remote-only',
+              source: 'actionability-fixture',
+              url: 'https://example.test/remote-only',
+              popularity: 100,
+            },
+            {
+              name: 'overlong-identifier',
+              source: 'actionability-fixture',
+              ecosystem: 'npm' as const,
+              identifier: 'a'.repeat(201),
+              popularity: 100,
+            },
+            {
+              name: 'overlong-version',
+              source: 'actionability-fixture',
+              ecosystem: 'npm' as const,
+              identifier: 'safe-package',
+              version: `v${'1'.repeat(64)}`,
+              popularity: 100,
+            },
+          ];
+        },
+      },
+    ],
+    { fleetHome: '/fixture/feed-actionability' },
+  );
+  assert.equal(feed.recommendations.find((item) => item.name === 'coordinate-clash')?.operation, null);
+  assert.equal(feed.recommendations.find((item) => item.name === 'remote-only')?.operation, null);
+  assert.equal(
+    feed.recommendations.some((item) => item.name === 'overlong-identifier'),
+    false,
+  );
+  assert.equal(
+    feed.recommendations.some((item) => item.name === 'overlong-version'),
+    false,
+  );
+});
+
+test('inventory DTO preserves distinct scopes and counts private contexts on one agent', async () => {
+  const adapter: AgentAdapter = {
+    id: 'scoped',
+    displayName: 'Scoped',
+    capabilitySupport: { 'mcp-server': { inventory: 'supported', management: 'read-only' } },
+    async detect() {
+      return { id: this.id, displayName: this.displayName, present: true, configPaths: [] };
+    },
+    async readInventory() {
+      const item = (scope: 'user' | 'project' | 'local', file: string) => ({
+        kind: 'mcp-server' as const,
+        name: 'same-name',
+        agent: this.id,
+        scope,
+        enabled: true,
+        spec: { transport: 'stdio' as const, command: scope },
+        source: { file },
+      });
+      return [item('user', 'user'), item('project', 'project'), item('local', 'one'), item('local', 'two')];
+    },
+  };
+  const emptyAdapter: AgentAdapter = {
+    id: 'empty-scoped',
+    displayName: 'Empty scoped',
+    capabilitySupport: { 'mcp-server': { inventory: 'supported', management: 'read-only' } },
+    async detect() {
+      return { id: this.id, displayName: this.displayName, present: true, configPaths: [] };
+    },
+    async readInventory() {
+      return [];
+    },
+  };
+  const inventory = await apiInventory([adapter, emptyAdapter]);
+  const instances = inventory.capabilities.find((item) => item.name === 'same-name')?.instances ?? [];
+  assert.deepEqual(
+    instances.map((instance) => [instance.scope, instance.entryCount ?? 1]),
+    [
+      ['user', 1],
+      ['project', 1],
+      ['local', 2],
+      [undefined, 1],
+    ],
+  );
+  assert.equal(inventory.capabilities[0]?.coverage, 'agent-only');
+  assert.deepEqual(instances.find((instance) => instance.scope === 'local')?.operations, []);
+  const scopedFilters = {
+    kind: 'mcp-server',
+    status: 'read-only',
+    sort: 'name' as const,
+    query: '',
+  };
+  const scopedNames = inventoryViewItems(inventory, scopedFilters).map((capability) => capability.name);
+  assert.deepEqual(scopedNames, ['same-name']);
+  const browserInventoryView = runInNewContext(
+    '(' + INVENTORY_VIEW_ITEMS_BROWSER_SOURCE + ')',
+  ) as typeof inventoryViewItems;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(browserInventoryView(inventory, scopedFilters))).map(
+      (capability: { name: string }) => capability.name,
+    ),
+    scopedNames,
+  );
+  const overview = mapOverview(
+    inventory,
+    { lockStatus: 'not-present', checked: 0, findings: [], unmanaged: [] },
+    Date.now(),
+  );
+  assert.equal(overview.capabilityInstances, 4);
+  assert.equal(overview.agents[0]?.capabilityInstances, 4);
+  assert.equal(overview.agents[1]?.capabilityInstances, 0);
+});
+
+test('inventory DTO never advertises a mutation for duplicate entries inside one writable scope', async () => {
+  const adapter: AgentAdapter = {
+    id: 'duplicate-scope',
+    displayName: 'Duplicate scope',
+    supportsWrite: true,
+    capabilitySupport: { 'mcp-server': { inventory: 'supported', management: 'writable' } },
+    async detect() {
+      return {
+        id: this.id,
+        displayName: this.displayName,
+        present: true,
+        configPaths: [],
+        runtimeStatus: 'available',
+        configurationStatus: 'configured',
+      };
+    },
+    async readInventory() {
+      const item = (file: string) => ({
+        kind: 'mcp-server' as const,
+        name: 'duplicate',
+        agent: this.id,
+        scope: 'user' as const,
+        enabled: true,
+        spec: { transport: 'stdio' as const, command: 'safe' },
+        source: { file },
+      });
+      return [item('one'), item('two')];
+    },
+    async renderInstall() {
+      throw new Error('not used');
+    },
+    async renderRemove() {
+      throw new Error('not used');
+    },
+    validate() {},
+  } as AgentAdapter;
+  const inventory = await apiInventory([adapter]);
+  const instance = inventory.capabilities.find((item) => item.name === 'duplicate')?.instances[0];
+  assert.equal(instance?.entryCount, 2);
+  assert.equal(instance?.management, 'none');
+  assert.deepEqual(instance?.operations, []);
+});
+
+test('overview counts real BYO capability rows even when management metadata is absent', async () => {
+  const adapter: AgentAdapter = {
+    id: 'metadata-optional',
+    displayName: 'Metadata optional',
+    async detect() {
+      return { id: this.id, displayName: this.displayName, present: true, configPaths: [] };
+    },
+    async readInventory() {
+      return [
+        {
+          kind: 'mcp-server',
+          name: 'reported-server',
+          agent: this.id,
+          scope: 'user',
+          enabled: true,
+          spec: { transport: 'stdio', command: 'safe' },
+          source: { file: 'fixture' },
+        },
+      ];
+    },
+  };
+  const inventory = await apiInventory([adapter]);
+  assert.equal(inventory.capabilities[0]?.instances[0]?.availability, 'unverifiable');
+  assert.equal(inventory.capabilityInstances, 1);
+  const overview = mapOverview(
+    inventory,
+    { lockStatus: 'not-present', checked: 0, findings: [], unmanaged: [] },
+    Date.now(),
+  );
+  assert.equal(overview.capabilityInstances, 1);
+  assert.equal(overview.agents[0]?.capabilityInstances, 1);
 });
 
 test('inventory DTO truthfully models read-only and failed adapter cells for the UI', async () => {
@@ -488,9 +1000,8 @@ test('generated discovery validator accepts real producer reasons and rejects ar
     trust: 'unknown',
     operation: null,
   };
-  assert.equal(validate({ ...relatedBase, reasons: [`related to your setup (${'a'.repeat(122)})`] }), true);
-  assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (a)'] }), false);
-  assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (abcd  efgh)'] }), false);
+  assert.equal(validate({ ...relatedBase, reasons: ['related'] }), true);
+  assert.equal(validate({ ...relatedBase, reasons: ['related to your setup (private-token)'] }), false);
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00.000Z' }), true);
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00Z' }), false);
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: 'not-a-date' }), false);
@@ -589,6 +1100,7 @@ test('inventory advertised plugin install and multi-source sync build determinis
     kind: 'plugin',
     name: 'review-tools',
     to: 'codex',
+    marketplace: 'fixture-marketplace',
   });
 
   const agents = [
@@ -613,6 +1125,20 @@ test('inventory advertised plugin install and multi-source sync build determinis
     }),
     { action: 'sync', kind: 'skill', name: 'shared', from: 'a', to: 'c' },
   );
+  const scopedSkill = {
+    ...capability,
+    instances: [
+      { agent: 'a', scope: 'user', availability: 'installed', management: 'writable' },
+      capability.instances[2]!,
+    ],
+  };
+  assert.deepEqual(
+    inventoryOperationPayload('remove', scopedSkill, scopedSkill.instances[0]!, {
+      agents: [agents[0]!, agents[2]!],
+      capabilities: [scopedSkill],
+    }),
+    { action: 'remove', kind: 'skill', name: 'shared', from: 'a', scope: 'user' },
+  );
 
   const disabledSource = {
     ...capability,
@@ -628,6 +1154,59 @@ test('inventory advertised plugin install and multi-source sync build determinis
     }),
     { action: 'sync', kind: 'skill', name: 'shared', from: 'a', to: 'c' },
   );
+
+  const scopedMcp = {
+    kind: 'mcp-server',
+    name: 'scoped-server',
+    coverage: 'gap',
+    coordinate: { ecosystem: 'npm', identifier: 'scoped-server', version: '2.0.0' },
+    instances: [
+      { agent: 'a', scope: 'project', availability: 'installed', management: 'read-only' },
+      { agent: 'c', availability: 'missing', management: 'writable' },
+    ],
+  };
+  assert.deepEqual(
+    inventoryOperationPayload('sync', scopedMcp, scopedMcp.instances[1]!, {
+      agents: [agents[0]!, agents[2]!],
+      capabilities: [scopedMcp],
+    }),
+    {
+      action: 'sync',
+      kind: 'mcp-server',
+      name: 'scoped-server',
+      from: 'a',
+      fromScope: 'project',
+      to: 'c',
+    },
+  );
+  assert.deepEqual(
+    inventoryOperationPayload('update', scopedMcp, scopedMcp.instances[0]!, {
+      agents: [agents[0]!, agents[2]!],
+      capabilities: [scopedMcp],
+    }),
+    {
+      action: 'update',
+      kind: 'mcp-server',
+      name: 'scoped-server',
+      to: 'a',
+      scope: 'project',
+      coordinate: { version: '2.0.0' },
+    },
+  );
+  const ambiguousSource = {
+    ...scopedMcp,
+    instances: [
+      ...scopedMcp.instances,
+      { agent: 'a', scope: 'user', availability: 'installed', management: 'writable' },
+    ],
+  };
+  assert.equal(
+    inventoryOperationPayload('sync', ambiguousSource, ambiguousSource.instances[1]!, {
+      agents: [agents[0]!, agents[2]!],
+      capabilities: [ambiguousSource],
+    }),
+    null,
+  );
 });
 
 test('overview client renders one deterministic four-DTO capability map without inferring operations', () => {
@@ -639,7 +1218,9 @@ test('overview client renders one deterministic four-DTO capability map without 
   assert.match(html, /capability\.instances/);
   assert.match(html, /inventory\.agents\.forEach/);
   assert.match(html, /instance\.agent === agent\.id/);
-  assert.match(html, /matches\.length === 1/);
+  assert.match(html, /matches\.length \? matches/);
+  assert.match(html, /scoped-state/);
+  assert.match(html, /instance\.entryCount \? ' · ×'/);
   assert.match(html, /instance\.operations/);
   assert.match(html, /capability\.coverage/);
   assert.doesNotMatch(html, /management\s*===\s*['"]writable['"].*operations/s);
@@ -664,12 +1245,19 @@ test('drift and activity render truthful grouped read models and targeted rollba
   assert.match(html, /node\('li', 'activity-record'\)/);
   assert.match(html, /item\.rollbackEligible/);
   assert.match(html, /data-audit-id/);
+  assert.match(html, /item\.name \+ '@' \+ item\.marketplace/);
+  assert.match(html, /enumLabel\(kindLabels, item\.kind\)/);
+  assert.match(html, /rollback\.auditId/);
+  assert.match(html, /rollback\.recordedAt/);
   assert.match(html, /rollback\.confirm/);
   assert.match(html, /postJson\('\/api\/rollback', \{ auditId:item\.id \}\)/);
   assert.match(html, /rollback\.guard/);
   assert.match(html, /rollbackPending/);
   assert.match(html, /rollbackGeneration/);
   assert.match(html, /rollback\.select/);
+  assert.match(html, /validRollback\(result\)/);
+  assert.match(html, /await refresh\(\)/);
+  assert.match(html, /rollback\.responseUnavailable/);
   assert.match(html, /result\.action === 'skipped'/);
   assert.doesNotMatch(html, /postJson\('\/api\/rollback', \{\}\)/);
 });
@@ -710,6 +1298,9 @@ test('overview exposes truthful summary, kind filters, attention, and state voca
   assert.match(documentHtml, /Capability instances/);
   assert.match(documentHtml, /Unique capability keys/);
   assert.match(documentHtml, /id="attention"/);
+  assert.match(renderPage(), /attention\.withheld/);
+  assert.match(renderPage(), /public\.withheld/);
+  assert.match(renderPage(), /drift\.findings\.length \+ results\.overview\.drift\.withheldCount/);
 });
 
 test('renderPage exposes every dashboard view', () => {
@@ -830,7 +1421,15 @@ test('inventory view has local search, counted kind chips, status filtering, and
 
 test('inventory validation and detail rendering expose only public metadata and exact operations', () => {
   const html = renderPage();
+  assert.match(html, /value\.schemaVersion === 2/);
+  assert.match(html, /validWithheldCount/);
+  assert.match(html, /typeof instance\.enabled === 'boolean'/);
+  assert.match(html, /inventory\.withheldCount/);
+  assert.match(html, /feed\.withheldCount/);
+  assert.match(html, /conflicts\.withheldCount/);
   assert.match(html, /validCoordinate/);
+  assert.match(html, /function publicKind/);
+  assert.match(html, /\['mcp-server','skill','rule','plugin'\]\.indexOf\(change\.kind\)/);
   assert.match(html, /validCapabilityMetadata/);
   assert.match(html, /capability\.description/);
   assert.match(html, /capability\.tokensEst/);
@@ -839,21 +1438,33 @@ test('inventory validation and detail rendering expose only public metadata and 
   assert.doesNotMatch(html, /capability\.(?:path|raw|spec)/);
 });
 
-test('every inventory operation and MCP update uses the shared preview-only plan path', () => {
+test('every advertised operation uses shared preview then explicit single-use apply', () => {
   const html = renderPage();
   assert.match(html, /async function doPlan/);
   assert.match(html, /postJson\('\/api\/plan', body\)/);
   assert.match(html, /validPlan/);
+  assert.match(html, /validApply/);
   assert.match(html, /preview\.summary/);
   assert.doesNotMatch(html, /node\('p', 'plan-summary', plan\.operationSummary\)/);
   assert.match(html, /enumLabel\(skillUpdateLabels, update\.state\)/);
   assert.match(html, /planPending/);
-  assert.match(html, /openDialog\(t\('preview\.title',[\s\S]*null, trigger\)/);
+  assert.match(html, /applyPending/);
+  assert.match(html, /plan\.changes\.length \? function\(\)\{ void applyStoredPlan\(plan\); \} : null/);
+  assert.match(html, /postJson\('\/api\/apply', \{ planId:plan\.planId \}\)/);
+  assert.match(html, /apply\.unavailable/);
+  assert.match(html, /Do not retry yet/);
+  assert.match(html, /manual-config-recovery/);
+  assert.match(html, /vendor-state-inspection/);
   assert.match(html, /focusTarget && focusTarget\.isConnected \? focusTarget : document\.activeElement/);
   assert.match(html, /startingDialogGeneration !== dialogGeneration/);
   assert.match(html, /button\.plan-trigger/);
   assert.match(html, /setAttribute\('role', 'alert'\)/);
   assert.match(html, /doPlan\(operationLabel, payload, button\)/);
   assert.match(html, /doPlan\(t\('action\.update'\), \{ action:'update'/);
-  assert.doesNotMatch(html, /postJson\('\/api\/apply'/);
+  assert.match(html, /if\(!force && \(applyPending \|\| rollbackPending\)\) return/);
+  assert.match(html, /dialogCancel\.disabled = true/);
+  assert.match(html, /if\(result\.outcome === 'outcome-unknown'\)/);
+  assert.match(html, /await refresh\(\)/);
+  assert.match(html, /activity\.trust/);
+  assert.doesNotMatch(html, /'Trust: ' \+ item\.trustLevel/);
 });

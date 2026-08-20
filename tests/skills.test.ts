@@ -10,6 +10,7 @@ import {
   symlinkSync,
   lstatSync,
   readlinkSync,
+  chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +24,7 @@ import {
   type PlannedChange,
 } from '../src/core/writer.js';
 import { listSkillDirs, parseSkillFrontmatter } from '../src/core/skills.js';
-import { hashDir, copyDir } from '../src/core/fsutil.js';
+import { hashDir, copyDir, copyDirExclusive } from '../src/core/fsutil.js';
 import { planInstallSkill, planSyncSkill, planRemoveSkill, applyPlan } from '../src/core/orchestrator.js';
 
 const noValidate: ChangeValidator = () => {};
@@ -178,6 +179,24 @@ test(
 );
 
 test(
+  'directory snapshots reject unsupported entries instead of silently omitting them',
+  { skip: process.platform === 'win32' },
+  withTempDir(async (dir) => {
+    // /dev contains character devices. Fleet must never hash or copy a tree
+    // while silently dropping those entries; applyDirChange calls hashDir on
+    // an existing target before backup, detach, or removal.
+    await assert.rejects(hashDir('/dev'), /unsupported directory entry type/);
+
+    const ordinaryCopy = join(dir, 'ordinary-copy');
+    await assert.rejects(copyDir('/dev', ordinaryCopy), /unsupported directory entry type/);
+
+    const exclusiveCopy = join(dir, 'exclusive-copy');
+    await assert.rejects(copyDirExclusive('/dev', exclusiveCopy), /unsupported directory entry type/);
+    assert.equal(lstatSync('/dev/null').isCharacterDevice(), true);
+  }),
+);
+
+test(
   'skill render rejects path-traversal names (containment)',
   withTempDir(async (dir) => {
     const a = new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, 'skills'));
@@ -193,6 +212,29 @@ test(
       a.renderRemoveSkill({ kind: 'skill', name: '../../etc', scope: 'user' }),
       /escapes|invalid/,
     );
+  }),
+);
+
+test(
+  'orchestrator binds declared skill sources to their physical pack/profile root',
+  withTempDir(async (dir) => {
+    const pack = join(dir, 'pack');
+    const outside = join(dir, 'private');
+    mkdirSync(pack);
+    mkSkill(outside, 'secretproject');
+    symlinkSync(outside, join(pack, 'group'));
+    const adapter = new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, 'agent-skills'));
+    await assert.rejects(
+      planInstallSkill(
+        [adapter],
+        { name: 'group/secretproject', dir: join(pack, 'group', 'secretproject') },
+        'group/secretproject',
+        ['claude-code'],
+        { trustPolicy: 'block', sourceRoot: pack },
+      ),
+      /symlink|outside the target root/,
+    );
+    assert.equal(existsSync(join(dir, 'agent-skills', 'group', 'secretproject')), false);
   }),
 );
 
@@ -338,6 +380,23 @@ test('context-cost lens: skills and rules carry tokensEst (~bytes/4)', async () 
     const rules = await readRulesInventory('claude-code', f);
     assert.equal(rules[0]!.tokensEst, 100);
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('strict skill inventory rejects an unreadable authoritative subtree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-skills-unreadable-'));
+  const hidden = join(dir, 'skills', 'hidden');
+  try {
+    mkdirSync(hidden, { recursive: true });
+    writeFileSync(join(hidden, 'SKILL.md'), '# hidden');
+    chmodSync(hidden, 0o000);
+    await assert.rejects(
+      readSkillsInventory('x', join(dir, 'skills'), { strict: true }),
+      /EACCES|permission denied/i,
+    );
+  } finally {
+    chmodSync(hidden, 0o700);
     rmSync(dir, { recursive: true, force: true });
   }
 });

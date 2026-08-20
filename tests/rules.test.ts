@@ -1,11 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { CodexAdapter } from '../src/adapters/codex.js';
-import { parseRuleBlocks, upsertRuleBlock, removeRuleBlock, renderRuleInstall } from '../src/core/rules.js';
+import {
+  parseRuleBlocks,
+  readRulesInventory,
+  upsertRuleBlock,
+  removeRuleBlock,
+  renderRuleInstall,
+} from '../src/core/rules.js';
 import { planInstallRule, planSyncRule, planRemoveRule, applyPlan } from '../src/core/orchestrator.js';
 
 function withTempDir(fn: (dir: string) => void | Promise<void>) {
@@ -138,7 +144,25 @@ test(
 );
 
 test(
-  'rule install is not blocked by a malformed MCP config (impact analysis is best-effort)',
+  'rules: authoritative inventory and mutation reject damaged or duplicate Fleet markers',
+  withTempDir(async (dir) => {
+    const file = join(dir, 'AGENTS.md');
+    const ref = { kind: 'rule' as const, name: 'safe', scope: 'user' as const };
+    for (const damaged of [
+      '# human\n<!-- fleet:rule:broken -->\nunfinished\n',
+      '<!-- fleet:rule:dup -->\none\n<!-- /fleet:rule:dup -->\n' +
+        '<!-- fleet:rule:dup -->\ntwo\n<!-- /fleet:rule:dup -->\n',
+    ]) {
+      writeFileSync(file, damaged);
+      await assert.rejects(readRulesInventory('codex', file), /rule marker/);
+      await assert.rejects(renderRuleInstall(file, 'new body', ref), /rule marker/);
+      assert.equal(readFileSync(file, 'utf8'), damaged);
+    }
+  }),
+);
+
+test(
+  'rule install fails closed when the target agent inventory is unavailable',
   withTempDir(async (dir) => {
     const home = join(dir, 'home');
     const claudeJson = join(dir, '.claude.json');
@@ -146,11 +170,12 @@ test(
     writeFileSync(claudeJson, '{ this is : not valid json'); // malformed MCP config
     writeFileSync(claudeRules, '# rules\n');
     const ads = [new ClaudeCodeAdapter(claudeJson, join(dir, '_sk'), claudeRules)];
-    const plan = await planInstallRule(ads, 'style', 'be terse', ['claude-code']);
-    assert.equal(plan.changes.length, 1); // rule install still planned
-    assert.equal(plan.skips.length, 0);
-    await applyPlan(ads, plan, { fleetHome: home });
-    assert.match(readFileSync(claudeRules, 'utf8'), /be terse/);
+    await assert.rejects(
+      planInstallRule(ads, 'style', 'be terse', ['claude-code']),
+      /agent state unavailable/,
+    );
+    assert.doesNotMatch(readFileSync(claudeRules, 'utf8'), /be terse/);
+    assert.equal(existsSync(join(home, 'audit.jsonl')), false);
   }),
 );
 

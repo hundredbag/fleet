@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractCoordinate } from '../src/feed/coords.js';
 import { discover, updatesForInventory, newRelevant } from '../src/feed/feed.js';
+import { assessTrust } from '../src/feed/trust.js';
 import type { FeedItem, FeedSource } from '../src/feed/source.js';
 import type { Inventory, McpServerCapability, McpServerSpec } from '../src/core/types.js';
 
@@ -39,6 +40,15 @@ test('extractCoordinate: npx / uvx / value-flags / local-script / remote', () =>
   );
   assert.equal(extractCoordinate({ transport: 'stdio', command: 'uvx', args: ['mypkg'] })?.ecosystem, 'pypi');
   assert.equal(extractCoordinate({ transport: 'stdio', command: 'node', args: ['server.js'] }), null);
+  assert.equal(
+    extractCoordinate({ transport: 'stdio', command: 'npx', args: ['pkg@file:/home/alice/private'] }),
+    null,
+  );
+  assert.equal(
+    extractCoordinate({ transport: 'stdio', command: 'npx', args: ['pkg@^1.2.3'] })?.version,
+    '^1.2.3',
+  );
+  assert.equal(extractCoordinate({ transport: 'stdio', command: 'uvx', args: ['../private'] }), null);
   assert.equal(extractCoordinate({ transport: 'http', url: 'https://h.test/mcp' })?.confidence, 'low');
 });
 
@@ -131,6 +141,40 @@ test('cachedDiscover: second call within TTL is served from cache; refresh bypas
   }
 });
 
+test('cachedDiscover preserves normalized caution status and trust across a cache hit', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-fc-caution-'));
+  const source: FeedSource = {
+    id: 'caution-source',
+    list: async () => [
+      {
+        name: 'retired-tool',
+        source: 'caution-source',
+        status: 'deprecated',
+        url: 'https://registry.example/retired-tool',
+        updatedAt: '2026-08-01T00:00:00Z',
+      },
+    ],
+  };
+  try {
+    const live = await cachedDiscover([source], { fleetHome: dir });
+    const cached = await cachedDiscover([source], { fleetHome: dir });
+    assert.equal(live.fromCache, false);
+    assert.equal(cached.fromCache, true);
+    assert.equal(live.items[0]?.status, 'caution');
+    assert.equal(cached.items[0]?.status, 'caution');
+    assert.deepEqual(assessTrust(cached.items[0]!, Date.parse('2026-08-19T00:00:00Z')), {
+      level: 'caution',
+      reasons: ['REGISTRY_STATUS_CAUTION'],
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('cachedDiscover: corrupt cache file → live refetch, not a crash', async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -144,5 +188,92 @@ test('cachedDiscover: corrupt cache file → live refetch, not a crash', async (
     assert.equal(r.fromCache, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cachedDiscover: source exceptions are code-only at rest and cache mode is 0600', async () => {
+  const { mkdtempSync, readFileSync, rmSync, statSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-fc-secure-'));
+  try {
+    const result = await cachedDiscover(
+      [
+        {
+          id: 'broken',
+          async list() {
+            throw new Error('credential is OPAQUE_CACHE_FAILURE');
+          },
+        },
+      ],
+      { fleetHome: dir },
+    );
+    const file = join(dir, 'cache', 'feed.json');
+    assert.deepEqual(result.failures, [{ source: 'broken', code: 'SOURCE_UNAVAILABLE' }]);
+    assert.equal(readFileSync(file, 'utf8').includes('OPAQUE_CACHE_FAILURE'), false);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cachedDiscover migrates a valid legacy cache before returning it', async () => {
+  const { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } =
+    await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-fc-legacy-'));
+  try {
+    const cacheDir = join(dir, 'cache');
+    const file = join(cacheDir, 'feed.json');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        time: Date.now(),
+        sourceKey: 'legacy',
+        items: [{ name: 'safe\u001b]8;;https://evil', source: 'legacy' }],
+        failures: [{ source: 'legacy', error: 'credential is OPAQUE_LEGACY_CACHE' }],
+      }),
+    );
+    chmodSync(file, 0o644);
+    const result = await cachedDiscover([{ id: 'legacy', list: async () => [] }], { fleetHome: dir });
+    const migrated = readFileSync(file, 'utf8');
+    assert.equal(result.fromCache, true);
+    assert.equal(JSON.stringify(result).includes('OPAQUE_LEGACY_CACHE'), false);
+    assert.equal(migrated.includes('OPAQUE_LEGACY_CACHE'), false);
+    assert.equal(migrated.includes('\u001b'), false);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cachedDiscover honors FLEET_HOME and never follows a cache-directory symlink', async () => {
+  const { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { cachedDiscover } = await import('../src/feed/cache.js');
+  const root = mkdtempSync(join(tmpdir(), 'fleet-fc-home-'));
+  const home = join(root, 'fleet-home');
+  const outside = join(root, 'outside');
+  const previous = process.env.FLEET_HOME;
+  try {
+    process.env.FLEET_HOME = home;
+    await cachedDiscover([{ id: 'env-home', list: async () => [] }]);
+    assert.equal(existsSync(join(home, 'cache', 'feed.json')), true);
+
+    rmSync(join(home, 'cache'), { recursive: true, force: true });
+    mkdirSync(outside);
+    symlinkSync(outside, join(home, 'cache'));
+    const result = await cachedDiscover([{ id: 'symlink', list: async () => [] }], { refresh: true });
+    assert.equal(result.fromCache, false);
+    assert.equal(existsSync(join(outside, 'feed.json')), false);
+  } finally {
+    if (previous === undefined) delete process.env.FLEET_HOME;
+    else process.env.FLEET_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
   }
 });

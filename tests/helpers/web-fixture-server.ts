@@ -67,7 +67,6 @@ export async function startWebFixtureServer(
     const codexConfig = join(codexRoot, 'config.toml');
     const codexSkills = join(codexRoot, 'skills');
     const codexRules = join(codexRoot, 'AGENTS.md');
-    const codexPlugins = join(codexRoot, 'plugins');
     const sharedSkills = join(root, 'shared-skills');
 
     const paths = [
@@ -80,7 +79,6 @@ export async function startWebFixtureServer(
       codexConfig,
       codexSkills,
       codexRules,
-      codexPlugins,
       sharedSkills,
     ];
 
@@ -88,7 +86,6 @@ export async function startWebFixtureServer(
     mkdirSync(join(claudeSkills, 'fixture-claude-skill'), { recursive: true });
     mkdirSync(claudePlugins, { recursive: true });
     mkdirSync(join(codexSkills, 'fixture-codex-skill'), { recursive: true });
-    mkdirSync(join(codexPlugins, 'fixture-codex-plugin'), { recursive: true });
     mkdirSync(sharedSkills, { recursive: true });
     writeFileSync(
       claudeConfig,

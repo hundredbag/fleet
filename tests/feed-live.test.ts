@@ -5,7 +5,7 @@ import { recommend, defaultScorer } from '../src/feed/recommend.js';
 import { McpRegistrySource } from '../src/feed/sources/mcp-registry.js';
 import { PulseMcpSource } from '../src/feed/sources/pulsemcp.js';
 import { FleetHubSource } from '../src/feed/sources/hub.js';
-import { defaultSources } from '../src/feed/index.js';
+import { defaultSources, feedSourceEnabled } from '../src/feed/index.js';
 import { DEFAULT_CONFIG } from '../src/core/config.js';
 import type { FeedItem, FeedSource } from '../src/feed/source.js';
 import type { Inventory, McpServerCapability, McpServerSpec } from '../src/core/types.js';
@@ -55,7 +55,7 @@ test('discover merge: later source fills fields the earlier left undefined (no c
       ecosystem: 'npm',
       popularity: 50,
       description: 'from pulse',
-      url: 'http://p',
+      url: 'https://pulse.example/item',
     },
   ]);
   const { items } = await discover([registry, pulse]);
@@ -63,7 +63,7 @@ test('discover merge: later source fills fields the earlier left undefined (no c
   assert.equal(items[0]?.version, '2.0.0'); // registry wins on conflict
   assert.equal(items[0]?.popularity, 50); // filled from pulse
   assert.equal(items[0]?.description, 'from pulse'); // registry's undefined must NOT clobber
-  assert.equal(items[0]?.url, 'http://p');
+  assert.equal(items[0]?.url, 'https://pulse.example/item');
 });
 
 test('discover: items with no identifier/url are not collapsed on shared name', async () => {
@@ -102,6 +102,25 @@ test('recommend: novelty + popularity + relevance, installed filtered, limit', a
   assert.ok(!names.includes('installed-dup')); // already installed → filtered
   assert.ok(recs.find((r) => r.item.name === 'new-thing')?.reasons.includes('new'));
   assert.ok(recs.find((r) => r.item.name === 'github helper')?.reasons.some((x) => /related/.test(x)));
+});
+
+test('recommendation context excludes permission command and path tokens', async () => {
+  const inventory: Inventory = {
+    agents: [],
+    items: [
+      {
+        kind: 'permission',
+        name: 'Bash(cat /home/alice/velvetquasar)',
+        agent: 'claude-code',
+        scope: 'user',
+        enabled: true,
+        effect: 'allow',
+        source: { file: '/private/settings.json' },
+      },
+    ],
+  };
+  const recs = await recommend(inventory, [{ name: 'velvetquasar helper', source: 'registry' }]);
+  assert.deepEqual(recs, []);
 });
 
 test('recommend: scorer is injectable + batch + async (the C/hub seam)', async () => {
@@ -267,6 +286,19 @@ test('FleetHubSource: non-OK response throws (discover catches it into failures)
 test('defaultSources: the hub joins only when hubUrl is configured', () => {
   assert.ok(!defaultSources({ ...DEFAULT_CONFIG }).some((s) => s.id === 'hub'));
   assert.ok(defaultSources({ ...DEFAULT_CONFIG, hubUrl: 'https://hub' }).some((s) => s.id === 'hub'));
+});
+
+test('defaultSources: config feedSources is an available-source allowlist with null/all and empty/none', () => {
+  assert.deepEqual(
+    defaultSources({ ...DEFAULT_CONFIG, feedSources: ['skills.sh', 'plugin-markets'] }).map(
+      (source) => source.id,
+    ),
+    ['skills.sh', 'plugin-markets'],
+  );
+  assert.deepEqual(defaultSources({ ...DEFAULT_CONFIG, feedSources: [] }), []);
+  assert.ok(defaultSources({ ...DEFAULT_CONFIG, feedSources: null }).length >= 5);
+  assert.equal(feedSourceEnabled({ ...DEFAULT_CONFIG, feedSources: ['skills.sh'] }, 'skills.sh'), true);
+  assert.equal(feedSourceEnabled({ ...DEFAULT_CONFIG, feedSources: [] }, 'skills.sh'), false);
 });
 
 test('PulseMcpSource: requires an API key, then maps popularity', async () => {

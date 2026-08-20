@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readClaudeSubagents, readCodexSubagents } from '../src/core/subagents.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
+import { CodexAdapter } from '../src/adapters/codex.js';
+import { buildInventory } from '../src/core/inventory.js';
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), 'fleet-sub-'));
@@ -54,6 +56,30 @@ test('codex subagents: toml parsed; invalid toml skipped, not fatal', async () =
   }
 });
 
+test('built-in inventory makes malformed subagent definitions unavailable to Setup Doctor', async () => {
+  const dir = tmp();
+  try {
+    const config = join(dir, 'config.toml');
+    const agents = join(dir, 'agents');
+    writeFileSync(config, '# codex\n');
+    mkdirSync(agents);
+    writeFileSync(join(agents, 'broken.toml'), 'not = = toml');
+    const adapter = new CodexAdapter(
+      config,
+      join(dir, 'skills'),
+      join(dir, 'AGENTS.md'),
+      join(dir, 'shared-skills'),
+      join(dir, 'missing-codex'),
+    );
+    const inventory = await buildInventory([adapter]);
+    assert.equal(inventory.agents[0]?.inventoryStatus, 'read-failed');
+    assert.equal(inventory.agents[0]?.setupStatus, 'inventory-unavailable');
+    assert.deepEqual(inventory.items, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('claude adapter inventories subagents from <settings dir>/agents (hermetic by derivation)', async () => {
   const dir = tmp();
   try {
@@ -95,7 +121,7 @@ test('SECURITY: subagent prompts never cross summarize (sentinel absent)', async
     const { summarizeInventory } = await import('../src/core/redact.js');
     const summary = JSON.stringify(summarizeInventory(await buildInventory([a])));
     assert.ok(!summary.includes('XYZZY'), 'prompt leaked through summarize');
-    assert.ok(summary.includes('"tools":["Read","Grep"]'.replace(/"/g, '"')) || summary.includes('Grep')); // flow list parsed
+    assert.match(summary, /"declaredToolCount":2/); // tool names stay private; the constraint count remains
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

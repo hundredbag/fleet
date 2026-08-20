@@ -7,6 +7,7 @@ import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { planInstall, planInstallSkill, execute } from '../src/core/orchestrator.js';
 import { buildInventory } from '../src/core/inventory.js';
 import { detectDrift } from '../src/core/drift.js';
+import { hashDirLegacy } from '../src/core/fsutil.js';
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), 'fleet-drift-'));
@@ -182,6 +183,48 @@ test('drift: pre-canonical lock entries read UNVERIFIABLE with re-baseline hint'
     const report = await detectDrift(await buildInventory([a]), home);
     assert.equal(report.findings[0]?.state, 'unverifiable');
     assert.match(report.findings[0]?.detail ?? '', /re-baseline/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('drift: canonical-v1 skill hashes remain readable after root-mode hashing upgrade', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    const a = hermeticClaude(dir);
+    const source = join(dir, 'source-skill');
+    mkdirSync(source);
+    writeFileSync(join(source, 'SKILL.md'), '# legacy');
+    const plan = await planInstallSkill([a], { name: 'legacy', dir: source }, 'legacy', ['claude-code']);
+    await execute([a], plan, { commit: true, fleetHome: home });
+
+    const installed = join(dir, 'skills', 'legacy');
+    const lockPath = join(home, 'fleet.lock');
+    const doc = JSON.parse(readFileSync(lockPath, 'utf8'));
+    const entry = Object.values(doc.entries).find((value: any) => value.kind === 'skill') as any;
+    entry.hashScheme = 'canonical-v1';
+    entry.contentHash = await hashDirLegacy(installed);
+    writeFileSync(lockPath, JSON.stringify(doc));
+
+    const report = await detectDrift(await buildInventory([a]), home);
+    assert.deepEqual(report.findings, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('drift: malformed fleet.lock is unavailable instead of an empty healthy baseline', async () => {
+  const dir = tmp();
+  try {
+    const home = join(dir, 'home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'fleet.lock'), '{ broken');
+    const report = await detectDrift({ agents: [], items: [] }, home);
+    assert.equal(report.lockStatus, 'malformed');
+    assert.equal(report.checked, 0);
+    assert.deepEqual(report.findings, []);
+    assert.deepEqual(report.unmanaged, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

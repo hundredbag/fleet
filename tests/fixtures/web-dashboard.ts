@@ -140,6 +140,8 @@ export const dashboardAdapters: AgentAdapter[] = [
         displayName: 'Claude Code',
         present: true,
         configPaths: ['/fixture/claude/settings.json'],
+        runtimeStatus: 'available',
+        configurationStatus: 'configured',
       };
     },
     async readInventory() {
@@ -162,6 +164,8 @@ export const dashboardAdapters: AgentAdapter[] = [
         displayName: 'Codex',
         present: true,
         configPaths: ['/fixture/codex/config.toml'],
+        runtimeStatus: 'available',
+        configurationStatus: 'configured',
       };
     },
     async readInventory() {

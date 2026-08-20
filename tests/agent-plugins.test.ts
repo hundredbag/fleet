@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readClaudePlugins, readCodexPlugins } from '../src/core/agent-plugins.js';
+import { readClaudePlugins, readClaudePluginsStrict, readCodexPlugins } from '../src/core/agent-plugins.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 
 async function withDir(body: (dir: string) => Promise<void>): Promise<void> {
@@ -64,6 +64,33 @@ test('readClaudePlugins: missing/malformed settings or manifests → [] (never t
     const plugins = await readClaudePlugins('c', join(dir, 'no-plugins-dir'), settings);
     assert.equal(plugins.length, 1);
     assert.equal(plugins[0]?.description, undefined);
+  });
+});
+
+test('readClaudePluginsStrict: missing is empty but malformed state is unavailable', async () => {
+  await withDir(async (dir) => {
+    const settings = join(dir, 'settings.json');
+    assert.deepEqual(await readClaudePluginsStrict('c', join(dir, 'plugins'), settings), []);
+    writeFileSync(settings, '{ truncated');
+    await assert.rejects(
+      readClaudePluginsStrict('c', join(dir, 'plugins'), settings),
+      /plugin settings are unavailable or invalid/,
+    );
+    writeFileSync(settings, JSON.stringify({ enabledPlugins: 'not-an-object' }));
+    await assert.rejects(
+      readClaudePluginsStrict('c', join(dir, 'plugins'), settings),
+      /plugin settings are unavailable or invalid/,
+    );
+    writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'valid@m': 'true' } }));
+    await assert.rejects(
+      readClaudePluginsStrict('c', join(dir, 'plugins'), settings),
+      /plugin settings are unavailable or invalid/,
+    );
+    writeFileSync(settings, JSON.stringify({ enabledPlugins: { '../unsafe': true } }));
+    await assert.rejects(
+      readClaudePluginsStrict('c', join(dir, 'plugins'), settings),
+      /plugin settings are unavailable or invalid/,
+    );
   });
 });
 

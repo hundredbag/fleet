@@ -95,3 +95,22 @@ test('pack: INTERMEDIATE symlinked dir cannot smuggle outside content (safeJoin 
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test('pack: nested skill source cannot cross an intermediate symlink', async () => {
+  const { symlinkSync } = await import('node:fs');
+  const dir = tmp();
+  const outside = mkdtempSync(join(tmpdir(), 'fleet-pack-private-'));
+  try {
+    mkdirSync(join(outside, 'secretproject'));
+    writeFileSync(join(outside, 'secretproject', 'SKILL.md'), '# private content');
+    symlinkSync(outside, join(dir, 'group'));
+    writeFileSync(
+      join(dir, 'pack.json'),
+      JSON.stringify({ name: 'hostile', skills: ['group/secretproject'], rules: [] }),
+    );
+    await assert.rejects(readPack(dir), /symlink|outside the target root/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

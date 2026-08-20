@@ -16,6 +16,10 @@ test('caution: deprecated (case-insensitive) and other lifecycle statuses', () =
     assessTrust(item({ status: 'archived', url: 'https://x', updatedAt: '2026-06-01T00:00:00Z' }), NOW).level,
     'caution',
   );
+  assert.deepEqual(
+    assessTrust(item({ status: 'caution', url: 'https://x', updatedAt: '2026-06-01T00:00:00Z' }), NOW),
+    { level: 'caution', reasons: ['REGISTRY_STATUS_CAUTION'] },
+  );
 });
 
 test('caution: not updated in over a year', () => {
@@ -28,7 +32,7 @@ test('caution: not updated in over a year', () => {
 test('unknown: no source repository', () => {
   const t = assessTrust(item({ updatedAt: '2026-06-01T00:00:00Z' }), NOW);
   assert.equal(t.level, 'unknown');
-  assert.ok(t.reasons.some((r) => /repository/.test(r)));
+  assert.ok(t.reasons.includes('SOURCE_REPOSITORY_MISSING'));
 });
 
 test('unknown: malformed or missing updatedAt is NOT treated as maintained', () => {
@@ -52,7 +56,11 @@ test('hub verdict may ESCALATE (clean local + hub caution → caution)', () => {
     NOW,
   );
   assert.equal(t.level, 'caution');
-  assert.ok(t.reasons.some((r) => /known CVE/.test(r)));
+  assert.ok(t.reasons.includes('HUB_CAUTION'));
+  assert.equal(
+    t.reasons.some((r) => /known CVE/.test(r)),
+    false,
+  );
 });
 
 test('hub verdict may NOT downgrade a local caution (unsigned hub cannot mask a red flag)', () => {

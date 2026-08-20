@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readClaudePermissions, readCodexPermissions } from '../src/core/permissions.js';
+import {
+  readClaudePermissions,
+  readClaudePermissionsStrict,
+  readCodexPermissions,
+} from '../src/core/permissions.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 
 async function withDir(body: (dir: string) => Promise<void>): Promise<void> {
@@ -43,6 +47,17 @@ test('readClaudePermissions: missing / malformed / no-permissions → [] (never 
   });
 });
 
+test('readClaudePermissionsStrict: malformed authoritative permission shape is unavailable', async () => {
+  await withDir(async (dir) => {
+    const path = join(dir, 'settings.json');
+    writeFileSync(path, JSON.stringify({ permissions: { allow: ['Read'], deny: 'Write' } }));
+    await assert.rejects(
+      readClaudePermissionsStrict('claude-code', path),
+      /permission settings are unavailable or invalid/,
+    );
+  });
+});
+
 test('readCodexPermissions: approval_policy + sandbox_mode → policy entries', async () => {
   await withDir(async (dir) => {
     const p = join(dir, 'config.toml');
@@ -61,7 +76,7 @@ test('readCodexPermissions: missing file → [] (never throws)', async () => {
   });
 });
 
-test('adapter: a malformed settings.json does not drop the rest of the inventory', async () => {
+test('adapter: a malformed settings.json makes the unified inventory unavailable', async () => {
   await withDir(async (dir) => {
     const claudeJson = join(dir, '.claude.json');
     writeFileSync(
@@ -75,8 +90,6 @@ test('adapter: a malformed settings.json does not drop the rest of the inventory
       join(dir, 'CLAUDE.md'),
       join(dir, 'settings.json'),
     );
-    const items = await ad.readInventory();
-    assert.ok(items.some((i) => i.kind === 'mcp-server' && i.name === 'gh')); // MCP survived
-    assert.equal(items.filter((i) => i.kind === 'permission').length, 0); // bad perms → none, no throw
+    await assert.rejects(ad.readInventory(), /permission settings are unavailable or invalid/);
   });
 });
