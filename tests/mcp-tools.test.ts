@@ -18,9 +18,9 @@ function setup(dir: string, opts: Parameters<typeof buildTools>[1] = {}) {
   writeFileSync(claudeJson, JSON.stringify({ mcpServers: {} }, null, 2));
   writeFileSync(claudeSettings, JSON.stringify({ enabledPlugins: {} }, null, 2));
   writeFileSync(codexToml, '# codex\n');
-  const claudeExecutable = join(dir, 'claude-bin');
-  writeFileSync(claudeExecutable, '#!/bin/sh\nexit 0\n');
-  chmodSync(claudeExecutable, 0o755);
+  const runtimeExecutable = join(dir, 'agent-runtime');
+  writeFileSync(runtimeExecutable, '#!/bin/sh\nexit 0\n');
+  chmodSync(runtimeExecutable, 0o755);
   const adapters = [
     new ClaudeCodeAdapter(
       claudeJson,
@@ -28,10 +28,16 @@ function setup(dir: string, opts: Parameters<typeof buildTools>[1] = {}) {
       join(dir, '_r-claude.md'),
       claudeSettings,
       join(dir, '_plugins-claude'),
-      claudeExecutable,
+      runtimeExecutable,
     ),
-    new CodexAdapter(codexToml, join(dir, '_sk-codex'), join(dir, '_r-codex.md'), join(dir, '_shared')),
-    new GeminiAdapter(geminiJson),
+    new CodexAdapter(
+      codexToml,
+      join(dir, '_sk-codex'),
+      join(dir, '_r-codex.md'),
+      join(dir, '_shared'),
+      runtimeExecutable,
+    ),
+    new GeminiAdapter(geminiJson, runtimeExecutable),
   ];
   const fleetHome = opts.fleetHome ?? join(dir, 'fleet-home');
   const tools = buildTools(adapters, { ...opts, fleetHome });

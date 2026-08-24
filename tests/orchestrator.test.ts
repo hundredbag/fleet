@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -32,13 +33,29 @@ function setup(dir: string) {
   const claudeJson = join(dir, '.claude.json');
   const codexToml = join(dir, 'config.toml');
   const geminiJson = join(dir, 'gemini.json');
+  const runtimeExecutable = join(dir, 'agent-runtime');
   writeFileSync(claudeJson, JSON.stringify({ mcpServers: {} }, null, 2));
   writeFileSync(codexToml, '# codex\nmodel = "gpt-5.5"\n');
+  writeFileSync(runtimeExecutable, '#!/bin/sh\nexit 0\n');
+  chmodSync(runtimeExecutable, 0o755);
   // gemini intentionally absent
   const adapters = [
-    new ClaudeCodeAdapter(claudeJson, join(dir, '_sk-claude')),
-    new CodexAdapter(codexToml, join(dir, '_sk-codex'), join(dir, '_r.md'), join(dir, '_shared')),
-    new GeminiAdapter(geminiJson),
+    new ClaudeCodeAdapter(
+      claudeJson,
+      join(dir, '_sk-claude'),
+      join(dir, '_r-claude.md'),
+      join(dir, '_settings-claude.json'),
+      join(dir, '_plugins-claude'),
+      runtimeExecutable,
+    ),
+    new CodexAdapter(
+      codexToml,
+      join(dir, '_sk-codex'),
+      join(dir, '_r.md'),
+      join(dir, '_shared'),
+      runtimeExecutable,
+    ),
+    new GeminiAdapter(geminiJson, runtimeExecutable),
   ];
   return { claudeJson, codexToml, geminiJson, adapters };
 }

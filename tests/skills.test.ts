@@ -29,6 +29,13 @@ import { planInstallSkill, planSyncSkill, planRemoveSkill, applyPlan } from '../
 
 const noValidate: ChangeValidator = () => {};
 
+function runtimeFixture(dir: string): string {
+  const executable = join(dir, 'agent-runtime');
+  writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+  chmodSync(executable, 0o755);
+  return executable;
+}
+
 function mkSkill(root: string, name: string, body = 'hello'): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
@@ -237,7 +244,14 @@ test(
     mkdirSync(pack);
     mkSkill(outside, 'secretproject');
     symlinkSync(outside, join(pack, 'group'));
-    const adapter = new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, 'agent-skills'));
+    const adapter = new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      join(dir, 'agent-skills'),
+      join(dir, '_r.md'),
+      join(dir, '_settings.json'),
+      join(dir, '_plugins'),
+      runtimeFixture(dir),
+    );
     await assert.rejects(
       planInstallSkill(
         [adapter],
@@ -289,9 +303,23 @@ test(
     const claudeSkills = join(dir, 'claude-skills');
     const codexSkills = join(dir, 'codex-skills');
     const src = mkSkill(dir, 'mysk', 'payload');
+    const runtimeExecutable = runtimeFixture(dir);
     const adapters = [
-      new ClaudeCodeAdapter(join(dir, '.claude.json'), claudeSkills),
-      new CodexAdapter(join(dir, 'config.toml'), codexSkills, join(dir, '_r.md'), join(dir, '_shared')),
+      new ClaudeCodeAdapter(
+        join(dir, '.claude.json'),
+        claudeSkills,
+        join(dir, '_r.md'),
+        join(dir, '_settings.json'),
+        join(dir, '_plugins'),
+        runtimeExecutable,
+      ),
+      new CodexAdapter(
+        join(dir, 'config.toml'),
+        codexSkills,
+        join(dir, '_r.md'),
+        join(dir, '_shared'),
+        runtimeExecutable,
+      ),
     ];
 
     const plan = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', [
