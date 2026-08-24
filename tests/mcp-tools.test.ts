@@ -18,9 +18,9 @@ function setup(dir: string, opts: Parameters<typeof buildTools>[1] = {}) {
   writeFileSync(claudeJson, JSON.stringify({ mcpServers: {} }, null, 2));
   writeFileSync(claudeSettings, JSON.stringify({ enabledPlugins: {} }, null, 2));
   writeFileSync(codexToml, '# codex\n');
-  const claudeExecutable = join(dir, 'claude-bin');
-  writeFileSync(claudeExecutable, '#!/bin/sh\nexit 0\n');
-  chmodSync(claudeExecutable, 0o755);
+  const runtimeExecutable = join(dir, 'agent-runtime');
+  writeFileSync(runtimeExecutable, '#!/bin/sh\nexit 0\n');
+  chmodSync(runtimeExecutable, 0o755);
   const adapters = [
     new ClaudeCodeAdapter(
       claudeJson,
@@ -28,10 +28,16 @@ function setup(dir: string, opts: Parameters<typeof buildTools>[1] = {}) {
       join(dir, '_r-claude.md'),
       claudeSettings,
       join(dir, '_plugins-claude'),
-      claudeExecutable,
+      runtimeExecutable,
     ),
-    new CodexAdapter(codexToml, join(dir, '_sk-codex'), join(dir, '_r-codex.md'), join(dir, '_shared')),
-    new GeminiAdapter(geminiJson),
+    new CodexAdapter(
+      codexToml,
+      join(dir, '_sk-codex'),
+      join(dir, '_r-codex.md'),
+      join(dir, '_shared'),
+      runtimeExecutable,
+    ),
+    new GeminiAdapter(geminiJson, runtimeExecutable),
   ];
   const fleetHome = opts.fleetHome ?? join(dir, 'fleet-home');
   const tools = buildTools(adapters, { ...opts, fleetHome });
@@ -591,6 +597,20 @@ test(
             installedAt: '2026-08-19T00:00:03.000Z',
             op: 'install',
           },
+          github_skill: {
+            kind: 'skill',
+            name: 'remote-review',
+            agent: 'codex',
+            scope: 'user',
+            origin: {
+              type: 'github',
+              repository: 'opaque-owner/opaque-repo',
+              commit: 'b'.repeat(40),
+              path: 'skills/OPAQUE_GITHUB_PATH',
+            },
+            installedAt: '2026-08-19T00:00:04.000Z',
+            op: 'install',
+          },
         },
       }),
     );
@@ -604,6 +624,8 @@ test(
       'OPAQUE_TRUST_SECRET',
       'OPAQUE_EXTRA_SECRET',
       '@private/opaquevelvetquasar',
+      'opaque-owner',
+      'OPAQUE_GITHUB_PATH',
     ]) {
       assert.equal(serialized.includes(leak), false, `lock status leaked: ${leak}`);
     }
@@ -612,6 +634,10 @@ test(
     assert.deepEqual(response.entries[0].trustReasonCodes, ['SKILL_SCRIPT_FILES']);
     assert.deepEqual(response.entries.find((entry: any) => entry.name === 'internal-server')?.origin, {
       type: 'npm',
+      pinned: true,
+    });
+    assert.deepEqual(response.entries.find((entry: any) => entry.name === 'remote-review')?.origin, {
+      type: 'repository-snapshot',
       pinned: true,
     });
     assert.equal(response.entries.find((entry: any) => entry.name === 'shared')?.marketplace, 'official');

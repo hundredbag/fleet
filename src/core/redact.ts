@@ -182,6 +182,7 @@ export function publicErrorCode(error: unknown): string {
   if (
     message === 'REQUEST_REJECTED' ||
     message === 'TARGET_UNAVAILABLE' ||
+    message === 'SOURCE_UNAVAILABLE' ||
     message === 'UNSUPPORTED_OPERATION' ||
     message === 'INVALID_ARGUMENT' ||
     message === 'OPERATION_TIMEOUT' ||
@@ -262,6 +263,12 @@ const PUBLIC_CAPABILITY_KINDS = new Set<unknown>([
 
 export function isPublicAgentId(value: unknown): value is string {
   return typeof value === 'string' && PUBLIC_AGENT_ID.test(value);
+}
+
+/** Terminal controls and directional formatting characters are never safe in
+ * public identities or remotely supplied filesystem paths. */
+export function containsNonPublicControl(value: unknown): boolean {
+  return typeof value === 'string' && NON_PUBLIC_NAME_CHARACTERS.test(value);
 }
 
 /** Detect local-coordinate shapes without trying to guess whether arbitrary

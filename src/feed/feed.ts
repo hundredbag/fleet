@@ -28,7 +28,15 @@ export async function discover(sources: FeedSource[], opts?: { since?: string })
   settled.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       const raw = Array.isArray(r.value) ? r.value : [];
-      const safe = sanitizeFeedItems(raw);
+      // Source identity is transport provenance, not remote payload data. A
+      // registry item must not claim to be the local marketplace or skills.sh
+      // and thereby acquire a mutation path that its actual source lacks.
+      const source = cleanPublicSource(sources[i]!.id);
+      if (!source) {
+        withheld += raw.length;
+        return;
+      }
+      const safe = sanitizeFeedItems(raw.map((item) => ({ ...item, source })));
       withheld += raw.length - safe.length;
       all.push(...safe);
     } else
@@ -61,6 +69,17 @@ function coalesce(base: FeedItem, over: FeedItem): FeedItem {
   const out: FeedItem = { ...base };
   for (const k of Object.keys(over) as (keyof FeedItem)[]) {
     if (over[k] !== undefined) (out as unknown as Record<string, unknown>)[k] = over[k];
+  }
+  // A missing skills.sh review URL is an authority decision: its mapper could
+  // not prove that the registry's declared repository matches the install
+  // identifier. Metadata from another registry may enrich description and
+  // recency, but must never fill the fields that make that winning source
+  // actionable as a GitHub install.
+  if (over.source === 'skills.sh' && over.kind === 'skill') {
+    if (over.identifier === undefined) delete out.identifier;
+    else out.identifier = over.identifier;
+    if (over.url === undefined) delete out.url;
+    else out.url = over.url;
   }
   return out;
 }

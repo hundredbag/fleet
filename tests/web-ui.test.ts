@@ -440,7 +440,7 @@ test('dashboard fixture flows through the real inventory and feed read models', 
   );
 });
 
-test('Web discovery advertises only package-backed installs accepted by the exact all-target preview', async () => {
+test('Web discovery advertises a package install only for the exact writable targets that are missing it', async () => {
   const writable = (id: string, installed: boolean): AgentAdapter =>
     ({
       id,
@@ -521,7 +521,9 @@ test('Web discovery advertises only package-backed installs accepted by the exac
     ],
     { fleetHome: '/fixture/feed-actionability' },
   );
-  assert.equal(feed.recommendations.find((item) => item.name === 'coordinate-clash')?.operation, null);
+  const coordinateClash = feed.recommendations.find((item) => item.name === 'coordinate-clash');
+  assert.equal(coordinateClash?.operation, 'install');
+  assert.deepEqual(coordinateClash?.targets, ['writer-b']);
   assert.equal(feed.recommendations.find((item) => item.name === 'remote-only')?.operation, null);
   assert.equal(
     feed.recommendations.some((item) => item.name === 'overlong-identifier'),
@@ -531,6 +533,214 @@ test('Web discovery advertises only package-backed installs accepted by the exac
     feed.recommendations.some((item) => item.name === 'overlong-version'),
     false,
   );
+});
+
+test('Web discovery binds skill and plugin installs to trusted source provenance and exact targets', async () => {
+  const feed = await apiFeed(
+    dashboardAdapters,
+    [
+      {
+        id: 'skills.sh',
+        async list() {
+          return [
+            {
+              name: 'code-review',
+              kind: 'skill' as const,
+              source: 'forged-label',
+              identifier: 'mattpocock/skills/code-review',
+              url: 'https://github.com/mattpocock/skills',
+              popularity: 100,
+            },
+            {
+              name: 'wrong-review-link',
+              kind: 'skill' as const,
+              source: 'forged-label',
+              identifier: 'install-owner/install-repo/wrong-review-link',
+              url: 'https://github.com/review-owner/review-repo',
+              popularity: 95,
+            },
+            {
+              name: 'withheld-cross-source',
+              kind: 'skill' as const,
+              source: 'forged-label',
+              identifier: 'install-owner/install-repo/withheld-cross-source',
+              popularity: 94,
+            },
+          ];
+        },
+      },
+      {
+        id: 'plugin-markets',
+        async list() {
+          return [
+            {
+              name: 'new-plugin',
+              kind: 'plugin' as const,
+              source: 'forged-label',
+              identifier: 'new-plugin@fixture-marketplace',
+              popularity: 90,
+            },
+          ];
+        },
+      },
+      {
+        id: 'remote-registry',
+        async list() {
+          return [
+            {
+              name: 'spoofed-plugin',
+              kind: 'plugin' as const,
+              source: 'plugin-markets',
+              identifier: 'spoofed-plugin@fixture-marketplace',
+              popularity: 80,
+            },
+            {
+              name: 'withheld-cross-source',
+              kind: 'skill' as const,
+              source: 'skills.sh',
+              identifier: 'install-owner/install-repo/withheld-cross-source',
+              url: 'https://github.com/install-owner/install-repo',
+              popularity: 70,
+            },
+          ];
+        },
+      },
+    ],
+    { fleetHome: '/fixture/feed-install-provenance' },
+  );
+
+  const skill = feed.recommendations.find((item) => item.name === 'code-review');
+  assert.equal(skill?.source, 'skills.sh');
+  assert.equal(skill?.operation, 'install');
+  assert.deepEqual(skill?.targets, ['claude-code', 'codex']);
+  assert.deepEqual(skill?.skillCoordinate, {
+    provider: 'github',
+    repository: 'mattpocock/skills',
+    skill: 'code-review',
+  });
+  const wrongReviewLink = feed.recommendations.find((item) => item.name === 'wrong-review-link');
+  assert.equal(wrongReviewLink?.operation, null);
+  assert.equal(wrongReviewLink?.skillCoordinate, undefined);
+  assert.equal(wrongReviewLink?.targets, undefined);
+  const crossSource = feed.recommendations.find((item) => item.name === 'withheld-cross-source');
+  assert.equal(crossSource?.source, 'skills.sh');
+  assert.equal(crossSource?.url, undefined);
+  assert.equal(crossSource?.operation, null);
+  assert.equal(crossSource?.skillCoordinate, undefined);
+  assert.equal(crossSource?.targets, undefined);
+
+  const plugin = feed.recommendations.find((item) => item.name === 'new-plugin');
+  assert.equal(plugin?.source, 'plugin-markets');
+  assert.equal(plugin?.operation, 'install');
+  assert.equal(plugin?.marketplace, 'fixture-marketplace');
+  assert.deepEqual(plugin?.targets, ['claude-code', 'codex']);
+
+  const spoofed = feed.recommendations.find((item) => item.name === 'spoofed-plugin');
+  assert.equal(spoofed?.source, 'remote-registry');
+  assert.equal(spoofed?.operation, null);
+  assert.equal(spoofed?.marketplace, undefined);
+  assert.equal(spoofed?.targets, undefined);
+});
+
+test('Web discovery never advertises actions from a tampered v2 default-source cache', async () => {
+  const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'fleet-web-feed-cache-'));
+  const fleetHome = join(root, 'fleet-home');
+  const cacheDir = join(fleetHome, 'cache');
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(
+    join(fleetHome, 'config.json'),
+    JSON.stringify({ feedSources: ['skills.sh', 'plugin-markets', 'mcp-registry'] }),
+  );
+  writeFileSync(
+    join(cacheDir, 'feed.json'),
+    JSON.stringify({
+      version: 2,
+      time: Date.now(),
+      sourceKey: 'mcp-registry,plugin-markets,skills.sh',
+      items: [
+        {
+          name: 'cached-skill',
+          kind: 'skill',
+          source: 'skills.sh',
+          identifier: 'fixture/catalog/cached-skill',
+          popularity: 100,
+        },
+        {
+          name: 'cached-plugin',
+          kind: 'plugin',
+          source: 'plugin-markets',
+          identifier: 'cached-plugin@fixture-marketplace',
+          popularity: 100,
+        },
+        {
+          name: 'cached-mcp-install',
+          kind: 'mcp-server',
+          source: 'mcp-registry',
+          ecosystem: 'npm',
+          identifier: '@fixture/cached-mcp-install',
+          version: '1.0.0',
+          popularity: 100,
+        },
+        {
+          name: 'cached-github-update',
+          kind: 'mcp-server',
+          source: 'mcp-registry',
+          ecosystem: 'npm',
+          identifier: '@modelcontextprotocol/server-github',
+          version: '2.0.0',
+          popularity: 100,
+        },
+      ],
+      failures: [],
+      withheld: 0,
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  let networkCalls = 0;
+  globalThis.fetch = (async () => {
+    networkCalls++;
+    throw new Error('network must not be reached on a valid cache hit');
+  }) as typeof fetch;
+  try {
+    const feed = await apiFeed(dashboardAdapters, undefined, {
+      fleetHome,
+      refresh: false,
+    });
+    assert.equal(feed.fromCache, true);
+    assert.equal(networkCalls, 0);
+
+    for (const [name, source] of [
+      ['cached-skill', 'skills.sh'],
+      ['cached-plugin', 'plugin-markets'],
+      ['cached-mcp-install', 'mcp-registry'],
+    ] as const) {
+      const recommendation = feed.recommendations.find((item) => item.name === name);
+      assert.ok(recommendation, `${name} should remain visible as read-only discovery metadata`);
+      assert.equal(recommendation.source, source);
+      assert.equal(recommendation.operation, null);
+      assert.equal(recommendation.targets, undefined);
+      assert.equal(recommendation.skillCoordinate, undefined);
+      assert.equal(recommendation.marketplace, undefined);
+    }
+
+    const cachedUpdate = feed.updates.find(
+      (update) => update.name === 'github' && update.agent === 'claude-code',
+    );
+    assert.ok(cachedUpdate, 'the cached coordinate should remain visible as a read-only update');
+    assert.equal(cachedUpdate.to, '2.0.0');
+    assert.equal(cachedUpdate.operation, null);
+    assert.equal(
+      feed.updates.every((update) => update.operation === null),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('inventory DTO preserves distinct scopes and counts private contexts on one agent', async () => {
@@ -952,6 +1162,81 @@ test('feed mapper allowlists only parseable timestamps and normalizes them to IS
   assert.equal(mapped.recommendations[2]?.updatedAt, undefined);
 });
 
+test('feed mapper withholds forged or incomplete install metadata', () => {
+  const poisoned = {
+    updates: [],
+    skillUpdates: [],
+    failures: [],
+    fromCache: false,
+    recommendations: [
+      {
+        kind: 'mcp-server',
+        name: 'wrong-ecosystem',
+        source: 'r',
+        identifier: 'safe-package',
+        ecosystem: 'other',
+        reasons: [],
+        trust: 'unknown',
+        targets: ['codex'],
+        operation: 'install',
+      },
+      {
+        kind: 'skill',
+        name: 'wrong-provider',
+        source: 'r',
+        reasons: [],
+        trust: 'unknown',
+        targets: ['codex'],
+        skillCoordinate: { provider: 'gitlab', repository: 'owner/repo', skill: 'wrong-provider' },
+        operation: 'install',
+      },
+      {
+        kind: 'plugin',
+        name: 'unsafe-market',
+        source: 'r',
+        reasons: [],
+        trust: 'unknown',
+        targets: ['claude-code'],
+        marketplace: 'bad..market',
+        operation: 'install',
+      },
+      {
+        kind: 'plugin',
+        name: 'overlong-market',
+        source: 'r',
+        reasons: [],
+        trust: 'unknown',
+        targets: ['claude-code'],
+        marketplace: `m${'a'.repeat(64)}`,
+        operation: 'install',
+      },
+      {
+        kind: 'mcp-server',
+        name: 'duplicate-target',
+        source: 'r',
+        identifier: 'safe-package',
+        ecosystem: 'npm',
+        reasons: [],
+        trust: 'unknown',
+        targets: ['codex', 'codex'],
+        operation: 'install',
+      },
+    ],
+  };
+  const mapped = mapFeed(poisoned as unknown as Parameters<typeof mapFeed>[0]);
+  assert.equal(
+    mapped.recommendations.every((item) => item.operation === null),
+    true,
+  );
+  assert.equal(
+    mapped.recommendations.every(
+      (item) =>
+        item.targets === undefined && item.skillCoordinate === undefined && item.marketplace === undefined,
+    ),
+    true,
+  );
+});
+
 test('generated discovery helper executes closure-free and matches typed behavior', async () => {
   assert.doesNotMatch(DISCOVERY_VIEW_SECTIONS_BROWSER_SOURCE, /__name/);
   const browserView = runInNewContext(
@@ -982,6 +1267,27 @@ test('generated discovery validator accepts real producer reasons and rejects ar
   });
   assert.ok(feed.recommendations.length > 0);
   assert.equal(feed.recommendations.every(validate), true);
+  const legacyMarketplaceItem = mapFeed({
+    updates: [],
+    skillUpdates: [],
+    failures: [],
+    fromCache: false,
+    recommendations: [
+      {
+        kind: 'plugin',
+        name: 'legacy-marketplace-plugin',
+        source: 'marketplace-source',
+        reasons: ['marketplace'],
+        trust: 'unknown',
+        targets: ['claude-code'],
+        marketplace: '_private',
+        operation: 'install',
+      },
+    ],
+  }).recommendations[0];
+  assert.equal(legacyMarketplaceItem?.operation, 'install');
+  assert.equal(legacyMarketplaceItem?.marketplace, '_private');
+  assert.equal(validate(legacyMarketplaceItem), true);
   assert.equal(
     validate({
       kind: 'plugin',
@@ -1005,6 +1311,128 @@ test('generated discovery validator accepts real producer reasons and rejects ar
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00.000Z' }), true);
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: '2026-08-02T12:30:00Z' }), false);
   assert.equal(validate({ ...relatedBase, reasons: [], updatedAt: 'not-a-date' }), false);
+  const actionableBase = {
+    source: 'source',
+    reasons: [],
+    trust: 'unknown',
+    targets: ['codex'],
+    operation: 'install',
+  };
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'mcp-server',
+      name: 'safe-package',
+      ecosystem: 'npm',
+      identifier: '@scope/safe-package',
+      version: '1.2.3',
+    }),
+    true,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'mcp-server',
+      name: 'unsafe-package',
+      ecosystem: 'other',
+      identifier: 'safe-package',
+    }),
+    false,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'skill',
+      name: 'code-review',
+      skillCoordinate: { provider: 'github', repository: 'mattpocock/skills', skill: 'code-review' },
+    }),
+    true,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'skill',
+      name: 'skill-v2',
+      skillCoordinate: { provider: 'github', repository: 'Owner_1/repo.js', skill: 'skill-v2' },
+    }),
+    true,
+  );
+  for (const skillCoordinate of [
+    { provider: 'github', repository: '.owner/repo', skill: 'code-review' },
+    { provider: 'github', repository: 'owner/repo.', skill: 'code-review' },
+    { provider: 'github', repository: 'owner/repo', skill: 'code-review.' },
+    {
+      provider: 'github',
+      repository: `${'a'.repeat(120)}/${'b'.repeat(120)}`,
+      skill: 'c'.repeat(120),
+    },
+  ]) {
+    assert.equal(
+      validate({
+        ...actionableBase,
+        kind: 'skill',
+        name: skillCoordinate.skill,
+        skillCoordinate,
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'skill',
+      name: 'code-review',
+      skillCoordinate: { provider: 'github', repository: 'mattpocock/../skills', skill: 'code-review' },
+    }),
+    false,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'plugin',
+      name: 'safe-plugin',
+      marketplace: 'official',
+    }),
+    true,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'plugin',
+      name: 'legacy-marketplace-plugin',
+      marketplace: '_private',
+    }),
+    true,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'plugin',
+      name: 'unsafe-plugin',
+      marketplace: 'bad..market',
+    }),
+    false,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'plugin',
+      name: 'overlong-plugin',
+      marketplace: `m${'a'.repeat(64)}`,
+    }),
+    false,
+  );
+  assert.equal(
+    validate({
+      ...actionableBase,
+      kind: 'mcp-server',
+      name: 'duplicates',
+      ecosystem: 'npm',
+      identifier: 'safe-package',
+      targets: ['codex', 'codex'],
+    }),
+    false,
+  );
   assert.equal(
     validate({
       kind: 'skill',
@@ -1040,7 +1468,11 @@ test('discovery workbench renders bounded local controls, truthful metadata, and
   assert.match(html, /replacement\.focus\(\)/);
   assert.match(html, /item\.ecosystem === 'npm' \|\| item\.ecosystem === 'pypi'/);
   assert.match(html, /doPlan\(t\('action\.install'\)/);
-  assert.match(html, /to:'all'/);
+  assert.match(html, /to:target/);
+  assert.match(html, /skillCoordinate:item\.skillCoordinate/);
+  assert.match(html, /marketplace:item\.marketplace/);
+  assert.match(html, /Fleet pins the repository commit, materializes only this skill/);
+  assert.doesNotMatch(html, /to:'all'/);
   assert.match(html, /Local CLI guidance was not provided by this source/);
   assert.match(html, /Open marketplace source/);
   assert.match(html, /Marketplace or CLI guidance was not provided by this source/);
@@ -1378,6 +1810,71 @@ test('renderPage is one self-contained dashboard without a v1/v2 switch', () => 
   assert.doesNotThrow(() => new Script(client));
   assert.doesNotMatch(html, /\?v=1|\?v=2|class="vsw"/);
   assert.doesNotMatch(html, /https:\/\/fonts\.|cdn\.|<script src=/);
+});
+
+test('rendered preview failure handler receives and reports the caught error', async () => {
+  const html = renderPage();
+  const client = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(client);
+  const doPlanSource = client.match(
+    /(async function doPlan\(action, body, trigger\)\{[\s\S]*?\n\})\nfunction matchesFilter/,
+  )?.[1];
+  assert.ok(doPlanSource);
+
+  const announcements: Array<[string, boolean]> = [];
+  await runInNewContext(`${doPlanSource}; doPlan('Install', {}, null)`, {
+    planPending: false,
+    planGeneration: 0,
+    dialogGeneration: 0,
+    overlay: null,
+    document: { querySelectorAll: () => [] },
+    postJson: async () => {
+      throw Object.assign(new Error('private detail'), { code: 'SOURCE_UNAVAILABLE' });
+    },
+    previewErrorMessage: (caught: unknown) =>
+      caught && typeof caught === 'object' && 'code' in caught ? String(caught.code) : 'PREVIEW_UNAVAILABLE',
+    announce: (message: string, isError: boolean) => announcements.push([message, isError]),
+  });
+
+  assert.deepEqual(announcements, [['SOURCE_UNAVAILABLE', true]]);
+});
+
+test('rendered plan validator accepts skill installs but still rejects rule installs', () => {
+  const html = renderPage();
+  const client = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(client);
+  const validPlanSource = client.match(/(function validPlan\(value\)\{[\s\S]*?\n\})\nconst validApply/)?.[1];
+  assert.ok(validPlanSource);
+
+  const basePlan = {
+    schemaVersion: 2,
+    planId: '0123456789abcdef01234567',
+    expiresAt: Date.now() + 60_000,
+    operationSummary: 'install skill (1 change)',
+    warningCodes: [],
+    changes: [{ agent: 'codex', kind: 'skill', name: 'code-review', scope: 'user', op: 'install' }],
+  };
+  const validate = (plan: unknown): boolean =>
+    runInNewContext(`${validPlanSource}; validPlan(plan)`, {
+      plan,
+      isString: (value: unknown) => typeof value === 'string',
+      isStringArray: (value: unknown) =>
+        Array.isArray(value) && value.every((item) => typeof item === 'string'),
+      warningValues: [],
+      operationValues: ['install', 'update', 'sync', 'remove'],
+      publicAgent: (value: unknown) => typeof value === 'string' && value === 'codex',
+      publicName: (value: unknown) => typeof value === 'string' && value.length > 0,
+      publicMarketplace: (value: unknown) => typeof value === 'string' && value.length > 0,
+    }) as boolean;
+
+  assert.equal(validate(basePlan), true);
+  assert.equal(
+    validate({
+      ...basePlan,
+      changes: [{ ...basePlan.changes[0], kind: 'rule' }],
+    }),
+    false,
+  );
 });
 
 test('renderPage contains no sketch-only mock labels', () => {

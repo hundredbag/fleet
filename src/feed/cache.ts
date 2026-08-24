@@ -19,6 +19,7 @@ import { discover } from './feed.js';
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 
 interface CachedFeed {
+  version: 2;
   time: number;
   /** which source set produced this (a default-sources cache must not satisfy
    * injected/custom sources, or vice versa) */
@@ -76,6 +77,7 @@ export async function cachedDiscover(
       const doc = JSON.parse(await readFile(p, 'utf8')) as CachedFeed;
       if (
         doc &&
+        doc.version === 2 &&
         typeof doc.time === 'number' &&
         doc.sourceKey === sourceKey &&
         Array.isArray(doc.items) &&
@@ -85,6 +87,7 @@ export async function cachedDiscover(
         const safeItems = sanitizeFeedItems(doc.items);
         const priorWithheld = Number.isSafeInteger(doc.withheld) && doc.withheld >= 0 ? doc.withheld : 0;
         const safe: CachedFeed = {
+          version: 2,
           time: doc.time,
           sourceKey,
           items: safeItems,
@@ -103,6 +106,7 @@ export async function cachedDiscover(
 
   const live = await discover(sources);
   const doc: CachedFeed = {
+    version: 2,
     time: Date.now(),
     sourceKey,
     items: live.items,

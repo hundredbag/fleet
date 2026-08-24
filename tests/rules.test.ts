@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
@@ -26,9 +26,25 @@ function withTempDir(fn: (dir: string) => void | Promise<void>) {
 }
 
 function adapters(dir: string, claudeRules: string, codexRules: string) {
+  const runtimeExecutable = join(dir, 'agent-runtime');
+  writeFileSync(runtimeExecutable, '#!/bin/sh\nexit 0\n');
+  chmodSync(runtimeExecutable, 0o755);
   return [
-    new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, '_sk-c'), claudeRules),
-    new CodexAdapter(join(dir, 'config.toml'), join(dir, '_sk-x'), codexRules, join(dir, '_shared')),
+    new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      join(dir, '_sk-c'),
+      claudeRules,
+      join(dir, '_settings-claude.json'),
+      join(dir, '_plugins-claude'),
+      runtimeExecutable,
+    ),
+    new CodexAdapter(
+      join(dir, 'config.toml'),
+      join(dir, '_sk-x'),
+      codexRules,
+      join(dir, '_shared'),
+      runtimeExecutable,
+    ),
   ];
 }
 

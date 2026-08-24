@@ -24,6 +24,7 @@ import {
   runDelegated,
 } from '../src/core/delegate.js';
 import type { AgentAdapter } from '../src/core/adapter.js';
+import { FleetOperationError } from '../src/core/errors.js';
 
 test('planPluginAction: vendor argv table + undo', () => {
   assert.deepEqual(planPluginAction('claude-code', 'install', 'figma@official'), {
@@ -61,7 +62,15 @@ test('plugin coordinates keep the logical capability name separate from marketpl
     marketplace: 'official',
     selector: 'figma@official',
   });
-  assert.throws(() => pluginCoordinate('figma@wrong', 'official'), /marketplace.*separate/i);
+  assert.throws(
+    () => pluginCoordinate('figma@wrong', 'official'),
+    (error: unknown) => {
+      assert.ok(error instanceof FleetOperationError);
+      assert.equal(error.publicCode, 'INVALID_ARGUMENT');
+      assert.match(error.message, /marketplace.*separate/i);
+      return true;
+    },
+  );
 });
 
 test('planPluginAction: rejects unsafe selectors + unknown agents (trust boundary)', () => {
@@ -311,7 +320,12 @@ test('planPluginActions: unqualified remove refuses ambiguous marketplace identi
   };
   await assert.rejects(
     planPluginActions([pluginAdapter], 'claude-code', 'remove', 'shared'),
-    /multiple marketplaces.*marketplace is required/,
+    (error: unknown) => {
+      assert.ok(error instanceof FleetOperationError);
+      assert.equal(error.publicCode, 'INVALID_ARGUMENT');
+      assert.match(error.message, /multiple marketplaces.*marketplace is required/);
+      return true;
+    },
   );
 });
 

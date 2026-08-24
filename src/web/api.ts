@@ -32,8 +32,9 @@ import { operationAllowed, supportsDelegatedPlugin } from './operations.js';
 import { pluginCoordinate } from '../core/plugin-coordinate.js';
 import { loadConfig } from '../core/config.js';
 import { inspectionAllowsMutation } from '../core/inventory.js';
-import { writerAdapters } from '../core/orchestrator.js';
+import { skillWriterAdapters, writerAdapters } from '../core/orchestrator.js';
 import { isValidWebPackageCoordinate } from './package-coordinate.js';
+import { parseGitHubSkillIdentifier } from './github-skill.js';
 
 const invCaches = new WeakMap<object, { time: number; epoch: number; promise: Promise<Inventory> }>();
 let invalidateEpoch = 0;
@@ -59,42 +60,13 @@ export async function apiConflicts(adapters: AgentAdapter[]): Promise<ConflictsR
   return mapConflicts(analyzeConflicts(await snapshotInventory(adapters)));
 }
 
-function supportsFeedOperation<O extends 'install' | 'update'>(
+function supportsFeedUpdate(
   adapters: AgentAdapter[],
   inv: Inventory,
   kind: PrimitiveKind,
   name: string,
-  operation: O,
   agent?: string,
-): O | null {
-  if (operation === 'install') {
-    // The discovery button previews `to: all`, so every adapter that the core
-    // would include in that selector must accept this as a new install.
-    const targets = writerAdapters(adapters).filter((adapter) => {
-      const state = inv.agents.find((candidate) => candidate.id === adapter.id);
-      return Boolean(state?.present && inspectionAllowsMutation(state));
-    });
-    if (targets.length === 0) return null;
-    return targets.every((adapter) => {
-      const state = inv.agents.find((candidate) => candidate.id === adapter.id)!;
-      const instances = inv.items.filter(
-        (item) => item.kind === kind && item.name === name && item.agent === adapter.id,
-      );
-      return operationAllowed(
-        {
-          adapter,
-          agent: state,
-          kind,
-          hasInstance: instances.length > 0,
-          ...(instances.length === 1 ? { scope: instances[0]!.scope } : {}),
-          hasSourceInstance: true,
-        },
-        operation,
-      );
-    })
-      ? operation
-      : null;
-  }
+): 'update' | null {
   return adapters.some((adapter) => {
     if (agent && adapter.id !== agent) return false;
     const state = inv.agents.find((candidate) => candidate.id === adapter.id);
@@ -116,11 +88,50 @@ function supportsFeedOperation<O extends 'install' | 'update'>(
         hasSourceInstance: true,
         delegatedSupported: kind === 'plugin' && supportsDelegatedPlugin(adapter),
       },
-      operation,
+      'update',
     );
   })
-    ? operation
+    ? 'update'
     : null;
+}
+
+function installTargets(
+  adapters: AgentAdapter[],
+  inv: Inventory,
+  kind: 'mcp-server' | 'skill' | 'plugin',
+  name: string,
+  marketplace?: string,
+): string[] {
+  const candidates =
+    kind === 'mcp-server'
+      ? writerAdapters(adapters)
+      : kind === 'skill'
+        ? skillWriterAdapters(adapters)
+        : adapters.filter(supportsDelegatedPlugin);
+  return candidates.flatMap((adapter) => {
+    const state = inv.agents.find((candidate) => candidate.id === adapter.id);
+    if (!state?.present || !inspectionAllowsMutation(state)) return [];
+    const instances = inv.items.filter(
+      (item) =>
+        item.kind === kind &&
+        item.name === name &&
+        item.agent === adapter.id &&
+        (kind !== 'plugin' || !marketplace || (item.kind === 'plugin' && item.marketplace === marketplace)),
+    );
+    const allowed = operationAllowed(
+      {
+        adapter,
+        agent: state,
+        kind,
+        hasInstance: instances.length > 0,
+        ...(instances.length === 1 ? { scope: instances[0]!.scope } : {}),
+        hasSourceInstance: true,
+        delegatedSupported: kind === 'plugin' && supportsDelegatedPlugin(adapter),
+      },
+      'install',
+    );
+    return allowed ? [adapter.id] : [];
+  });
 }
 
 export async function apiFeed(
@@ -135,9 +146,16 @@ export async function apiFeed(
         refresh: opts?.refresh,
         fleetHome: opts?.fleetHome,
       });
+  // The on-disk cache is sanitized but not an authority boundary: another
+  // local process can rewrite a user-owned cache between Fleet runs. Cached
+  // metadata remains useful for read-only discovery, but only a result bound
+  // to the currently invoked source objects may advertise a mutation.
+  const actionableDiscovery = discovery.fromCache === false;
   const updates = updatesForInventory(inv, discovery.items).updates.map((update) => ({
     ...update,
-    operation: supportsFeedOperation(adapters, inv, 'mcp-server', update.name, 'update', update.agent),
+    operation: actionableDiscovery
+      ? supportsFeedUpdate(adapters, inv, 'mcp-server', update.name, update.agent)
+      : null,
   }));
   const ranked = await recommend(inv, discovery.items);
   const mixed = [
@@ -154,6 +172,52 @@ export async function apiFeed(
   const recommendations = mixed.map((rankedItem) => {
     const item = rankedItem.item;
     const kind = (item.kind ?? 'mcp-server') as PrimitiveKind;
+    const parsedSkillCoordinate =
+      actionableDiscovery && kind === 'skill' && item.source === 'skills.sh'
+        ? parseGitHubSkillIdentifier(item.identifier)
+        : null;
+    const skillCoordinate =
+      parsedSkillCoordinate && item.url === `https://github.com/${parsedSkillCoordinate.repository}`
+        ? parsedSkillCoordinate
+        : null;
+    let pluginIdentity: ReturnType<typeof pluginCoordinate> | null = null;
+    if (
+      actionableDiscovery &&
+      kind === 'plugin' &&
+      item.source === 'plugin-markets' &&
+      typeof item.identifier === 'string'
+    ) {
+      try {
+        const parsed = pluginCoordinate(item.identifier);
+        if (parsed.marketplace && parsed.name === item.name) pluginIdentity = parsed;
+      } catch {
+        pluginIdentity = null;
+      }
+    }
+    const installName =
+      kind === 'skill' && skillCoordinate
+        ? skillCoordinate.skill
+        : kind === 'plugin' && pluginIdentity
+          ? pluginIdentity.name
+          : item.name;
+    const packageInstall =
+      actionableDiscovery &&
+      kind === 'mcp-server' &&
+      isValidWebPackageCoordinate({
+        ecosystem: item.ecosystem,
+        identifier: item.identifier,
+        version: item.version,
+      });
+    const installKind = packageInstall
+      ? 'mcp-server'
+      : skillCoordinate
+        ? 'skill'
+        : pluginIdentity
+          ? 'plugin'
+          : null;
+    const targets = installKind
+      ? installTargets(adapters, inv, installKind, installName, pluginIdentity?.marketplace)
+      : [];
     return {
       name: item.name,
       kind,
@@ -167,18 +231,11 @@ export async function apiFeed(
       trust: rankedItem.trust.level,
       url: item.url,
       updatedAt: item.updatedAt,
-      // Discovery has a coordinate-driven Web planner only for MCP servers.
-      // Skills require an explicit local directory and plugins require an
-      // exact marketplace, so advertising install for either would be false.
-      operation:
-        kind === 'mcp-server' &&
-        isValidWebPackageCoordinate({
-          ecosystem: item.ecosystem,
-          identifier: item.identifier,
-          version: item.version,
-        })
-          ? supportsFeedOperation(adapters, inv, kind, item.name, 'install')
-          : null,
+      ...(targets.length > 0 ? { targets } : {}),
+      ...(installName !== item.name ? { installName } : {}),
+      ...(skillCoordinate ? { skillCoordinate } : {}),
+      ...(pluginIdentity?.marketplace ? { marketplace: pluginIdentity.marketplace } : {}),
+      operation: targets.length > 0 ? ('install' as const) : null,
     };
   });
   const skillUpdates = await skillUpdatesFromLock(inv, opts?.fleetHome);

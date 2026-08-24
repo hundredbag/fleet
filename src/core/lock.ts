@@ -8,6 +8,7 @@ import type { ApplyResult } from './writer.js';
 import { pluginCoordinate } from './plugin-coordinate.js';
 import { fleetHomeDir } from './config.js';
 import { isTrustReasonCode, type GateVerdict, type TrustReasonCode } from './trustgate.js';
+import { containsNonPublicControl } from './redact.js';
 
 /**
  * fleet.lock — provenance + pinning for everything fleet installed: origin
@@ -21,6 +22,7 @@ import { isTrustReasonCode, type GateVerdict, type TrustReasonCode } from './tru
 export type CapabilityOrigin =
   | { type: 'npm' | 'pypi'; id: string; version?: string }
   | { type: 'dir'; path: string }
+  | { type: 'github'; repository: string; commit: string; path: string }
   | { type: 'marketplace'; selector: string }
   | { type: 'manual' };
 
@@ -78,11 +80,29 @@ function lockPath(fleetHome?: string): string {
   return join(fleetHomeDir(fleetHome), 'fleet.lock');
 }
 
-function isOrigin(value: unknown): value is CapabilityOrigin {
+export function isCapabilityOrigin(value: unknown): value is CapabilityOrigin {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const origin = value as Record<string, unknown>;
   if (origin.type === 'manual') return true;
   if (origin.type === 'dir') return typeof origin.path === 'string';
+  if (origin.type === 'github') {
+    return (
+      Object.keys(origin).length === 4 &&
+      Object.keys(origin).every((key) => ['type', 'repository', 'commit', 'path'].includes(key)) &&
+      typeof origin.repository === 'string' &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(origin.repository) &&
+      !origin.repository.includes('..') &&
+      typeof origin.commit === 'string' &&
+      /^[0-9a-f]{40}$/i.test(origin.commit) &&
+      typeof origin.path === 'string' &&
+      origin.path.length > 0 &&
+      origin.path.length <= 500 &&
+      !origin.path.startsWith('/') &&
+      !origin.path.includes('\\') &&
+      !containsNonPublicControl(origin.path) &&
+      (origin.path === '.' || !origin.path.split('/').some((part) => !part || part === '.' || part === '..'))
+    );
+  }
   if (origin.type === 'marketplace') return typeof origin.selector === 'string';
   return (
     (origin.type === 'npm' || origin.type === 'pypi') &&
@@ -118,7 +138,7 @@ function isLockEntry(value: unknown): value is LockEntry {
     typeof entry.agent === 'string' &&
     (entry.scope === undefined || typeof entry.scope === 'string') &&
     (entry.marketplace === undefined || typeof entry.marketplace === 'string') &&
-    isOrigin(entry.origin) &&
+    isCapabilityOrigin(entry.origin) &&
     (entry.hashScheme === undefined ||
       entry.hashScheme === 'canonical-v1' ||
       entry.hashScheme === 'canonical-v2') &&

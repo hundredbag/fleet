@@ -29,6 +29,13 @@ import { planInstallSkill, planSyncSkill, planRemoveSkill, applyPlan } from '../
 
 const noValidate: ChangeValidator = () => {};
 
+function runtimeFixture(dir: string): string {
+  const executable = join(dir, 'agent-runtime');
+  writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+  chmodSync(executable, 0o755);
+  return executable;
+}
+
 function mkSkill(root: string, name: string, body = 'hello'): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
@@ -69,6 +76,20 @@ test('parseSkillFrontmatter reads description/version', () => {
   const m = parseSkillFrontmatter('---\nname: x\ndescription: "hi there"\nversion: 2.1\n---\nbody');
   assert.equal(m.description, 'hi there');
   assert.equal(m.version, '2.1');
+});
+
+test('parseSkillFrontmatter handles YAML comments and folded string scalars', () => {
+  const m = parseSkillFrontmatter(
+    '---\ndescription: >-\n  hi there\n  from a block\nversion: 2.1 # release\n---\nbody',
+  );
+  assert.equal(m.description, 'hi there from a block');
+  assert.equal(m.version, '2.1');
+});
+
+test('parseSkillFrontmatter preserves numeric version source spelling', () => {
+  for (const version of ['1.0', '2.10', '9007199254740993', '1e3']) {
+    assert.equal(parseSkillFrontmatter(`---\nversion: ${version}\n---\nbody`).version, version);
+  }
 });
 
 test(
@@ -223,7 +244,14 @@ test(
     mkdirSync(pack);
     mkSkill(outside, 'secretproject');
     symlinkSync(outside, join(pack, 'group'));
-    const adapter = new ClaudeCodeAdapter(join(dir, '.claude.json'), join(dir, 'agent-skills'));
+    const adapter = new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      join(dir, 'agent-skills'),
+      join(dir, '_r.md'),
+      join(dir, '_settings.json'),
+      join(dir, '_plugins'),
+      runtimeFixture(dir),
+    );
     await assert.rejects(
       planInstallSkill(
         [adapter],
@@ -275,9 +303,23 @@ test(
     const claudeSkills = join(dir, 'claude-skills');
     const codexSkills = join(dir, 'codex-skills');
     const src = mkSkill(dir, 'mysk', 'payload');
+    const runtimeExecutable = runtimeFixture(dir);
     const adapters = [
-      new ClaudeCodeAdapter(join(dir, '.claude.json'), claudeSkills),
-      new CodexAdapter(join(dir, 'config.toml'), codexSkills, join(dir, '_r.md'), join(dir, '_shared')),
+      new ClaudeCodeAdapter(
+        join(dir, '.claude.json'),
+        claudeSkills,
+        join(dir, '_r.md'),
+        join(dir, '_settings.json'),
+        join(dir, '_plugins'),
+        runtimeExecutable,
+      ),
+      new CodexAdapter(
+        join(dir, 'config.toml'),
+        codexSkills,
+        join(dir, '_r.md'),
+        join(dir, '_shared'),
+        runtimeExecutable,
+      ),
     ];
 
     const plan = await planInstallSkill(adapters, { name: 'mysk', dir: src }, 'mysk', [

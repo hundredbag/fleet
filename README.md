@@ -52,6 +52,7 @@ npm link          # optional: puts `fleet` and `fleet-mcp` on your PATH
 fleet inventory                              # capability × agent matrix
 fleet whats-new                              # updates + new MCP servers + recommended skills (categorized)
 fleet skill find <query>                     # search the skills.sh registry
+fleet skill install my-skill --from-dir ./skills/my-skill --to all  # local directory; dry-run
 fleet install github --to all \
       --command npx --arg -y --arg @modelcontextprotocol/server-github     # dry-run
 fleet install github --to all --command npx --arg -y --arg @modelcontextprotocol/server-github --commit
@@ -94,6 +95,48 @@ The dashboard has five views:
   core-audit record by audit ID to roll back that change; delegated plugin activity
   is not rollback-eligible here. An older record is eligible only when no newer
   active change targets the same native state; rollbacks therefore unwind in order.
+
+Web Discover install inputs are intentionally narrow:
+
+- An MCP card is actionable only when its feed supplies an exact `npm` or `pypi`
+  package identifier (and optional version). The server lists only currently
+  available, writable agents that do not already have that logical capability;
+  choose one of those agents or all listed agents before previewing.
+- An actionable `skills.sh` card must carry a GitHub catalog coordinate in
+  `owner/repository/skill` form, for example
+  `mattpocock/skills/code-review`. Preview pins the repository's
+  current default-branch commit, applies the skills CLI's root/known-container/
+  ancestor discovery priority, matches the catalog slug first against normalized
+  skill-directory names and then against normalized `SKILL.md` frontmatter names,
+  and rejects ambiguous matches. A repository-root `SKILL.md` may include bounded
+  `scripts/`, `references/`, and `assets/` payloads plus common root metadata.
+  Fleet refuses a root install when other repository content makes the complete
+  skill payload indeterminate; it never reports a knowingly partial install.
+  Fleet verifies every downloaded file against the pinned tree's Git
+  blob ID, and scans its complete directory. Apply uses those staged bytes,
+  and `fleet.lock` records the immutable GitHub repository, commit, and skill path.
+  A 15-minute on-disk discovery-cache hit is display-only and never grants an
+  install or update action; the dashboard refreshes live sources before it
+  exposes mutation metadata.
+  Pinning and static scanning do not verify the publisher identity or a signature,
+  so the preview reports the remote GitHub source as a caution. Preview also
+  requires GitHub's public API and can report the source as unavailable when it
+  cannot be reached or its unauthenticated rate limit is exhausted.
+- A plugin card is actionable only from a locally registered Claude marketplace
+  catalog with an exact `plugin@marketplace` identity. Fleet keeps the logical
+  plugin name and marketplace as separate fields and delegates one selected
+  Claude Code target to the vendor CLI. Codex remains unavailable for plugin
+  actions while its authoritative plugin inventory is unverifiable, even if a
+  CLI command or plugin directory appears to exist.
+
+Web Discover does not accept arbitrary URLs, Git/package specs, or local filesystem
+paths. Use the CLI for an explicit remote MCP `--url` or a local skill `--from-dir`.
+A vendor plugin may bundle a skill that is also listed individually, so installing
+both can create duplicate skill definitions. For example, check a Claude plugin
+associated with `mattpocock/skills` before also installing a
+`mattpocock/skills/<skill>` catalog entry. The
+`setup-matt-pocock-skills` skill is only installed like any other skill; Fleet
+never runs it automatically as part of installation.
 
 Capability-action buttons use a **preview → explicit confirm → apply** flow. Install,
 update, sync, and remove first request a dry-run plan; only the separate confirmation

@@ -82,6 +82,13 @@ export interface FeedResponse {
     trust: string;
     url?: string;
     updatedAt?: string;
+    /** Exact logical mutation name when the display name differs from a registry selector. */
+    installName?: string;
+    /** Vendor catalog identity, separate from the logical plugin name. */
+    marketplace?: string;
+    /** Server-verified agents that currently accept this exact install. */
+    targets?: string[];
+    skillCoordinate?: { provider: 'github'; repository: string; skill: string };
     operation: 'install' | null;
   }>;
   failures: Array<{ source: string }>;

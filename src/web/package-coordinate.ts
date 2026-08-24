@@ -1,3 +1,5 @@
+import { FleetOperationError } from '../core/errors.js';
+
 export interface WebPackageCoordinate {
   ecosystem?: string;
   identifier?: string;
@@ -31,12 +33,15 @@ export function isValidWebPackageCoordinate(
 export function assertValidWebPackageCoordinate(
   coordinate: WebPackageCoordinate | undefined,
 ): asserts coordinate is WebPackageCoordinate & { identifier: string } {
-  if (!coordinate?.identifier) throw new Error('install requires a package coordinate');
+  if (!coordinate?.identifier) {
+    throw new FleetOperationError('INVALID_ARGUMENT', 'install requires a package coordinate');
+  }
   if (!isValidWebPackageCoordinate(coordinate)) {
     if (coordinate.version !== undefined && coordinate.version !== '' && !VERSION.test(coordinate.version)) {
-      throw new Error(`refusing unsafe version '${coordinate.version}'`);
+      throw new FleetOperationError('REQUEST_REJECTED', `refusing unsafe version '${coordinate.version}'`);
     }
-    throw new Error(
+    throw new FleetOperationError(
+      'REQUEST_REJECTED',
       `refusing unsafe package identifier '${coordinate.identifier}' (ecosystem '${coordinate.ecosystem ?? '?'}')`,
     );
   }

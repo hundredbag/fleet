@@ -11,6 +11,10 @@ export interface DiscoveryViewItem {
   trust: string;
   url?: string;
   updatedAt?: string;
+  installName?: string;
+  marketplace?: string;
+  targets?: string[];
+  skillCoordinate?: { provider: 'github'; repository: string; skill: string };
   operation: 'install' | null;
 }
 export interface DiscoveryViewFilters {
@@ -72,15 +76,50 @@ export function discoveryViewSections(
 export const DISCOVERY_RECOMMENDATION_VALIDATOR_BROWSER_SOURCE = String.raw`function validDiscoveryRecommendation(item) {
   const kinds = ['mcp-server','skill','plugin'];
   const trusts = ['no-flags','caution','unknown'];
-  const optional = ['category','identifier','ecosystem','version','description','url'];
+  const optional = ['category','identifier','ecosystem','version','description','url','installName','marketplace'];
   function isString(value) { return typeof value === 'string'; }
+  function publicAgent(value) { return isString(value) && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value); }
+  function packageCoordinate(item) {
+    if(!isString(item.identifier) || item.identifier.length > 200 || (item.version && item.version.length > 64)) return false;
+    const name = item.ecosystem === 'npm'
+      ? /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(item.identifier)
+      : item.ecosystem === 'pypi' && /^[a-z0-9][a-z0-9._-]*$/i.test(item.identifier);
+    return !!name && (item.version === undefined || item.version === '' || /^[a-z0-9][a-z0-9.+-]*$/i.test(item.version));
+  }
   function validReason(reason) {
     return reason === 'new' || reason === 'popular' || reason === 'marketplace' || reason === 'related';
   }
+  const targets = item && item.targets;
+  const skill = item && item.skillCoordinate;
+  function githubSegment(value) {
+    return isString(value) && /^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,118}[A-Za-z0-9])?$/.test(value)
+      && value.indexOf('..') < 0;
+  }
+  const repositoryParts = skill && isString(skill.repository) ? skill.repository.split('/') : [];
+  const skillIdentifier = skill && isString(skill.repository) && isString(skill.skill)
+    ? skill.repository + '/' + skill.skill : '';
+  const validTargets = Array.isArray(targets) && targets.length > 0 && targets.length <= 32 && targets.every(publicAgent)
+    && new Set(targets).size === targets.length;
+  const validSkill = !!skill && skill.provider === 'github'
+    && repositoryParts.length === 2 && repositoryParts.every(githubSegment)
+    && githubSegment(skill.skill) && skillIdentifier.length <= 360
+    && Object.keys(skill).every(function(key){ return ['provider','repository','skill'].indexOf(key) >= 0; });
+  const actionable = item && item.operation === 'install';
   return !!item && kinds.indexOf(item.kind) >= 0 && isString(item.name) && isString(item.source)
     && Array.isArray(item.reasons) && item.reasons.every(validReason) && trusts.indexOf(item.trust) >= 0
     && (item.operation === null || item.operation === 'install')
     && optional.every(function(key) { return item[key] === undefined || isString(item[key]); })
+    && (!actionable || validTargets)
+    && (actionable || (item.targets === undefined && item.skillCoordinate === undefined
+      && item.marketplace === undefined && item.installName === undefined))
+    && (!actionable || item.kind !== 'skill' || (validSkill
+      && (item.installName === undefined || item.installName === skill.skill)))
+    && (!actionable || item.kind !== 'plugin' || (isString(item.marketplace)
+      && /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(item.marketplace)
+      && item.marketplace.indexOf('..') < 0))
+    && (!actionable || item.kind !== 'mcp-server' || packageCoordinate(item))
+    && (item.skillCoordinate === undefined || item.kind === 'skill')
+    && (item.marketplace === undefined || item.kind === 'plugin')
     && (item.updatedAt === undefined || (isString(item.updatedAt) && !Number.isNaN(Date.parse(item.updatedAt))
       && new Date(Date.parse(item.updatedAt)).toISOString() === item.updatedAt));
 }`;
@@ -400,7 +439,7 @@ function publicName(value) {
   return (!scheme || nonPublicSchemes.indexOf(scheme[1].toLowerCase()) < 0) && secretFree(value);
 }
 function publicMarketplace(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value)
+  return typeof value === 'string' && value.length <= 64 && /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value)
     && value.indexOf('..') < 0;
 }`;
 
@@ -507,6 +546,7 @@ const messages = {
     'action.refresh':'Refresh','action.cancel':'Cancel','action.close':'Close','action.confirm':'Confirm','action.details':'Details','action.install':'Install','action.update':'Update','action.sync':'Sync','action.remove':'Remove','action.rollback':'Rollback','action.reviewUpdate':'Review update',
     'theme.toLight':'Light theme','theme.toDark':'Dark theme','theme.switchLight':'Switch to light theme','theme.switchDark':'Switch to dark theme',
     'dialog.confirmAction':'Confirm action','preview.title':'{action} preview','preview.summary':'{action} · {count} planned change(s)','preview.none':'No changes','preview.warnings':'Warnings: {codes}','preview.note':'Review this dry-run. Applying requires the separate confirmation below.','preview.noApply':'There is nothing to apply.','preview.pending':'Another preview request is already in progress.','preview.planUnavailable':'Plan unavailable.','preview.unavailable':'Preview unavailable. No changes were applied.',
+    'preview.error.UNAUTHORIZED':'This dashboard session is no longer authorized. Reopen the newest tokenized Fleet URL.','preview.error.HOST_REJECTED':'This dashboard host is not allowed by Fleet.','preview.error.ORIGIN_REJECTED':'This dashboard origin is not allowed by Fleet.','preview.error.INVALID_ARGUMENT':'The selected install data is invalid or incomplete.','preview.error.REQUEST_REJECTED':'Fleet rejected this change at a safety boundary.','preview.error.TARGET_UNAVAILABLE':'The selected agent state is unavailable. Refresh and inspect Setup Doctor.','preview.error.SOURCE_UNAVAILABLE':'The selected repository or registry source could not be verified.','preview.error.UNSUPPORTED_OPERATION':'The selected agent does not support this operation.','preview.error.OPERATION_TIMEOUT':'The preview timed out before a plan was created.','preview.error.RECOVERY_PENDING':'A prior change needs recovery before another mutation.','preview.error.OPERATION_FAILED':'Fleet could not create this plan safely.','preview.error.INTERNAL_ERROR':'Fleet could not create this plan safely.','preview.error.REQUEST_FAILED':'Preview unavailable. No changes were applied.',
     'apply.confirm':'Apply planned changes','apply.pending':'An apply request is already in progress.','apply.resultTitle':'Apply result','apply.summary':'{outcome} · {applied} applied · {skipped} skipped','apply.records':'Recorded target results','apply.auditRecorded':'audit recorded','apply.delegatedRecorded':'delegated history recorded','apply.notRecorded':'provenance not recorded','apply.warnings':'Result codes: {codes}','apply.recovery.manual-config-recovery':'Inspect Activity, the target configuration, and Fleet recovery state before another change.','apply.recovery.vendor-state-inspection':'Inspect the vendor plugin inventory before another vendor action.','apply.unavailable':'The apply result could not be verified. Do not retry yet; refresh Inventory and Activity first.','apply.completed':'Apply finished: {outcome}.',
     'filter.all':'All','filter.status':'Status ','filter.sort':'Sort ','filter.allTrust':'All trust','filter.noFlags':'No flags','filter.caution':'Caution','filter.unknown':'Unknown','filter.kindName':'Kind + name','filter.name':'Name',
     'kind.mcpServers':'MCP servers','kind.skills':'Skills','kind.rules':'Rules','kind.plugins':'Plugins','kind.skill':'Skill','kind.rule':'Rule','kind.plugin':'Plugin','kind.permission':'Permission','kind.command':'Command','kind.hook':'Hook','kind.subagent':'Subagent',
@@ -520,6 +560,8 @@ const messages = {
     'table.capability':'Capability','table.coverage':'Coverage','empty.map':'No capabilities match this filter.','empty.inventory':'No capabilities were reported.','empty.inventorySearch':'No inventory items match your search and filters.','empty.discovery':'No discovery items match your search and filters.','empty.none':'None reported.','empty.activity':'No activity records were reported.','empty.attention':'No attention items',
     'results.count':'{shown} of {total} results','details.for':'Details for {name}','operation.on':'{operation} {name} on {agent}','source.label':'Source: {value}','identifier.label':'Identifier: {value}','category.label':'Category: {value}','tokens.label':'Estimated tokens: {value}',
     'discover.kind':'Discovery kind','discover.trust':'Discovery trust','discover.sort':'Discovery sort','discover.recommended':'Recommended','discover.newest':'Newest','discover.updated':'Updated: {date}','discover.showAll':'Show all','discover.collapse':'Collapse','discover.sourceUnavailable':'Source unavailable: {source}','discover.unavailable':'Discovery unavailable.','discover.trustLabel':'Trust: {value}','discover.reasons':'Recommendation reasons for {name}','discover.openSource':'Open HTTPS source','discover.openMarketplace':'Open marketplace source','discover.noCli':'Local CLI guidance was not provided by this source.','discover.useGuidance':'Use the marketplace or CLI instructions from this source.','discover.noGuidance':'Marketplace or CLI guidance was not provided by this source.','discover.previewInstall':'Preview install',
+    'discover.target':'Install target','discover.targetAll':'All selected agents','discover.skillInstallNote':'Fleet pins the repository commit, materializes only this skill, and scans the complete directory before apply.',
+    'discover.pluginInstallNote':'Fleet keeps the plugin name and marketplace separate, then delegates apply to the selected vendor CLI.',
     'attention.mcpUpdate':'MCP update · {name}','attention.skillUpdate':'Skill update · {name}','attention.sourceUnavailable':'Source unavailable','attention.feedUnavailable':'Feed unavailable','attention.feedDetail':'Update and source state could not be loaded.','attention.ruleConflict':'Rule conflict · {name}','attention.conflictsUnavailable':'Conflicts unavailable','attention.conflictsDetail':'Rule conflict state could not be loaded.','agent.unavailable':'Agent inventory unavailable','attention.drift':'Drift {state} · {name}','attention.unmanaged':'Unmanaged · {name}','attention.provenanceUnavailable':'Provenance unavailable','attention.provenanceDetail':'fleet.lock is damaged or unreadable; drift cannot be verified.','attention.overviewUnavailable':'Overview unavailable','attention.overviewDetail':'Agent and drift state could not be loaded.','attention.inventoryUnavailable':'Inventory unavailable','attention.inventoryDetail':'Capability map could not be loaded.','attention.withheld':'Unverifiable public data withheld','attention.noneDetail':'All reported sources returned no findings.','public.withheld':'{count} item(s) could not be displayed because their public identity or metadata was unverifiable.',
     'drift.unavailable':'Drift unavailable.','drift.summary':'{checked} checked · {findings} findings · {unmanaged} unmanaged','drift.note':'Unmanaged capabilities are informational: Fleet did not install them. Lock metadata is best-effort and may make an item unverifiable.','drift.modified':'Modified','drift.missing':'Missing','drift.unverifiable':'Unverifiable','drift.unmanaged':'Unmanaged','drift.conflicts':'{count} rule conflict(s) reported.','drift.conflictsUnavailable':'Rule conflicts unavailable.',
     'rollback.title':'Rollback capability change','rollback.scope':'Scope: {scope}','rollback.auditId':'Audit ID: {id}','rollback.recordedAt':'Recorded: {time}','rollback.guard':'Divergence guard: rollback is skipped if the capability changed after Fleet wrote it.','rollback.responseUnavailable':'The rollback result could not be verified. Do not retry yet; Inventory and Activity are being refreshed first.','rollback.result':'Rollback {action}{reason}','rollback.confirm':'Confirm rollback','rollback.select':'Select {op} {kind} {name} on {agent}{scope}, from {source}, recorded {time}, for rollback','rollback.openActivity':'Open Activity to select a rollback target',
@@ -543,6 +585,7 @@ const messages = {
     'action.refresh':'새로고침','action.cancel':'취소','action.close':'닫기','action.confirm':'확인','action.details':'상세','action.install':'설치','action.update':'업데이트','action.sync':'동기화','action.remove':'제거','action.rollback':'롤백','action.reviewUpdate':'업데이트 검토',
     'theme.toLight':'라이트 테마','theme.toDark':'다크 테마','theme.switchLight':'라이트 테마로 전환','theme.switchDark':'다크 테마로 전환',
     'dialog.confirmAction':'작업 확인','preview.title':'{action} 미리보기','preview.summary':'{action} · 계획된 변경 {count}개','preview.none':'변경 없음','preview.warnings':'경고: {codes}','preview.note':'이 dry-run을 검토하십시오. 적용하려면 아래에서 별도로 확인해야 합니다.','preview.noApply':'적용할 변경이 없습니다.','preview.pending':'다른 미리보기 요청이 진행 중입니다.','preview.planUnavailable':'계획을 사용할 수 없습니다.','preview.unavailable':'미리보기를 사용할 수 없습니다. 변경 사항이 적용되지 않았습니다.',
+    'preview.error.UNAUTHORIZED':'대시보드 세션 인증이 만료되었습니다. Fleet이 새로 출력한 token URL로 다시 여십시오.','preview.error.HOST_REJECTED':'이 대시보드 호스트는 Fleet에서 허용되지 않았습니다.','preview.error.ORIGIN_REJECTED':'이 대시보드 출처는 Fleet에서 허용되지 않았습니다.','preview.error.INVALID_ARGUMENT':'선택한 설치 정보가 잘못되었거나 불완전합니다.','preview.error.REQUEST_REJECTED':'Fleet 안전 경계에서 이 변경을 거부했습니다.','preview.error.TARGET_UNAVAILABLE':'선택한 에이전트 상태를 사용할 수 없습니다. 새로고침 후 Setup Doctor를 확인하십시오.','preview.error.SOURCE_UNAVAILABLE':'선택한 저장소 또는 레지스트리 소스를 확인할 수 없습니다.','preview.error.UNSUPPORTED_OPERATION':'선택한 에이전트는 이 작업을 지원하지 않습니다.','preview.error.OPERATION_TIMEOUT':'계획이 만들어지기 전에 미리보기 시간이 초과되었습니다.','preview.error.RECOVERY_PENDING':'다른 변경 전에 이전 작업의 복구가 필요합니다.','preview.error.OPERATION_FAILED':'Fleet이 이 계획을 안전하게 만들 수 없습니다.','preview.error.INTERNAL_ERROR':'Fleet이 이 계획을 안전하게 만들 수 없습니다.','preview.error.REQUEST_FAILED':'미리보기를 사용할 수 없습니다. 변경 사항이 적용되지 않았습니다.',
     'apply.confirm':'계획된 변경 적용','apply.pending':'다른 적용 요청이 진행 중입니다.','apply.resultTitle':'적용 결과','apply.summary':'{outcome} · 적용 {applied}개 · 건너뜀 {skipped}개','apply.records':'대상별 기록 결과','apply.auditRecorded':'감사 기록됨','apply.delegatedRecorded':'위임 이력 기록됨','apply.notRecorded':'근거 기록되지 않음','apply.warnings':'결과 코드: {codes}','apply.recovery.manual-config-recovery':'다른 변경 전에 Activity, 대상 설정, Fleet 복구 상태를 확인하십시오.','apply.recovery.vendor-state-inspection':'다른 공급자 작업 전에 공급자 플러그인 인벤토리를 확인하십시오.','apply.unavailable':'적용 결과를 확인할 수 없습니다. 지금 재시도하지 말고 Inventory와 Activity를 먼저 새로고침하십시오.','apply.completed':'적용 완료: {outcome}.',
     'filter.all':'전체','filter.status':'상태 ','filter.sort':'정렬 ','filter.allTrust':'모든 신뢰도','filter.noFlags':'문제 없음','filter.caution':'주의','filter.unknown':'알 수 없음','filter.kindName':'종류 + 이름','filter.name':'이름',
     'kind.mcpServers':'MCP 서버','kind.skills':'스킬','kind.rules':'규칙','kind.plugins':'플러그인','kind.skill':'스킬','kind.rule':'규칙','kind.plugin':'플러그인','kind.permission':'권한','kind.command':'명령','kind.hook':'훅','kind.subagent':'하위 에이전트',
@@ -556,6 +599,8 @@ const messages = {
     'table.capability':'기능','table.coverage':'적용 범위','empty.map':'이 필터와 일치하는 기능이 없습니다.','empty.inventory':'보고된 기능이 없습니다.','empty.inventorySearch':'검색 및 필터와 일치하는 인벤토리 항목이 없습니다.','empty.discovery':'검색 및 필터와 일치하는 탐색 항목이 없습니다.','empty.none':'보고된 항목 없음.','empty.activity':'보고된 활동 기록이 없습니다.','empty.attention':'확인할 항목 없음',
     'results.count':'전체 {total}개 중 {shown}개 결과','details.for':'{name} 상세','operation.on':'{agent}에서 {name} {operation}','source.label':'소스: {value}','identifier.label':'식별자: {value}','category.label':'카테고리: {value}','tokens.label':'예상 토큰: {value}',
     'discover.kind':'탐색 종류','discover.trust':'탐색 신뢰도','discover.sort':'탐색 정렬','discover.recommended':'추천순','discover.newest':'최신순','discover.updated':'업데이트: {date}','discover.showAll':'모두 보기','discover.collapse':'접기','discover.sourceUnavailable':'소스 사용 불가: {source}','discover.unavailable':'탐색을 사용할 수 없습니다.','discover.trustLabel':'신뢰도: {value}','discover.reasons':'{name} 추천 이유','discover.openSource':'HTTPS 소스 열기','discover.openMarketplace':'마켓플레이스 소스 열기','discover.noCli':'이 소스는 로컬 CLI 안내를 제공하지 않습니다.','discover.useGuidance':'이 소스의 마켓플레이스 또는 CLI 안내를 사용하세요.','discover.noGuidance':'이 소스는 마켓플레이스 또는 CLI 안내를 제공하지 않습니다.','discover.previewInstall':'설치 미리보기',
+    'discover.target':'설치 대상','discover.targetAll':'선택된 모든 에이전트','discover.skillInstallNote':'적용 전에 저장소 commit을 고정하고 이 스킬만 물리화하여 전체 디렉터리를 검사합니다.',
+    'discover.pluginInstallNote':'플러그인 이름과 marketplace를 분리해 검증한 뒤 선택한 공급자 CLI에 적용을 위임합니다.',
     'attention.mcpUpdate':'MCP 업데이트 · {name}','attention.skillUpdate':'스킬 업데이트 · {name}','attention.sourceUnavailable':'소스 사용 불가','attention.feedUnavailable':'피드 사용 불가','attention.feedDetail':'업데이트 및 소스 상태를 불러오지 못했습니다.','attention.ruleConflict':'규칙 충돌 · {name}','attention.conflictsUnavailable':'충돌 정보 사용 불가','attention.conflictsDetail':'규칙 충돌 상태를 불러오지 못했습니다.','agent.unavailable':'에이전트 인벤토리 사용 불가','attention.drift':'드리프트 {state} · {name}','attention.unmanaged':'관리되지 않음 · {name}','attention.provenanceUnavailable':'변경 근거 사용 불가','attention.provenanceDetail':'fleet.lock이 손상되었거나 읽을 수 없어 드리프트를 검증할 수 없습니다.','attention.overviewUnavailable':'개요 사용 불가','attention.overviewDetail':'에이전트 및 드리프트 상태를 불러오지 못했습니다.','attention.inventoryUnavailable':'인벤토리 사용 불가','attention.inventoryDetail':'기능 맵을 불러오지 못했습니다.','attention.withheld':'확인할 수 없는 공개 데이터 숨김','attention.noneDetail':'보고된 모든 소스에 항목이 없습니다.','public.withheld':'공개 식별자 또는 메타데이터를 확인할 수 없어 {count}개 항목을 표시하지 않았습니다.',
     'drift.unavailable':'드리프트를 사용할 수 없습니다.','drift.summary':'{checked}개 확인 · {findings}개 항목 · {unmanaged}개 관리되지 않음','drift.note':'관리되지 않는 기능은 정보 제공용입니다. Fleet이 설치하지 않았습니다. 잠금 메타데이터는 최선의 정보이므로 항목을 확인하지 못할 수 있습니다.','drift.modified':'수정됨','drift.missing':'누락','drift.unverifiable':'확인 불가','drift.unmanaged':'관리되지 않음','drift.conflicts':'규칙 충돌 {count}개가 보고되었습니다.','drift.conflictsUnavailable':'규칙 충돌을 사용할 수 없습니다.',
     'rollback.title':'기능 변경 롤백','rollback.scope':'범위: {scope}','rollback.auditId':'감사 ID: {id}','rollback.recordedAt':'기록 시각: {time}','rollback.guard':'차이 보호: Fleet이 기록한 후 기능이 변경되었다면 롤백을 건너뜁니다.','rollback.responseUnavailable':'롤백 결과를 확인할 수 없습니다. 지금 재시도하지 말고 Inventory와 Activity를 먼저 새로고침하십시오.','rollback.result':'롤백 {action}{reason}','rollback.confirm':'롤백 확인','rollback.select':'{agent}의 {kind} {name} {op}{scope}, 소스 {source}, 기록 {time}, 롤백 대상으로 선택','rollback.openActivity':'롤백 대상을 선택하려면 활동 열기',
@@ -605,9 +650,19 @@ async function postJson(path, body){
   if(!response.ok){
     const code = data && typeof data.code === 'string' && /^[A-Z0-9_]+$/.test(data.code)
       ? data.code : 'REQUEST_FAILED';
-    throw new Error('Request failed (' + code + ').');
+    const error = new Error('Request failed (' + code + ').');
+    error.code = code;
+    throw error;
   }
   return data;
+}
+function previewErrorMessage(error){
+  const codes = ['UNAUTHORIZED','HOST_REJECTED','ORIGIN_REJECTED','INVALID_ARGUMENT','REQUEST_REJECTED',
+    'TARGET_UNAVAILABLE','SOURCE_UNAVAILABLE','UNSUPPORTED_OPERATION','OPERATION_TIMEOUT','RECOVERY_PENDING',
+    'OPERATION_FAILED','INTERNAL_ERROR','REQUEST_FAILED'];
+  const code = error && typeof error.code === 'string' && codes.indexOf(error.code) >= 0
+    ? error.code : 'REQUEST_FAILED';
+  return t('preview.error.' + code);
 }
 // Keep remote text inert. Future renderers may only create links for HTTPS URLs.
 function safeHttpUrl(value){
@@ -829,7 +884,7 @@ function validConflicts(value){
 }
 function validActivity(value){
   const idPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-  const trustCodes = ['PACKAGE_UNPINNED','PACKAGE_FLOATING_VERSION','PACKAGE_SOURCE_UNVERIFIED','RUNNER_SOURCE_ENVIRONMENT','SKILL_ROOT_SYMLINK','SKILL_FILE_TOO_LARGE','SKILL_HIDDEN_UNICODE','SKILL_EXECUTABLE_FILES','SKILL_SCRIPT_FILES','SKILL_SYMLINKS'];
+  const trustCodes = ['PACKAGE_UNPINNED','PACKAGE_FLOATING_VERSION','PACKAGE_SOURCE_UNVERIFIED','RUNNER_SOURCE_ENVIRONMENT','SKILL_ROOT_SYMLINK','SKILL_REMOTE_SOURCE_UNVERIFIED','SKILL_FILE_TOO_LARGE','SKILL_HIDDEN_UNICODE','SKILL_EXECUTABLE_FILES','SKILL_SCRIPT_FILES','SKILL_SYMLINKS'];
   return !!value && value.schemaVersion === 2 && Array.isArray(value.items) && value.items.length <= 20
     && value.coreActions && ['available','not-present','unavailable','malformed','incomplete'].indexOf(value.coreActions.status) >= 0 && Number.isInteger(value.coreActions.withheldCount) && value.coreActions.withheldCount >= 0
     && value.delegatedActions && ['available','not-present','unavailable','malformed'].indexOf(value.delegatedActions.status) >= 0
@@ -876,7 +931,8 @@ function validPlan(value){
         && change.scope === 'user'
         && (!plugin || (change.op === 'install' || change.op === 'remove'))
         && (plugin || (change.marketplace === undefined
-          && (change.kind === 'mcp-server' || change.op === 'sync' || change.op === 'remove')));
+          && (change.kind === 'mcp-server' || change.op === 'sync' || change.op === 'remove'
+            || (change.kind === 'skill' && change.op === 'install'))));
     })
     && new Set(value.changes.map(function(change){ return [change.agent,change.kind,change.name,change.marketplace || '',change.scope,change.op].join('|'); })).size === value.changes.length;
 }
@@ -941,7 +997,7 @@ async function applyStoredPlan(plan){
       dialogCancel.disabled = true;
       await refresh();
     } else void refresh();
-  } catch {
+  } catch (caught) {
     if(requestGeneration === applyGeneration && startingDialogGeneration === dialogGeneration){
       confirmAction = null;
       dialogConfirm.hidden = true;
@@ -984,15 +1040,15 @@ async function doPlan(action, body, trigger){
     if(!validPlan(plan)) throw new Error(t('preview.planUnavailable'));
     openDialog(t('preview.title', { action:action }), planContent(plan, action), plan.changes.length ? function(){ void applyStoredPlan(plan); } : null, trigger);
     if(plan.changes.length) dialogConfirm.textContent = t('apply.confirm');
-  } catch {
+  } catch (caught) {
     if(requestGeneration !== planGeneration || startingDialogGeneration !== dialogGeneration) return;
     if(startedInDialog && overlay && !overlay.hidden){
       const prior = dialogContent.querySelector('.dialog-error');
       if(prior) prior.remove();
-      const error = node('p', 'dialog-error', t('preview.unavailable'));
+      const error = node('p', 'dialog-error', previewErrorMessage(caught));
       error.setAttribute('role', 'alert');
       dialogContent.append(error);
-    } else announce(t('preview.unavailable'), true);
+    } else announce(previewErrorMessage(caught), true);
   } finally {
     if(requestGeneration === planGeneration){
       planPending = false;
@@ -1182,16 +1238,39 @@ function discoveryFilterButton(group, value, label, current, onSelect){
   group.append(button);
 }
 function discoveryAction(item){
-  if(item.kind === 'mcp-server' && item.operation === 'install'
-    && (item.ecosystem === 'npm' || item.ecosystem === 'pypi') && isString(item.identifier)){
-    const button = node('button', 'plan-trigger', t('discover.previewInstall')); button.type = 'button';
-    button.addEventListener('click', function(){ void doPlan(t('action.install'), {
-      action:'install', kind:'mcp-server', name:item.name, to:'all',
-      coordinate:{ ecosystem:item.ecosystem, identifier:item.identifier, version:item.version }
-    }, button); });
-    return button;
+  if(item.operation !== 'install' || !Array.isArray(item.targets) || !item.targets.length) return null;
+  const wrapper = node('div', 'install-control');
+  let target = item.targets.length === 1 || item.kind === 'plugin' ? item.targets[0] : item.targets.slice();
+  if(item.targets.length > 1){
+    const label = node('label', 'install-target-label', t('discover.target'));
+    const select = node('select', 'install-target');
+    if(item.kind !== 'plugin'){
+      const all = node('option', '', t('discover.targetAll')); all.value = 'all'; select.append(all);
+    }
+    item.targets.forEach(function(agentId){
+      const agent = inventoryModel && inventoryModel.agents.find(function(candidate){ return candidate.id === agentId; });
+      const option = node('option', '', agent ? agent.displayName : agentId); option.value = agentId; select.append(option);
+    });
+    select.addEventListener('change', function(){ target = select.value === 'all' ? item.targets.slice() : select.value; });
+    label.append(select); wrapper.append(label);
   }
-  return null;
+  const button = node('button', 'plan-trigger', t('discover.previewInstall')); button.type = 'button';
+  button.addEventListener('click', function(){
+    let payload = null;
+    if(item.kind === 'mcp-server' && (item.ecosystem === 'npm' || item.ecosystem === 'pypi') && isString(item.identifier)){
+      payload = { action:'install', kind:'mcp-server', name:item.name, to:target,
+        coordinate:{ ecosystem:item.ecosystem, identifier:item.identifier, version:item.version } };
+    } else if(item.kind === 'skill' && item.skillCoordinate){
+      payload = { action:'install', kind:'skill', name:item.installName || item.skillCoordinate.skill,
+        to:target, skillCoordinate:item.skillCoordinate };
+    } else if(item.kind === 'plugin' && isString(item.marketplace) && typeof target === 'string'){
+      payload = { action:'install', kind:'plugin', name:item.installName || item.name,
+        marketplace:item.marketplace, to:target };
+    }
+    if(payload) void doPlan(t('action.install'), payload, button);
+  });
+  wrapper.append(button);
+  return wrapper;
 }
 function discoveryItem(item){
   const article = node('article', 'discovery-item');
@@ -1218,12 +1297,12 @@ function discoveryItem(item){
   const sourceUrl = safeHttpUrl(item.url);
   if(item.kind === 'skill'){
     if(sourceUrl){ const link = node('a', 'detail-link', t('discover.openSource')); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link); }
-    actions.append(node('span', 'guidance-note', t('discover.noCli')));
+    actions.append(node('span', 'guidance-note', t(item.operation === 'install' ? 'discover.skillInstallNote' : 'discover.noCli')));
   } else if(item.kind === 'plugin') {
     if(sourceUrl){ const link = node('a', 'detail-link', t('discover.openMarketplace')); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link); }
-    actions.append(node('span', 'guidance-note', sourceUrl
-      ? t('discover.useGuidance')
-      : t('discover.noGuidance')));
+    actions.append(node('span', 'guidance-note', item.operation === 'install'
+      ? t('discover.pluginInstallNote')
+      : sourceUrl ? t('discover.useGuidance') : t('discover.noGuidance')));
   } else if(sourceUrl){
     const link = node('a', 'detail-link', t('discover.openSource')); link.href = sourceUrl; link.rel = 'noreferrer'; actions.append(link);
   }

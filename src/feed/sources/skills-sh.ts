@@ -35,15 +35,32 @@ export interface SkillsShOpts extends HttpSourceOpts {
   classifier?: Classifier;
 }
 
-// a repo ref must be exactly "owner/repo" — anything else (../, ?, #, full URLs)
-// could rewrite the github.com link we build from it, so it is dropped.
-const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+const COORDINATE_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,118}[A-Za-z0-9])?$/;
+
+function repositoryFromIdentifier(value: string, segments: 2 | 3): string | undefined {
+  if (value.length === 0 || value.length > 360) return undefined;
+  const parts = value.split('/');
+  if (
+    parts.length !== segments ||
+    parts.some((part) => !COORDINATE_SEGMENT.test(part) || part.includes('..'))
+  ) {
+    return undefined;
+  }
+  return `${parts[0]}/${parts[1]}`;
+}
 
 function mapSkill(s: any, classify: Classifier): FeedItem | null {
   const id = typeof s?.id === 'string' ? s.id : undefined;
   const name = typeof s?.name === 'string' ? s.name : typeof s?.skillId === 'string' ? s.skillId : id;
   if (!id || !name) return null;
-  const repo = typeof s?.source === 'string' && REPO_RE.test(s.source) ? s.source : undefined;
+  const identifierRepo = repositoryFromIdentifier(id, 3);
+  const declaredRepo = typeof s?.source === 'string' ? repositoryFromIdentifier(s.source, 2) : undefined;
+  const repo =
+    identifierRepo &&
+    declaredRepo &&
+    identifierRepo.toLocaleLowerCase('en-US') === declaredRepo.toLocaleLowerCase('en-US')
+      ? identifierRepo
+      : undefined;
   const item: FeedItem = {
     name: name.slice(0, 200),
     source: 'skills.sh',

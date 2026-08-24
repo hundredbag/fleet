@@ -66,6 +66,15 @@ test('gateOrigin: unpinned npm → caution; pinned → ok', () => {
   assert.deepEqual(gateOrigin({ type: 'npm', id: 'x' }).reasonCodes, ['PACKAGE_UNPINNED']);
   assert.equal(gateOrigin({ type: 'npm', id: 'x', version: '1.0.0' }).level, 'ok');
   assert.equal(gateOrigin({ type: 'manual' }).level, 'ok');
+  assert.deepEqual(
+    gateOrigin({
+      type: 'github',
+      repository: 'mattpocock/skills',
+      commit: 'a'.repeat(40),
+      path: 'skills/engineering/code-review',
+    }).reasonCodes,
+    ['SKILL_REMOTE_SOURCE_UNVERIFIED'],
+  );
 });
 
 test("policy 'warn': caution reasons land as change warnings; install proceeds", async () => {
