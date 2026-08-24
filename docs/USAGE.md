@@ -104,6 +104,10 @@ fleet skill sync my-skill --from claude-code --to codex --commit
 fleet skill remove my-skill --from codex --commit
 ```
 
+로컬 디렉터리를 소스로 지정하는 `--from-dir`는 CLI에 계속 있다. Web
+Discover는 사용자가 임의의 URL이나 로컬 경로를 직접 입력하여 스킬을
+설치하는 통로가 아니다.
+
 디렉토리는 검증된 stage로 통째로 안전 복사된다(심볼릭링크·빈 폴더·실행권한 보존, 기존 pathname 분리·재검증, 새 pathname 선점 방지, 롤백 가능). 교체는 복구 가능한 다단계 commit이며 전체 트리를 단일 syscall transaction으로 바꾸는 것은 아니다.
 
 ---
@@ -144,6 +148,13 @@ Claude Code는 설정의 논리 plugin 이름과 marketplace 식별자를 분리
 `plugin list --json`과 `.codex-plugin/plugin.json`을 제공하지만 Fleet이 그 JSON schema를
 아직 fixture로 검증하지 않았으므로 plugin inventory를 `unverifiable`로 표시하고 변경
 작업을 노출하지 않는다. 디렉터리 이름을 설치 상태로 추정하지 않는다.
+
+Web Discover의 plugin 설치는 로컬에 등록된 Claude marketplace의 미러링된
+카탈로그에서 `plugin@marketplace`를 확인할 수 있을 때만 나타난다. 계획
+요청에서는 논리 plugin `name`과 `marketplace`를 별도 필드로 유지하고,
+권위 있는 inventory·위임 계약과 사용 가능한 vendor runtime이 있는 Claude Code
+한 대를 정확히 선택해 CLI에 위임한다. 현재 Codex는 이 권위 inventory가
+검증 불가능하므로 Web 설치 대상이 아니다.
 
 ---
 
@@ -380,9 +391,42 @@ fleet serve
 
 버튼은 capability 종류와 에이전트 어댑터가 광고한 작업을 그대로 따른다.
 
-- MCP 서버는 권한 있는 어댑터에서 설치·업데이트, 그리고 특정 source agent에서 target agent로의 정확한 동기화·제거 미리보기를 지원한다.
-- 스킬과 룰은 어댑터별 writer 지원 여부에 따라 동기화·제거 버튼이 없거나 읽기 전용일 수 있다. Discover의 스킬 업데이트는 자동 적용 작업으로 노출하지 않는다.
-- 플러그인은 공급자가 관리한다. 지원되는 설치·제거는 `delegated`로 표시되고 공급자 CLI 동작에 의존한다. 피드에 authoritative marketplace/CLI 정보가 없으면 링크나 안내만 표시한다.
+- MCP 서버는 권한 있는 어댑터에서 설치·업데이트, 그리고 특정 source agent에서
+  target agent로의 정확한 동기화·제거 미리보기를 지원한다. Discover 설치는 피드가
+  제공한 정확한 `npm`/`pypi` package identifier와 선택적 version만 사용한다.
+  서버가 현재 inventory를 읽을 수 있고 writer를 제공하며 동일한 논리 capability가
+  아직 없는 agent만 대상으로 내놓는다. 그중 하나 또는 표시된 전부를 선택해 미리본다.
+  피드의 coordinate를 대신할 임의 URL·Git spec·로컬 경로는 Web에서 받지 않는다.
+- Discover의 스킬 설치는 `skills.sh`가 준 `owner/repository/skill` 형식의 GitHub
+  카탈로그 coordinate만 받는다. 예를 들면
+  `mattpocock/skills/code-review`는 repository가 `mattpocock/skills`,
+  선택한 스킬이 `code-review`인 하나의 coordinate다. 미리보기 단계에서
+  repository의 현재 default branch를 commit으로 고정한다. 그 snapshot에 공식 skills CLI와
+  같은 root·known container·ancestor 우선 탐색을 적용한 뒤, 카탈로그 slug를 정규화한
+  스킬 디렉터리명과 먼저 비교한다. 일치하지 않으면 `SKILL.md` frontmatter의 정규화한
+  `name`으로 다시 찾으며, 후보가 여러 개면 안전하게 거부한다. 저장소 루트의
+  `SKILL.md`는 제한 안의 `scripts/`, `references/`, `assets/`와 일반적인 root metadata를
+  함께 물리화한다. 그 밖의 repository content 때문에 완전한 payload를 확정할 수 없으면
+  일부 파일만 설치하고 성공으로 기록하지 않고 source unavailable로 중단한다. 중첩 스킬 디렉터리 전체를
+  가져올 때 각 파일을 pinned tree의 Git blob ID와 대조하고, 디렉터리 전체를
+  스캔한 뒤 dry-run 변경을 보여 주고, 사용자가 별도로 적용할 때만 그 stage된 bytes를
+  설치한다. `fleet.lock`에는 GitHub repository·고정 commit·스킬 path를 불변 origin으로
+  남긴다. 15분 discovery 디스크 cache에서 읽은 항목은 표시 전용이며 install/update
+  권한을 만들지 않는다. Web 대시보드는 변경 버튼을 노출하기 전에 live source를
+  새로고침한다. commit 고정과 정적 스캔은 publisher 신원이나 signature를 검증하지
+  않으므로 원격 GitHub 소스는 미리보기에서 caution으로 표시된다. 스킬 업데이트는
+  자동 적용 작업으로 노출하지 않는다. GitHub 공개 API에 연결할 수 없거나 인증 없는
+  요청의 rate limit이 소진되면 소스 확인 불가로 안전하게 중단한다.
+- 플러그인은 로컬에 등록된 Claude marketplace 카탈로그에서 논리 `name`과
+  `marketplace`를 각각 검증할 수 있고, 사용 가능한 Claude vendor CLI와 권위 있는
+  inventory가 있는 한 대를 선택한 경우만 설치를 미리본다. 적용은 공급자 CLI에
+  `delegated`된다. Codex plugin inventory는 현재 `unverifiable`이므로 위임 설치·제거를
+  노출하지 않는다.
+- vendor plugin이 같은 저장소의 스킬을 이미 포함할 수 있다. 예를 들어
+  `mattpocock/skills`와 관련된 Claude plugin과 `mattpocock/skills/<skill>` 형식의
+  개별 `skills.sh` 항목을 모두 설치하면 스킬 정의가 중복될 수 있으니 plugin 내용과
+  Inventory를 먼저 확인한다. `setup-matt-pocock-skills`도 다른 스킬처럼 파일만
+  설치하며, Fleet은 설치 과정에서 그 스킬을 자동 실행하지 않는다.
 
 모든 에이전트와 capability에 통하는 범용 원클릭 설치는 없다. Inventory와 Discover의 install/update/sync/remove 버튼은 인증된 `POST /api/plan`으로 **dry-run 계획을 먼저** 만든다. 변경 목록과 고정 warning code를 검토하고 별도 적용 확인을 누른 경우에만 짧은 수명의 single-use plan ID가 `POST /api/apply`로 전달된다. 결과 화면은 대상별 audit/delegated 기록 여부, 일부 적용, 실패, 결과 확인 불가와 안전한 다음 확인 절차를 표시하고 Inventory와 Activity를 새로고침한다. 응답을 확인하지 못한 경우 같은 계획을 다시 실행하지 말고 두 화면에서 실제 상태를 먼저 확인한다.
 
