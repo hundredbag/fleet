@@ -71,6 +71,20 @@ test('parseSkillFrontmatter reads description/version', () => {
   assert.equal(m.version, '2.1');
 });
 
+test('parseSkillFrontmatter handles YAML comments and folded string scalars', () => {
+  const m = parseSkillFrontmatter(
+    '---\ndescription: >-\n  hi there\n  from a block\nversion: 2.1 # release\n---\nbody',
+  );
+  assert.equal(m.description, 'hi there from a block');
+  assert.equal(m.version, '2.1');
+});
+
+test('parseSkillFrontmatter preserves numeric version source spelling', () => {
+  for (const version of ['1.0', '2.10', '9007199254740993', '1e3']) {
+    assert.equal(parseSkillFrontmatter(`---\nversion: ${version}\n---\nbody`).version, version);
+  }
+});
+
 test(
   'listSkillDirs handles flat + grouped layouts and skips dotted dirs',
   withTempDir(async (dir) => {

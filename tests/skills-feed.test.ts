@@ -93,6 +93,7 @@ test('mapSkill hardening: malformed entries skipped; hostile source gets no URL'
       { id: 'a/b/ok', name: 'ok', installs: 5, source: 'anthropics/skills/../../evil' }, // path traversal
       { id: 'a/b/ok2', name: 'ok2', installs: 5, source: 'https://evil.com/x' }, // full URL
       { id: 'a/b/ok3', skillId: {}, source: 'good/repo' }, // non-string skillId → falls back to id
+      { id: 'a/b/ok4', name: 'ok4', source: 'other/repo' }, // valid-looking but mismatched repo
     ],
   };
   const s = new SkillsShSource({
@@ -104,10 +105,11 @@ test('mapSkill hardening: malformed entries skipped; hostile source gets no URL'
     })) as unknown as typeof fetch,
   });
   const items = await s.search('xx');
-  assert.equal(items.length, 3); // null/{}/bad-id skipped
+  assert.equal(items.length, 4); // null/{}/bad-id skipped
   assert.equal(items.find((i) => i.name === 'ok')?.url, undefined); // traversal source → no URL
   assert.equal(items.find((i) => i.name === 'ok2')?.url, undefined); // full-URL source → no URL
   assert.equal(items.find((i) => i.identifier === 'a/b/ok3')?.name, 'a/b/ok3'); // safe fallback
+  assert.equal(items.find((i) => i.name === 'ok4')?.url, undefined); // review URL cannot diverge from id
 });
 
 test('diversifyByCategory: round-robin, preserves order, terminates when limit > total', async () => {

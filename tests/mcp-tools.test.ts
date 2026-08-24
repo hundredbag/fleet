@@ -591,6 +591,20 @@ test(
             installedAt: '2026-08-19T00:00:03.000Z',
             op: 'install',
           },
+          github_skill: {
+            kind: 'skill',
+            name: 'remote-review',
+            agent: 'codex',
+            scope: 'user',
+            origin: {
+              type: 'github',
+              repository: 'opaque-owner/opaque-repo',
+              commit: 'b'.repeat(40),
+              path: 'skills/OPAQUE_GITHUB_PATH',
+            },
+            installedAt: '2026-08-19T00:00:04.000Z',
+            op: 'install',
+          },
         },
       }),
     );
@@ -604,6 +618,8 @@ test(
       'OPAQUE_TRUST_SECRET',
       'OPAQUE_EXTRA_SECRET',
       '@private/opaquevelvetquasar',
+      'opaque-owner',
+      'OPAQUE_GITHUB_PATH',
     ]) {
       assert.equal(serialized.includes(leak), false, `lock status leaked: ${leak}`);
     }
@@ -612,6 +628,10 @@ test(
     assert.deepEqual(response.entries[0].trustReasonCodes, ['SKILL_SCRIPT_FILES']);
     assert.deepEqual(response.entries.find((entry: any) => entry.name === 'internal-server')?.origin, {
       type: 'npm',
+      pinned: true,
+    });
+    assert.deepEqual(response.entries.find((entry: any) => entry.name === 'remote-review')?.origin, {
+      type: 'repository-snapshot',
       pinned: true,
     });
     assert.equal(response.entries.find((entry: any) => entry.name === 'shared')?.marketplace, 'official');

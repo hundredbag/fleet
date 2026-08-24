@@ -552,9 +552,11 @@ async function main(argv: string[]): Promise<number> {
             ? `${e.origin.type}:${e.origin.id}${e.origin.version ? '@' + e.origin.version : ''}`
             : e.origin.type === 'dir'
               ? `dir:${e.origin.path}`
-              : e.origin.type === 'marketplace'
-                ? `marketplace:${e.origin.selector}`
-                : 'manual';
+              : e.origin.type === 'github'
+                ? `github:${e.origin.repository}@${e.origin.commit.slice(0, 12)}:${e.origin.path}`
+                : e.origin.type === 'marketplace'
+                  ? `marketplace:${e.origin.selector}`
+                  : 'manual';
         process.stdout.write(
           `  ${e.kind.padEnd(10)} ${e.name.padEnd(24)} ${e.agent.padEnd(12)} ${org}  (${e.installedAt.slice(0, 10)})\n`,
         );

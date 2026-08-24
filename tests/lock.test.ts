@@ -362,6 +362,63 @@ test('lock: trust level and evidence cardinality agree while legacy caution rema
   }
 });
 
+test('lock: GitHub skill origin requires an exact pinned repository snapshot', async () => {
+  const dir = tmp();
+  try {
+    const base = {
+      kind: 'skill',
+      name: 'code-review',
+      agent: 'codex',
+      scope: 'user',
+      installedAt: '2026-08-20T00:00:00.000Z',
+      op: 'install',
+    };
+    const good = {
+      type: 'github',
+      repository: 'mattpocock/skills',
+      commit: 'a'.repeat(40),
+      path: 'skills/engineering/code-review',
+    };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'fleet.lock'),
+      JSON.stringify({ version: 1, entries: { skill: { ...base, origin: good } } }),
+    );
+    assert.equal((await readLockState(dir)).status, 'available');
+    assert.deepEqual((await readLock(dir)).entries[lockKey('skill', 'code-review', 'codex')]?.origin, good);
+
+    const rootSkill = { ...good, path: '.' };
+    writeFileSync(
+      join(dir, 'fleet.lock'),
+      JSON.stringify({ version: 1, entries: { skill: { ...base, origin: rootSkill } } }),
+    );
+    assert.equal((await readLockState(dir)).status, 'available');
+    assert.deepEqual(
+      (await readLock(dir)).entries[lockKey('skill', 'code-review', 'codex')]?.origin,
+      rootSkill,
+    );
+
+    for (const origin of [
+      { ...good, commit: 'main' },
+      { ...good, repository: 'mattpocock/../skills' },
+      { ...good, path: '../code-review' },
+      { ...good, path: 'skills\\code-review' },
+      { ...good, path: 'skills/\u009b31m/code-review' },
+      { ...good, path: 'skills/\u202ecode-review' },
+      { ...good, path: 'skills/code-review\u2066' },
+      { ...good, extra: 'private' },
+    ]) {
+      writeFileSync(
+        join(dir, 'fleet.lock'),
+        JSON.stringify({ version: 1, entries: { skill: { ...base, origin } } }),
+      );
+      assert.equal((await readLockState(dir)).status, 'malformed');
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('lock: legacy plugin provenance is canonicalized by marketplace and removed exactly', async () => {
   const dir = tmp();
   try {

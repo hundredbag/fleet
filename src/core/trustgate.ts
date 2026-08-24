@@ -24,6 +24,7 @@ export const TRUST_REASON_CODES = [
   'PACKAGE_SOURCE_UNVERIFIED',
   'RUNNER_SOURCE_ENVIRONMENT',
   'SKILL_ROOT_SYMLINK',
+  'SKILL_REMOTE_SOURCE_UNVERIFIED',
   'SKILL_FILE_TOO_LARGE',
   'SKILL_HIDDEN_UNICODE',
   'SKILL_EXECUTABLE_FILES',
@@ -162,6 +163,15 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** Origin-level facts for package installs. */
 export function gateOrigin(origin: CapabilityOrigin): GateVerdict {
+  if (origin.type === 'github') {
+    return {
+      level: 'caution',
+      reasons: [
+        `GitHub source ${origin.repository} is pinned to a commit, but Fleet has not verified the publisher identity or a signature`,
+      ],
+      reasonCodes: ['SKILL_REMOTE_SOURCE_UNVERIFIED'],
+    };
+  }
   if (origin.type === 'npm' || origin.type === 'pypi') {
     if (!origin.version) {
       return {

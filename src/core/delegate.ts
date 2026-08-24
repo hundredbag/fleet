@@ -70,7 +70,12 @@ function assertSafeSelector(selector: string): void {
 export function planPluginAction(agent: string, op: PluginOp, selector: string): DelegatedPlan {
   assertSafeSelector(selector);
   const cmds = VENDOR[agent];
-  if (!cmds) throw new Error(`agent '${agent}' has no plugin CLI support (built-ins: claude-code, codex)`);
+  if (!cmds) {
+    throw new FleetOperationError(
+      'UNSUPPORTED_OPERATION',
+      `agent '${agent}' has no plugin CLI support (built-ins: claude-code, codex)`,
+    );
+  }
   return {
     agent,
     op,
@@ -106,7 +111,9 @@ export async function planPluginActions(
       .filter(Boolean);
     const known = new Set(capable.map((adapter) => adapter.id));
     for (const id of ids) {
-      if (!known.has(id)) throw new Error(`unknown or plugin-unsupported agent: '${id}'`);
+      if (!known.has(id)) {
+        throw new FleetOperationError('TARGET_UNAVAILABLE', `unknown or plugin-unsupported agent: '${id}'`);
+      }
       const { detected } = await inspectAdapter(capable.find((adapter) => adapter.id === id)!);
       if (!inspectionAllowsMutation(detected)) {
         throw new FleetOperationError('TARGET_UNAVAILABLE', `agent state unavailable: '${id}'`);
@@ -146,7 +153,10 @@ export async function planPluginActions(
       initialPlugins = await readPlugins();
     } catch (error) {
       if (error instanceof FleetOperationError) throw error;
-      throw new Error(`plugin inventory unavailable for '${agent}'; refusing delegated ${op}`);
+      throw new FleetOperationError(
+        'SOURCE_UNAVAILABLE',
+        `plugin inventory unavailable for '${agent}'; refusing delegated ${op}`,
+      );
     }
     if (op === 'remove' && !coordinate.marketplace) {
       const matches = initialPlugins.filter(
@@ -154,7 +164,8 @@ export async function planPluginActions(
       );
       const marketplaces = [...new Set(matches.map((item) => item.marketplace).filter(Boolean))];
       if (matches.length > 1 || marketplaces.length > 1) {
-        throw new Error(
+        throw new FleetOperationError(
+          'INVALID_ARGUMENT',
           `plugin '${coordinate.name}' exists in multiple marketplaces on '${agent}'; marketplace is required`,
         );
       }
@@ -184,10 +195,16 @@ export async function planPluginActions(
       ? 'present'
       : 'absent';
     if (op === 'install' && preState === 'present') {
-      throw new Error(`plugin '${logicalName}' is already installed on '${agent}'`);
+      throw new FleetOperationError(
+        'TARGET_UNAVAILABLE',
+        `plugin '${logicalName}' is already installed on '${agent}'`,
+      );
     }
     if (op === 'remove' && preState === 'absent') {
-      throw new Error(`plugin '${logicalName}' is not installed on '${agent}'`);
+      throw new FleetOperationError(
+        'TARGET_UNAVAILABLE',
+        `plugin '${logicalName}' is not installed on '${agent}'`,
+      );
     }
     plan.preState = preState;
     plan.readPluginState = readPluginState;

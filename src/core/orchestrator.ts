@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { extractCoordinate, extractRunnerPackageReferences, hasRunnerSourceEnvironment } from './coords.js';
-import { readLockState, updateLockFromApplied, type CapabilityOrigin } from './lock.js';
+import { isCapabilityOrigin, readLockState, updateLockFromApplied, type CapabilityOrigin } from './lock.js';
 import { gateOrigin, gateSkillSource, trustSnapshot, type GateVerdict } from './trustgate.js';
 import { assertMutationConfigReadable, effectiveTrustPolicy } from './config.js';
 import { readFile } from 'node:fs/promises';
@@ -412,7 +412,12 @@ export async function planInstallSkill(
   source: SkillSource,
   name: string,
   targetIds: AgentId[],
-  opts?: { trustPolicy?: 'warn' | 'block'; fleetHome?: string; sourceRoot?: string },
+  opts?: {
+    trustPolicy?: 'warn' | 'block';
+    fleetHome?: string;
+    sourceRoot?: string;
+    origin?: Extract<CapabilityOrigin, { type: 'github' }>;
+  },
 ): Promise<Plan> {
   await assertTargetInventoriesAvailable(skillWriterAdapters(adapters), targetIds, {
     kind: 'skill',
@@ -426,6 +431,9 @@ export async function planInstallSkill(
     if (resolve(contained) !== resolve(source.dir)) {
       throw new Error(`fleet: skill source ${source.dir} is outside its declared source root`);
     }
+  }
+  if (opts?.origin && (!isCapabilityOrigin(opts.origin) || opts.origin.type !== 'github')) {
+    throw new Error('fleet: invalid GitHub skill provenance');
   }
   const changes: PlannedChange[] = [];
   const skips: PlanSkip[] = [];
@@ -458,7 +466,15 @@ export async function planInstallSkill(
     }
   }
   const policy = effectiveTrustPolicy(opts?.fleetHome, opts?.trustPolicy);
-  const verdict = await gateSkillSource(source.dir);
+  const sourceVerdict = await gateSkillSource(source.dir);
+  const originVerdict = opts?.origin ? gateOrigin(opts.origin) : undefined;
+  const verdict: GateVerdict = originVerdict
+    ? {
+        level: sourceVerdict.level === 'caution' || originVerdict.level === 'caution' ? 'caution' : 'ok',
+        reasons: [...sourceVerdict.reasons, ...originVerdict.reasons],
+        reasonCodes: [...new Set([...sourceVerdict.reasonCodes, ...originVerdict.reasonCodes])],
+      }
+    : sourceVerdict;
   // bind the verdict to the bytes: the tree we INSPECTED must be the tree the
   // plan will install (renderers pinned sourceHash before the scan)
   const postScan = await hashMaterializedDir(source.dir);
@@ -471,7 +487,7 @@ export async function planInstallSkill(
     {
       changes,
       skips,
-      origin: { type: 'dir', path: resolve(source.dir) },
+      origin: opts?.origin ?? { type: 'dir', path: resolve(source.dir) },
       ...(opts?.trustPolicy ? { trustPolicyOverride: opts.trustPolicy } : {}),
     },
     verdict,

@@ -193,6 +193,8 @@ function publicLockStatus(result: LockReadResult) {
       origin = { type: 'marketplace' };
     } else if (entry.origin.type === 'dir') {
       origin = { type: 'local-directory', pathExposed: false };
+    } else if (entry.origin.type === 'github') {
+      origin = { type: 'repository-snapshot', pinned: true };
     } else {
       origin = { type: 'manual' };
     }

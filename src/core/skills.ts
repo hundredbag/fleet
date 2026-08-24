@@ -4,6 +4,7 @@ import { join, relative, sep, resolve } from 'node:path';
 import type { SkillCapability } from './types.js';
 import type { CapabilityRef, RenderResult, SkillSource } from './adapter.js';
 import { hashDir, hashMaterializedDir, safeJoin } from './fsutil.js';
+import { parseFrontmatterScalar } from './frontmatter.js';
 
 /**
  * Skills are directory-shaped capabilities (a dir containing SKILL.md). Reading
@@ -18,17 +19,11 @@ export interface SkillMeta {
 
 /** Minimal SKILL.md YAML-frontmatter parse (description/version only). */
 export function parseSkillFrontmatter(text: string): SkillMeta {
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return {};
   const meta: SkillMeta = {};
-  for (const line of (m[1] ?? '').split(/\r?\n/)) {
-    const kv = line.match(/^(description|version)\s*:\s*(.*)$/);
-    if (kv) {
-      const value = (kv[2] ?? '').trim().replace(/^["']|["']$/g, '');
-      if (kv[1] === 'description') meta.description = value;
-      else meta.version = value;
-    }
-  }
+  const description = parseFrontmatterScalar(text, 'description');
+  const version = parseFrontmatterScalar(text, 'version', { allowNumeric: true });
+  if (description.status === 'value') meta.description = description.value;
+  if (version.status === 'value') meta.version = version.value;
   return meta;
 }
 

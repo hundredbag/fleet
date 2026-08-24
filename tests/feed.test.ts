@@ -67,6 +67,20 @@ test('discover merges, dedupes, and reports source failures separately', async (
   assert.equal(failures[0]?.source, 'bad');
 });
 
+test('discover binds item provenance to the FeedSource instead of trusting a payload source claim', async () => {
+  const { items } = await discover([
+    fakeSource('remote-registry', [
+      {
+        name: 'spoofed-plugin',
+        source: 'plugin-markets',
+        kind: 'plugin',
+        identifier: 'spoofed-plugin@official',
+      },
+    ]),
+  ]);
+  assert.equal(items[0]?.source, 'remote-registry');
+});
+
 test('updatesForInventory: only concrete newer versions are updates', () => {
   const i = inv([
     mcp('gh', 'claude-code', { transport: 'stdio', command: 'npx', args: ['-y', '@x/gh@1.0.0'] }),
@@ -218,7 +232,7 @@ test('cachedDiscover: source exceptions are code-only at rest and cache mode is 
   }
 });
 
-test('cachedDiscover migrates a valid legacy cache before returning it', async () => {
+test('cachedDiscover invalidates a legacy cache whose item provenance was not source-bound', async () => {
   const { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } =
     await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -239,9 +253,23 @@ test('cachedDiscover migrates a valid legacy cache before returning it', async (
       }),
     );
     chmodSync(file, 0o644);
-    const result = await cachedDiscover([{ id: 'legacy', list: async () => [] }], { fleetHome: dir });
+    let calls = 0;
+    const result = await cachedDiscover(
+      [
+        {
+          id: 'legacy',
+          list: async () => {
+            calls++;
+            return [];
+          },
+        },
+      ],
+      { fleetHome: dir },
+    );
     const migrated = readFileSync(file, 'utf8');
-    assert.equal(result.fromCache, true);
+    assert.equal(result.fromCache, false);
+    assert.equal(calls, 1);
+    assert.equal(JSON.parse(migrated).version, 2);
     assert.equal(JSON.stringify(result).includes('OPAQUE_LEGACY_CACHE'), false);
     assert.equal(migrated.includes('OPAQUE_LEGACY_CACHE'), false);
     assert.equal(migrated.includes('\u001b'), false);

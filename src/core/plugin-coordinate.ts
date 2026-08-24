@@ -1,3 +1,5 @@
+import { FleetOperationError } from './errors.js';
+
 /** Vendor plugin identity has two distinct parts. `name` is the installed
  * capability identity; `marketplace` selects a configured catalog. The joined
  * `name@marketplace` form exists only at vendor CLI and ledger boundaries. */
@@ -16,18 +18,27 @@ export function pluginCoordinate(value: string, marketplace?: string): PluginCoo
     if (!PLUGIN_NAME_RE.test(value) || value.includes('..')) {
       const parsedAsSelector = SELECTOR_RE.test(value) && value.lastIndexOf('@') > 0;
       if (parsedAsSelector) {
-        throw new Error('plugin name and marketplace must be supplied separately');
+        throw new FleetOperationError(
+          'INVALID_ARGUMENT',
+          'plugin name and marketplace must be supplied separately',
+        );
       }
-      throw new Error(`refusing unsafe plugin selector '${value}@${marketplace}'`);
+      throw new FleetOperationError(
+        'REQUEST_REJECTED',
+        `refusing unsafe plugin selector '${value}@${marketplace}'`,
+      );
     }
     if (!MARKETPLACE_RE.test(marketplace) || marketplace.includes('..')) {
-      throw new Error(`refusing unsafe plugin selector '${value}@${marketplace}'`);
+      throw new FleetOperationError(
+        'REQUEST_REJECTED',
+        `refusing unsafe plugin selector '${value}@${marketplace}'`,
+      );
     }
     return { name: value, marketplace, selector: `${value}@${marketplace}` };
   }
 
   if (!SELECTOR_RE.test(value) || value.includes('..')) {
-    throw new Error(`refusing unsafe plugin selector '${value}'`);
+    throw new FleetOperationError('REQUEST_REJECTED', `refusing unsafe plugin selector '${value}'`);
   }
   const at = value.lastIndexOf('@');
   if (at > 0) {
