@@ -176,6 +176,9 @@ export const DASHBOARD_CSS = `
   .discovery-actions { justify-content:space-between; gap:8px 12px; }
   .discovery-actions a { min-height:30px; display:inline-flex; align-items:center; }
   .guidance-note { flex:1 1 210px; color:var(--muted); font-size:10px; }
+  .install-control { display:flex; align-items:flex-end; gap:7px; flex-wrap:wrap; }
+  .install-target-label { display:grid; gap:3px; color:var(--muted); font-size:9px; font-weight:700; }
+  .install-target { min-height:30px; max-width:160px; }
   .discovery-actions button, .discovery-toggle { min-height:30px; padding:4px 9px; font-size:11px; }
   .discovery-toggle { justify-self:start; margin-top:10px; }
 

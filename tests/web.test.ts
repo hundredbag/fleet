@@ -12,6 +12,7 @@ import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { CodexAdapter } from '../src/adapters/codex.js';
 import type { AgentAdapter, SkillWriter } from '../src/core/adapter.js';
 import type { FeedSource } from '../src/feed/source.js';
+import type { GitHubSkillCoordinate, SkillMaterializer } from '../src/web/github-skill.js';
 import { applyChanges } from '../src/core/writer.js';
 import { sha256 } from '../src/core/hash.js';
 import { mapApply, mapPlan, mapRollback } from '../src/web/public-mappers.js';
@@ -497,6 +498,62 @@ test('web: API requires the session token', async () => {
   }
 });
 
+test('web: a stale MCP update is a stable target conflict rather than HTTP 500', async () => {
+  const { server, port } = await startTest('stale-update-token');
+  const headers = {
+    authorization: 'Bearer stale-update-token',
+    origin: `http://127.0.0.1:${port}`,
+    'content-type': 'application/json',
+  };
+  try {
+    const response = await post(
+      port,
+      '/api/plan',
+      headers,
+      JSON.stringify({
+        action: 'update',
+        kind: 'mcp-server',
+        name: 'no-longer-installed',
+        to: 'claude-code',
+        coordinate: { version: '2.0.0' },
+      }),
+    );
+    assert.equal(response.status, 409);
+    assert.equal(response.json.code, 'TARGET_UNAVAILABLE');
+    assertPublicResponse(response.json, '/api/plan stale update');
+  } finally {
+    await close(server);
+  }
+});
+
+test('web: duplicate plugin marketplace input is INVALID_ARGUMENT rather than HTTP 500', async () => {
+  const { server, port } = await startTest('plugin-coordinate-token', [], []);
+  const headers = {
+    authorization: 'Bearer plugin-coordinate-token',
+    origin: `http://127.0.0.1:${port}`,
+    'content-type': 'application/json',
+  };
+  try {
+    const response = await post(
+      port,
+      '/api/plan',
+      headers,
+      JSON.stringify({
+        action: 'install',
+        kind: 'plugin',
+        name: 'figma@wrong',
+        marketplace: 'official',
+        to: 'codex',
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.equal(response.json.code, 'INVALID_ARGUMENT');
+    assertPublicResponse(response.json, '/api/plan duplicate plugin marketplace');
+  } finally {
+    await close(server);
+  }
+});
+
 test('web: authenticated overview is available and unauthenticated overview remains denied', async () => {
   const { server, port } = await startTest('dashboard-token', dashboardAdapters, dashboardFeedSources);
   try {
@@ -966,7 +1023,8 @@ test('web: plan → apply installs to a real agent config; planId is single-use'
 
     // same planId can't be replayed
     const replay = await post(port, '/api/apply', h, JSON.stringify({ planId: planned.json.planId }));
-    assert.equal(replay.status, 400);
+    assert.equal(replay.status, 409);
+    assert.equal(replay.json.code, 'TARGET_UNAVAILABLE');
 
     assert.equal(planned.json.operationSummary, 'install mcp-server (1 change)');
     assertPublicResponse(planned.json, '/api/plan');
@@ -1260,7 +1318,7 @@ test('web plan and apply mappers withhold non-public BYO agent identities', () =
   assert.equal(JSON.stringify({ plan, apply }).includes(unsafeAgent), false);
 });
 
-test('web action service refuses a plan whose mutation target is withheld from preview', async () => {
+test('web action service rejects a non-public mutation target before preview', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-web-hidden-plan-'));
   try {
     const target = join(dir, 'hidden-target.json');
@@ -1288,7 +1346,7 @@ test('web action service refuses a plan whose mutation target is withheld from p
         to: hiddenId,
         coordinate: { ecosystem: 'npm', identifier: 'safe-package', version: '1.0.0' },
       }),
-      /non-public mutation target/,
+      /target must be an agent id|non-public mutation target/,
     );
     assert.equal(existsSync(target), false);
   } finally {
@@ -1449,8 +1507,8 @@ test('web: rollback requires an explicit eligible audit ID and targets that olde
       assert.equal(rejected.status, 400);
       assert.deepEqual(rejected.json, {
         schemaVersion: 2,
-        code: 'ACTION_REJECTED',
-        messageKey: 'operation.rejected',
+        code: 'INVALID_ARGUMENT',
+        messageKey: 'operation.invalid_argument',
       });
     }
 
@@ -1460,27 +1518,27 @@ test('web: rollback requires an explicit eligible audit ID and targets that olde
     assert.equal(existsSync(newerFile), true);
     assert.equal(existsSync(olderFile), false);
     assertPublicResponse(result.json, '/api/rollback');
-    assert.equal(
-      (await post(port, '/api/rollback', h, JSON.stringify({ auditId: older.json.auditId }))).status,
-      400,
-    );
+    const replay = await post(port, '/api/rollback', h, JSON.stringify({ auditId: older.json.auditId }));
+    assert.equal(replay.status, 409);
+    assert.equal(replay.json.code, 'TARGET_UNAVAILABLE');
     const rollbackRecord = (await apiActivity(home)).items.find((item) => item.op === 'rollback');
     assert.ok(rollbackRecord);
-    assert.equal(
-      (await post(port, '/api/rollback', h, JSON.stringify({ auditId: rollbackRecord.id }))).status,
-      400,
+    const rollbackOfRollback = await post(
+      port,
+      '/api/rollback',
+      h,
+      JSON.stringify({ auditId: rollbackRecord.id }),
     );
-    assert.equal(
-      (
-        await post(
-          port,
-          '/api/rollback',
-          h,
-          JSON.stringify({ auditId: '00000000-0000-4000-8000-000000000099' }),
-        )
-      ).status,
-      400,
+    assert.equal(rollbackOfRollback.status, 409);
+    assert.equal(rollbackOfRollback.json.code, 'TARGET_UNAVAILABLE');
+    const absent = await post(
+      port,
+      '/api/rollback',
+      h,
+      JSON.stringify({ auditId: '00000000-0000-4000-8000-000000000099' }),
     );
+    assert.equal(absent.status, 409);
+    assert.equal(absent.json.code, 'TARGET_UNAVAILABLE');
   } finally {
     await close(server);
     rmSync(dir, { recursive: true, force: true });
@@ -1675,7 +1733,7 @@ test('web: refuses unsafe package coordinates (no flag/git/url/file injection)',
         }),
       );
       assert.equal(r.status, 400, `expected 400 for '${identifier}'`);
-      assert.equal(r.json.code, 'ACTION_REJECTED');
+      assert.equal(r.json.code, 'REQUEST_REJECTED');
     }
     const overlongVersion = await post(
       port,
@@ -1693,7 +1751,7 @@ test('web: refuses unsafe package coordinates (no flag/git/url/file injection)',
       }),
     );
     assert.equal(overlongVersion.status, 400);
-    assert.equal(overlongVersion.json.code, 'ACTION_REJECTED');
+    assert.equal(overlongVersion.json.code, 'REQUEST_REJECTED');
   } finally {
     await close(server);
   }
@@ -1889,6 +1947,804 @@ test('web actions: skill sync (claude→codex) plans through the skill engine, n
   }
 });
 
+test('web actions: remote skill install preserves coordinate, targets, core apply, and GitHub provenance', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const { lockKey } = await import('../src/core/lock.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-skill-'));
+  const fleetHome = join(dir, 'fleet-home');
+  const claudeSkills = join(dir, 'claude-skills');
+  const codexSkills = join(dir, 'codex-skills');
+  const coordinate: GitHubSkillCoordinate = {
+    provider: 'github',
+    repository: 'fleet-fixtures/skill-catalog',
+    skill: 'exact-remote',
+  };
+  const origin = {
+    type: 'github' as const,
+    repository: coordinate.repository,
+    commit: '0123456789abcdef0123456789abcdef01234567',
+    path: 'catalog/exact-remote',
+  };
+  const seenCoordinates: GitHubSkillCoordinate[] = [];
+  const leaseRoots: string[] = [];
+  const disposed: number[] = [];
+  const skillMarkdown = '# exact remote\n';
+  const materialize: SkillMaterializer = async (requested) => {
+    seenCoordinates.push({ ...requested });
+    const leaseNumber = seenCoordinates.length;
+    const sourceRoot = join(dir, `lease-${leaseNumber}`);
+    const sourceDir = join(sourceRoot, 'catalog', requested.skill);
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(join(sourceDir, 'SKILL.md'), skillMarkdown);
+    leaseRoots.push(sourceRoot);
+    return {
+      source: { name: requested.skill, dir: sourceDir },
+      sourceRoot,
+      origin: { ...origin, path: `catalog/${requested.skill}` },
+      async dispose() {
+        disposed.push(leaseNumber);
+        rmSync(sourceRoot, { recursive: true, force: true });
+      },
+    };
+  };
+
+  writeFileSync(join(dir, '.claude.json'), '{"mcpServers":{}}');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapters = [
+    new ClaudeCodeAdapter(
+      join(dir, '.claude.json'),
+      claudeSkills,
+      join(dir, 'CLAUDE.md'),
+      join(dir, 'claude-settings.json'),
+      join(dir, 'claude-plugins'),
+    ),
+    new CodexAdapter(
+      join(dir, 'config.toml'),
+      codexSkills,
+      join(dir, 'AGENTS.md'),
+      join(dir, 'shared-skills'),
+    ),
+  ];
+  const service = new ActionService(adapters, fleetHome, undefined, materialize);
+  try {
+    const preview = await service.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'exact-remote',
+      to: ['claude-code', 'codex'],
+      skillCoordinate: coordinate,
+    });
+    assert.deepEqual(seenCoordinates, [coordinate]);
+    assert.deepEqual(preview.changes, [
+      {
+        agent: 'claude-code',
+        kind: 'skill',
+        name: 'exact-remote',
+        scope: 'user',
+        op: 'install',
+      },
+      {
+        agent: 'codex',
+        kind: 'skill',
+        name: 'exact-remote',
+        scope: 'user',
+        op: 'install',
+      },
+    ]);
+    assert.equal(preview.operationSummary, 'install skill (2 changes)');
+    assert.equal(existsSync(join(claudeSkills, 'exact-remote', 'SKILL.md')), false);
+    assert.equal(existsSync(join(codexSkills, 'exact-remote', 'SKILL.md')), false);
+    assert.equal(disposed.length, 0, 'preview must retain its staged source until confirmation');
+
+    const applied = await service.apply({ planId: preview.planId });
+    assert.equal(applied.outcome, 'applied');
+    assert.equal(applied.applied, 2);
+    assert.equal(applied.skipped, 0);
+    assert.deepEqual(
+      applied.records.map(({ agent, kind, name, scope, op }) => ({ agent, kind, name, scope, op })),
+      preview.changes,
+    );
+    assert.equal(readFileSync(join(claudeSkills, 'exact-remote', 'SKILL.md'), 'utf8'), skillMarkdown);
+    assert.equal(readFileSync(join(codexSkills, 'exact-remote', 'SKILL.md'), 'utf8'), skillMarkdown);
+    assert.deepEqual(disposed, [1]);
+    assert.equal(existsSync(leaseRoots[0]!), false);
+
+    const lock = JSON.parse(readFileSync(join(fleetHome, 'fleet.lock'), 'utf8')) as {
+      entries: Record<string, { origin: unknown }>;
+    };
+    assert.deepEqual(lock.entries[lockKey('skill', 'exact-remote', 'claude-code')]?.origin, origin);
+    assert.deepEqual(lock.entries[lockKey('skill', 'exact-remote', 'codex')]?.origin, origin);
+
+    const pendingCoordinate: GitHubSkillCoordinate = {
+      ...coordinate,
+      skill: 'pending-remote',
+    };
+    const pending = await service.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'pending-remote',
+      to: 'codex',
+      skillCoordinate: pendingCoordinate,
+    });
+    assert.deepEqual(seenCoordinates, [coordinate, pendingCoordinate]);
+    assert.equal(existsSync(leaseRoots[1]!), true);
+    await service.dispose();
+    assert.deepEqual(disposed, [1, 2]);
+    assert.equal(existsSync(leaseRoots[1]!), false);
+    await assert.rejects(service.apply({ planId: pending.planId }), /closing/);
+
+    writeFileSync(join(fleetHome, 'config.json'), JSON.stringify({ trustPolicy: 'block' }));
+    const blockedService = new ActionService(adapters, fleetHome, undefined, materialize);
+    const blockedCoordinate: GitHubSkillCoordinate = {
+      ...coordinate,
+      skill: 'blocked-remote',
+    };
+    const blocked = await blockedService.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'blocked-remote',
+      to: 'codex',
+      skillCoordinate: blockedCoordinate,
+    });
+    assert.equal(blocked.changes.length, 0);
+    assert.deepEqual(disposed, [1, 2, 3]);
+    assert.equal(existsSync(leaseRoots[2]!), false, 'a non-applicable preview must not retain staging');
+    assert.equal((await blockedService.apply({ planId: blocked.planId })).outcome, 'nothing-to-do');
+    await blockedService.dispose();
+  } finally {
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web actions: concurrent remote skill previews reserve the bounded staging capacity', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const { FleetOperationError } = await import('../src/core/errors.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-capacity-'));
+  const sourceRoot = join(dir, 'source-root');
+  const sourceDir = join(sourceRoot, 'bounded-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# bounded skill\n');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let materializerCalls = 0;
+  let disposals = 0;
+  let signalCapacityReached!: () => void;
+  const capacityReached = new Promise<void>((resolve) => {
+    signalCapacityReached = resolve;
+  });
+  let releaseMaterializers!: () => void;
+  const materializersBlocked = new Promise<void>((resolve) => {
+    releaseMaterializers = resolve;
+  });
+  let signalLeaseCleanupEntered!: () => void;
+  const leaseCleanupEntered = new Promise<void>((resolve) => {
+    signalLeaseCleanupEntered = resolve;
+  });
+  let releaseLeaseCleanups!: () => void;
+  const leaseCleanupsBlocked = new Promise<void>((resolve) => {
+    releaseLeaseCleanups = resolve;
+  });
+  const materialize: SkillMaterializer = async (coordinate) => {
+    materializerCalls++;
+    if (materializerCalls === 100) signalCapacityReached();
+    await materializersBlocked;
+    return {
+      source: { name: coordinate.skill, dir: sourceDir },
+      sourceRoot,
+      origin: {
+        type: 'github',
+        repository: coordinate.repository,
+        commit: '0123456789abcdef0123456789abcdef01234567',
+        path: `skills/${coordinate.skill}`,
+      },
+      async dispose() {
+        signalLeaseCleanupEntered();
+        await leaseCleanupsBlocked;
+        disposals++;
+      },
+    };
+  };
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, materialize);
+  const body = {
+    action: 'install',
+    kind: 'skill',
+    name: 'bounded-skill',
+    to: 'codex',
+    skillCoordinate: {
+      provider: 'github' as const,
+      repository: 'fleet-fixtures/skill-catalog',
+      skill: 'bounded-skill',
+    },
+  };
+  try {
+    const previews = Array.from({ length: 101 }, () => service.plan(body));
+    const settledPreviews = Promise.allSettled(previews);
+    let capacityTimeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      capacityReached,
+      new Promise<never>((_, reject) => {
+        capacityTimeout = setTimeout(() => reject(new Error('preview capacity admission timed out')), 5_000);
+      }),
+    ]).finally(() => {
+      if (capacityTimeout) clearTimeout(capacityTimeout);
+    });
+    assert.equal(materializerCalls, 100, 'the overflow request must be rejected before materialization');
+    releaseMaterializers();
+
+    const settled = await settledPreviews;
+    assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 100);
+    const rejected = settled.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    assert.equal(rejected.length, 1);
+    assert.ok(rejected[0]!.reason instanceof FleetOperationError);
+    assert.equal(rejected[0]!.reason.publicCode, 'TARGET_UNAVAILABLE');
+
+    const admitted = settled.find(
+      (result): result is PromiseFulfilledResult<Awaited<(typeof previews)[number]>> =>
+        result.status === 'fulfilled',
+    );
+    assert.ok(admitted);
+    const applying = service.apply({ planId: admitted.value.planId });
+    let cleanupTimeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      leaseCleanupEntered,
+      new Promise<never>((_, reject) => {
+        cleanupTimeout = setTimeout(() => reject(new Error('taken lease cleanup did not start')), 2_000);
+      }),
+    ]).finally(() => {
+      if (cleanupTimeout) clearTimeout(cleanupTimeout);
+    });
+    await assert.rejects(service.plan(body), (error: unknown) => {
+      assert.ok(error instanceof FleetOperationError);
+      assert.equal(error.publicCode, 'TARGET_UNAVAILABLE');
+      return true;
+    });
+    assert.equal(materializerCalls, 100, 'a taken lease must retain its capacity slot until cleanup');
+    releaseLeaseCleanups();
+    assert.equal((await applying).outcome, 'applied');
+
+    await service.dispose();
+    assert.equal(disposals, 100);
+  } finally {
+    releaseMaterializers();
+    releaseLeaseCleanups();
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web action disposal drains an in-flight remote skill preview before returning', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-drain-'));
+  const sourceRoot = join(dir, 'source-root');
+  const sourceDir = join(sourceRoot, 'drained-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# drained skill\n');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let materializerCalls = 0;
+  let disposals = 0;
+  let signalMaterializerEntered!: () => void;
+  const materializerEntered = new Promise<void>((resolve) => {
+    signalMaterializerEntered = resolve;
+  });
+  let releaseMaterializer!: () => void;
+  const materializerBlocked = new Promise<void>((resolve) => {
+    releaseMaterializer = resolve;
+  });
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, async (coordinate) => {
+    materializerCalls++;
+    signalMaterializerEntered();
+    await materializerBlocked;
+    return {
+      source: { name: coordinate.skill, dir: sourceDir },
+      sourceRoot,
+      origin: {
+        type: 'github',
+        repository: coordinate.repository,
+        commit: '0123456789abcdef0123456789abcdef01234567',
+        path: `skills/${coordinate.skill}`,
+      },
+      async dispose() {
+        disposals++;
+      },
+    };
+  });
+  try {
+    const preview = service.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'drained-skill',
+      to: 'codex',
+      skillCoordinate: {
+        provider: 'github',
+        repository: 'fleet-fixtures/skill-catalog',
+        skill: 'drained-skill',
+      },
+    });
+    const previewSettled = preview.then(
+      () => ({ status: 'fulfilled' as const }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason }),
+    );
+    let entryTimeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      materializerEntered,
+      new Promise<never>((_, reject) => {
+        entryTimeout = setTimeout(() => reject(new Error('materializer admission timed out')), 2_000);
+      }),
+    ]).finally(() => {
+      if (entryTimeout) clearTimeout(entryTimeout);
+    });
+    assert.equal(materializerCalls, 1);
+
+    let disposalFinished = false;
+    const disposal = service.dispose().then(() => {
+      disposalFinished = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(disposalFinished, false, 'dispose must wait for the admitted materializer');
+    releaseMaterializer();
+
+    const result = await previewSettled;
+    assert.equal(result.status, 'rejected');
+    assert.match(String(result.status === 'rejected' ? result.reason : ''), /closing/);
+    await disposal;
+    assert.equal(disposals, 1);
+    await assert.rejects(
+      service.plan({ action: 'remove', kind: 'skill', name: 'drained-skill', from: 'codex' }),
+      /closing/,
+    );
+  } finally {
+    releaseMaterializer();
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web action disposal waits for a taken remote skill apply lease', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-apply-drain-'));
+  const sourceRoot = join(dir, 'source-root');
+  const sourceDir = join(sourceRoot, 'apply-drain-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# apply drain skill\n');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let signalLeaseDisposalEntered!: () => void;
+  const leaseDisposalEntered = new Promise<void>((resolve) => {
+    signalLeaseDisposalEntered = resolve;
+  });
+  let releaseLeaseDisposal!: () => void;
+  const leaseDisposalBlocked = new Promise<void>((resolve) => {
+    releaseLeaseDisposal = resolve;
+  });
+  let leaseDisposed = false;
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, async (coordinate) => ({
+    source: { name: coordinate.skill, dir: sourceDir },
+    sourceRoot,
+    origin: {
+      type: 'github',
+      repository: coordinate.repository,
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      path: `skills/${coordinate.skill}`,
+    },
+    async dispose() {
+      signalLeaseDisposalEntered();
+      await leaseDisposalBlocked;
+      rmSync(sourceRoot, { recursive: true, force: true });
+      leaseDisposed = true;
+    },
+  }));
+  try {
+    const preview = await service.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'apply-drain-skill',
+      to: 'codex',
+      skillCoordinate: {
+        provider: 'github',
+        repository: 'fleet-fixtures/skill-catalog',
+        skill: 'apply-drain-skill',
+      },
+    });
+    const applying = service.apply({ planId: preview.planId });
+    let entryTimeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      leaseDisposalEntered,
+      new Promise<never>((_, reject) => {
+        entryTimeout = setTimeout(() => reject(new Error('apply lease disposal did not start')), 2_000);
+      }),
+    ]).finally(() => {
+      if (entryTimeout) clearTimeout(entryTimeout);
+    });
+
+    let drainFinished = false;
+    const draining = service.dispose().then(() => {
+      drainFinished = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(drainFinished, false, 'dispose must wait after apply has taken the pending plan');
+    assert.equal(leaseDisposed, false);
+
+    releaseLeaseDisposal();
+    assert.equal((await applying).outcome, 'applied');
+    await draining;
+    assert.equal(leaseDisposed, true);
+    assert.equal(existsSync(sourceRoot), false);
+  } finally {
+    releaseLeaseDisposal();
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web action cleanup failure preserves the apply result and fails the service drain', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const { FleetOperationError } = await import('../src/core/errors.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-cleanup-failure-'));
+  const sourceRoot = join(dir, 'source-root');
+  const sourceDir = join(sourceRoot, 'cleanup-failure-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# cleanup failure skill\n');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let cleanupCalls = 0;
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, async (coordinate) => ({
+    source: { name: coordinate.skill, dir: sourceDir },
+    sourceRoot,
+    origin: {
+      type: 'github',
+      repository: coordinate.repository,
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      path: `skills/${coordinate.skill}`,
+    },
+    async dispose() {
+      cleanupCalls++;
+      throw new Error('private temporary path detail');
+    },
+  }));
+  try {
+    const preview = await service.plan({
+      action: 'install',
+      kind: 'skill',
+      name: 'cleanup-failure-skill',
+      to: 'codex',
+      skillCoordinate: {
+        provider: 'github',
+        repository: 'fleet-fixtures/skill-catalog',
+        skill: 'cleanup-failure-skill',
+      },
+    });
+    assert.equal((await service.apply({ planId: preview.planId })).outcome, 'applied');
+    assert.equal(cleanupCalls, 1);
+    await assert.rejects(service.dispose(), /^Error: Fleet staged skill cleanup failed$/);
+    await assert.rejects(
+      service.plan({ action: 'remove', kind: 'skill', name: 'cleanup-failure-skill', from: 'codex' }),
+      (error: unknown) => {
+        assert.ok(error instanceof FleetOperationError);
+        assert.equal(error.publicCode, 'RECOVERY_PENDING');
+        return true;
+      },
+    );
+  } finally {
+    await service.dispose().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web action records cleanup failure before a remote skill lease is stored', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const { FleetOperationError } = await import('../src/core/errors.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-prestore-cleanup-failure-'));
+  const fleetHome = join(dir, 'fleet-home');
+  const sourceRoot = join(dir, 'source-root');
+  const sourceDir = join(sourceRoot, 'prestore-cleanup-failure-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  mkdirSync(fleetHome);
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# prestore cleanup failure skill\n');
+  writeFileSync(join(fleetHome, 'config.json'), JSON.stringify({ trustPolicy: 'block' }));
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let cleanupCalls = 0;
+  const service = new ActionService([adapter], fleetHome, undefined, async (coordinate) => ({
+    source: { name: coordinate.skill, dir: sourceDir },
+    sourceRoot,
+    origin: {
+      type: 'github',
+      repository: coordinate.repository,
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      path: `skills/${coordinate.skill}`,
+    },
+    async dispose() {
+      cleanupCalls++;
+      throw new Error('private temporary path detail');
+    },
+  }));
+  try {
+    await assert.rejects(
+      service.plan({
+        action: 'install',
+        kind: 'skill',
+        name: 'prestore-cleanup-failure-skill',
+        to: 'codex',
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: 'prestore-cleanup-failure-skill',
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FleetOperationError);
+        assert.equal(error.publicCode, 'RECOVERY_PENDING');
+        return true;
+      },
+    );
+    assert.equal(cleanupCalls, 1);
+    await assert.rejects(service.dispose(), /^Error: Fleet staged skill cleanup failed$/);
+  } finally {
+    await service.dispose().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web action becomes terminal when the materializer cannot clean partial staging', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const { GitHubSkillCleanupError } = await import('../src/web/github-skill.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-materializer-cleanup-failure-'));
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, async () => {
+    throw new GitHubSkillCleanupError();
+  });
+  try {
+    await assert.rejects(
+      service.plan({
+        action: 'install',
+        kind: 'skill',
+        name: 'partial-cleanup-failure-skill',
+        to: 'codex',
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: 'partial-cleanup-failure-skill',
+        },
+      }),
+      (error: unknown) => error instanceof GitHubSkillCleanupError,
+    );
+    await assert.rejects(service.dispose(), /^Error: Fleet staged skill cleanup failed$/);
+  } finally {
+    await service.dispose().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web server close waits for staged remote-skill preview cleanup', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-close-staging-'));
+  const sourceRoot = join(dir, 'lease');
+  const sourceDir = join(sourceRoot, 'close-skill');
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, 'SKILL.md'), '# close skill\n');
+  writeFileSync(join(dir, 'config.toml'), '');
+  const adapter = new CodexAdapter(
+    join(dir, 'config.toml'),
+    join(dir, 'codex-skills'),
+    join(dir, 'AGENTS.md'),
+    join(dir, 'shared-skills'),
+  );
+  let disposed = false;
+  const { server } = createFleetServer([adapter], {
+    token: 't',
+    fleetHome: join(dir, 'fleet-home'),
+    skillMaterializer: async (coordinate) => ({
+      source: { name: coordinate.skill, dir: sourceDir },
+      sourceRoot,
+      origin: {
+        type: 'github',
+        repository: coordinate.repository,
+        commit: '0123456789abcdef0123456789abcdef01234567',
+        path: `skills/${coordinate.skill}`,
+      },
+      async dispose() {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        rmSync(sourceRoot, { recursive: true, force: true });
+        disposed = true;
+      },
+    }),
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (server.address() as AddressInfo).port;
+    const preview = await post(
+      port,
+      '/api/plan',
+      {
+        authorization: 'Bearer t',
+        'content-type': 'application/json',
+        origin: `http://127.0.0.1:${port}`,
+      },
+      JSON.stringify({
+        action: 'install',
+        kind: 'skill',
+        name: 'close-skill',
+        to: 'codex',
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: 'close-skill',
+        },
+      }),
+    );
+    assert.equal(preview.status, 200);
+    assert.equal(existsSync(sourceRoot), true);
+
+    await close(server);
+    assert.equal(disposed, true);
+    assert.equal(existsSync(sourceRoot), false);
+  } finally {
+    if (server.listening) await close(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web actions: damaged Fleet config blocks remote skill materialization', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-skill-config-'));
+  const fleetHome = join(dir, 'fleet-home');
+  mkdirSync(fleetHome);
+  writeFileSync(join(fleetHome, 'config.json'), '{ damaged');
+  let materializerCalls = 0;
+  const adapter: AgentAdapter & SkillWriter = {
+    id: 'skill-writer',
+    displayName: 'Skill writer',
+    supportsWrite: true,
+    capabilitySupport: { skill: { inventory: 'supported', management: 'writable' } },
+    async detect() {
+      return {
+        id: this.id,
+        displayName: this.displayName,
+        present: true,
+        configPaths: [],
+        runtimeStatus: 'available',
+        configurationStatus: 'configured',
+      };
+    },
+    async readInventory() {
+      return [];
+    },
+    async renderInstallSkill() {
+      throw new Error('materialization guard was bypassed');
+    },
+    async renderRemoveSkill() {
+      throw new Error('not used');
+    },
+  };
+  const service = new ActionService([adapter], fleetHome, undefined, async () => {
+    materializerCalls++;
+    throw new Error('materializer must not run');
+  });
+  try {
+    await assert.rejects(
+      service.plan({
+        action: 'install',
+        kind: 'skill',
+        name: 'guarded-remote',
+        to: adapter.id,
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: 'guarded-remote',
+        },
+      }),
+      /CONFIG_INVALID/,
+    );
+    assert.equal(materializerCalls, 0);
+  } finally {
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('web actions: invalid or mismatched remote skill coordinates fail before target inspection', async () => {
+  const { ActionService } = await import('../src/web/actions.js');
+  const dir = mkdtempSync(join(tmpdir(), 'fleet-web-remote-skill-coordinate-'));
+  let inspections = 0;
+  let materializerCalls = 0;
+  const adapter: AgentAdapter & SkillWriter = {
+    id: 'skill-writer',
+    displayName: 'Skill writer',
+    supportsWrite: true,
+    capabilitySupport: { skill: { inventory: 'supported', management: 'writable' } },
+    async detect() {
+      inspections++;
+      throw new Error('target inspection must not run');
+    },
+    async readInventory() {
+      inspections++;
+      return [];
+    },
+    async renderInstallSkill() {
+      throw new Error('not used');
+    },
+    async renderRemoveSkill() {
+      throw new Error('not used');
+    },
+  };
+  const service = new ActionService([adapter], join(dir, 'fleet-home'), undefined, async () => {
+    materializerCalls++;
+    throw new Error('materializer must not run');
+  });
+  try {
+    await assert.rejects(
+      service.plan({
+        action: 'install',
+        kind: 'skill',
+        name: 'exact-remote',
+        to: adapter.id,
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: '../exact-remote',
+        },
+      }),
+      /invalid GitHub skill coordinate/,
+    );
+    await assert.rejects(
+      service.plan({
+        action: 'install',
+        kind: 'skill',
+        name: 'exact-remote',
+        to: adapter.id,
+        skillCoordinate: {
+          provider: 'github',
+          repository: 'fleet-fixtures/skill-catalog',
+          skill: 'different-remote',
+        },
+      }),
+      /skill name must match the repository selector/,
+    );
+    assert.equal(inspections, 0);
+    assert.equal(materializerCalls, 0);
+  } finally {
+    await service.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('web actions: plugin selector is validated (no shell injection via marketplace)', async () => {
   const { ActionService } = await import('../src/web/actions.js');
   const dir = mkdtempSync(join(tmpdir(), 'fleet-web-plugin-'));
@@ -1897,6 +2753,16 @@ test('web actions: plugin selector is validated (no shell injection via marketpl
     await assert.rejects(
       svc.plan({ action: 'install', kind: 'plugin', name: 'x', to: ['codex'], marketplace: 'm; rm -rf /' }),
       /unsafe plugin selector/,
+    );
+    await assert.rejects(
+      svc.plan({
+        action: 'install',
+        kind: 'plugin',
+        name: 'x',
+        to: ['codex'],
+        marketplace: `m${'a'.repeat(64)}`,
+      }),
+      /public identity limit/,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2322,11 +3188,11 @@ test('web actions: unknown kind/action fail closed (no default engine)', async (
     );
     await assert.rejects(
       svc.plan({ action: 'install', kind: 'skill', name: 'x', to: ['codex'], coordinate: {} }),
-      /dedicated local source input/,
+      /invalid GitHub skill coordinate/,
     );
     await assert.rejects(
       svc.plan({ action: 'install', kind: 'rule', name: 'x', to: ['codex'], coordinate: {} }),
-      /dedicated local source input/,
+      /not supported by this endpoint/,
     );
     await assert.rejects(
       svc.plan({ action: 'update', kind: 'skill', name: 'x', to: ['codex'], coordinate: {} }),

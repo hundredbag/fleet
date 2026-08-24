@@ -30,6 +30,8 @@ import { isTrustReasonCode, type TrustSnapshot } from '../core/trustgate.js';
 import { capabilityCell, supportsDelegatedPlugin } from './operations.js';
 import { cleanPublicSource, sanitizeFeedItem } from '../feed/sanitize.js';
 import { MARKETPLACE_RE, pluginCoordinate } from '../core/plugin-coordinate.js';
+import { parseGitHubSkillIdentifier } from './github-skill.js';
+import { isValidWebPackageCoordinate } from './package-coordinate.js';
 
 const UUID_ID = '[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}';
 const OPAQUE_AUDIT_ID = new RegExp(`^${UUID_ID}$`, 'i');
@@ -149,13 +151,14 @@ function publicPermissionEffect(item: InstalledCapability): string | undefined {
     : 'other';
 }
 
+function isPublicMarketplace(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length <= 64 && MARKETPLACE_RE.test(value) && !value.includes('..')
+  );
+}
+
 function publicMarketplace(item: InstalledCapability | undefined): string | undefined {
-  return item?.kind === 'plugin' &&
-    typeof item.marketplace === 'string' &&
-    MARKETPLACE_RE.test(item.marketplace) &&
-    !item.marketplace.includes('..')
-    ? item.marketplace
-    : undefined;
+  return item?.kind === 'plugin' && isPublicMarketplace(item.marketplace) ? item.marketplace : undefined;
 }
 
 function supportsPublicPluginMutation(item: InstalledCapability, marketplace: string | undefined): boolean {
@@ -326,6 +329,10 @@ interface RankedRecommendation {
   trust: string;
   url?: string;
   updatedAt?: string;
+  installName?: string;
+  marketplace?: string;
+  targets?: string[];
+  skillCoordinate?: { provider: 'github'; repository: string; skill: string };
   operation: 'install' | null;
 }
 
@@ -370,13 +377,47 @@ export function mapFeed(input: {
   const recommendations = input.recommendations.flatMap((item) => {
     const clean = sanitizeFeedItem(item);
     if (!clean) return [];
+    const cleanKind = clean.kind ?? 'mcp-server';
     const trust =
       item.trust === 'no-flags' || item.trust === 'caution' || item.trust === 'unknown'
         ? item.trust
         : 'unknown';
+    const targets =
+      item.operation === 'install' &&
+      Array.isArray(item.targets) &&
+      item.targets.length > 0 &&
+      item.targets.length <= 32 &&
+      item.targets.every(isPublicAgentId) &&
+      new Set(item.targets).size === item.targets.length
+        ? [...item.targets]
+        : [];
+    const skillCoordinate =
+      item.skillCoordinate?.provider === 'github'
+        ? (parseGitHubSkillIdentifier(`${item.skillCoordinate.repository}/${item.skillCoordinate.skill}`) ??
+          undefined)
+        : undefined;
+    const marketplace =
+      cleanKind === 'plugin' && isPublicMarketplace(item.marketplace) ? item.marketplace : undefined;
+    const installName =
+      typeof item.installName === 'string' && isPublicCapabilityName(item.installName)
+        ? item.installName
+        : clean.name;
+    const operation =
+      item.operation === 'install' &&
+      targets.length > 0 &&
+      ((cleanKind === 'mcp-server' &&
+        isValidWebPackageCoordinate({
+          ecosystem: clean.ecosystem,
+          identifier: clean.identifier,
+          version: clean.version,
+        })) ||
+        (cleanKind === 'skill' && skillCoordinate && installName === skillCoordinate.skill) ||
+        (cleanKind === 'plugin' && marketplace))
+        ? ('install' as const)
+        : null;
     return [
       {
-        kind: clean.kind ?? 'mcp-server',
+        kind: cleanKind,
         name: clean.name,
         ...(clean.category ? { category: clean.category } : {}),
         ...(clean.identifier ? { identifier: clean.identifier } : {}),
@@ -390,7 +431,11 @@ export function mapFeed(input: {
         trust,
         ...(safeHttpUrl(clean.url) ? { url: safeHttpUrl(clean.url) } : {}),
         ...(publicTimestamp(clean.updatedAt) ? { updatedAt: publicTimestamp(clean.updatedAt) } : {}),
-        operation: item.operation,
+        ...(operation ? { targets } : {}),
+        ...(operation && installName !== clean.name ? { installName } : {}),
+        ...(operation && skillCoordinate ? { skillCoordinate } : {}),
+        ...(operation && marketplace ? { marketplace } : {}),
+        operation,
       },
     ];
   });
@@ -453,13 +498,18 @@ export function isPublicMutationIdentity(change: {
   name: unknown;
   scope?: unknown;
   op: unknown;
+  marketplace?: unknown;
 }): boolean {
+  const kind = change.kind ?? 'mcp-server';
   return (
     isPublicAgentId(change.agent) &&
-    isPublicPrimitiveKind(change.kind ?? 'mcp-server') &&
+    isPublicPrimitiveKind(kind) &&
     isPublicCapabilityName(change.name) &&
     (change.scope === undefined || isPublicScope(change.scope)) &&
-    (change.op === 'install' || change.op === 'update' || change.op === 'remove' || change.op === 'sync')
+    (change.op === 'install' || change.op === 'update' || change.op === 'remove' || change.op === 'sync') &&
+    (kind === 'plugin'
+      ? change.marketplace === undefined || isPublicMarketplace(change.marketplace)
+      : change.marketplace === undefined)
   );
 }
 

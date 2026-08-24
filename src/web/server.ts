@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AgentAdapter } from '../core/adapter.js';
 import type { FeedSource } from '../feed/source.js';
 import type { Runner } from '../core/delegate.js';
+import type { SkillMaterializer } from './github-skill.js';
 import {
   makeToken,
   tokenMatches,
@@ -33,6 +34,8 @@ export interface ServeOpts {
   allowHosts?: string[];
   /** injectable delegated vendor runner (tests/embedders). */
   pluginRunner?: Runner;
+  /** injectable public-repository skill materializer (tests/embedders). */
+  skillMaterializer?: SkillMaterializer;
 }
 
 interface HttpError extends Error {
@@ -96,12 +99,36 @@ const CSP =
 
 export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}) {
   const token = opts.token ?? makeToken();
-  const actions = new ActionService(adapters, opts.fleetHome, opts.pluginRunner);
+  const actions = new ActionService(adapters, opts.fleetHome, opts.pluginRunner, opts.skillMaterializer);
+  let disposal: Promise<void> | undefined;
+  const dispose = (): Promise<void> => (disposal ??= actions.dispose());
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch(() => {
       sendJson(res, 500, mapError('INTERNAL_ERROR', 'internal.error'));
     });
   });
+  server.on('close', () => {
+    // The overridden close callback below receives a fixed cleanup error. An
+    // event-only close has no callback consumer, so still observe the promise.
+    void dispose().catch(() => {});
+  });
+  // Node's native close callback fires as soon as sockets close and does not
+  // await async close listeners. Delay that callback until staged previews are
+  // removed so embedders can reliably await `server.close(...)`.
+  const nativeClose = server.close.bind(server);
+  server.close = ((callback?: (error?: Error) => void) => {
+    nativeClose((closeError?: Error) => {
+      void dispose().then(
+        () => callback?.(closeError),
+        (disposeError: unknown) =>
+          callback?.(
+            closeError ??
+              (disposeError instanceof Error ? disposeError : new Error('Fleet action disposal failed')),
+          ),
+      );
+    });
+    return server;
+  }) as typeof server.close;
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Use the actual bound port for checks so ephemeral (:0) test binds work too.
@@ -195,14 +222,33 @@ export function createFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {}
           return sendJson(res, 404, mapError('NOT_FOUND', 'request.notFound'));
       }
     } catch (error) {
-      if (publicErrorCode(error) === 'RECOVERY_PENDING') {
-        return sendJson(res, 409, mapError('RECOVERY_PENDING', 'operation.recoveryPending'));
-      }
-      return sendJson(res, 400, mapError('ACTION_REJECTED', 'operation.rejected'));
+      const classified = publicErrorCode(error);
+      const allowed = new Set([
+        'INVALID_ARGUMENT',
+        'REQUEST_REJECTED',
+        'TARGET_UNAVAILABLE',
+        'SOURCE_UNAVAILABLE',
+        'UNSUPPORTED_OPERATION',
+        'OPERATION_TIMEOUT',
+        'RECOVERY_PENDING',
+        'OPERATION_FAILED',
+      ]);
+      const code = allowed.has(classified) ? classified : 'OPERATION_FAILED';
+      const status =
+        code === 'RECOVERY_PENDING' || code === 'TARGET_UNAVAILABLE'
+          ? 409
+          : code === 'SOURCE_UNAVAILABLE'
+            ? 503
+            : code === 'OPERATION_TIMEOUT'
+              ? 504
+              : code === 'OPERATION_FAILED'
+                ? 500
+                : 400;
+      return sendJson(res, status, mapError(code, `operation.${code.toLowerCase()}`));
     }
   }
 
-  return { server, token };
+  return { server, token, dispose };
 }
 
 /** Start the dashboard and print the tokenized URL. Returns the http server. */
@@ -214,7 +260,29 @@ export function startFleetServer(adapters: AgentAdapter[], opts: ServeOpts = {})
   const allowHosts = [...(opts.allowHosts ?? [])];
   if (!loopback) allowHosts.push(`${host}:${port}`);
   const { server, token } = createFleetServer(adapters, { ...opts, allowHosts });
+  let stopping = false;
+  const removeSignalHandlers = () => {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+  };
+  const shutdown = (exitCode: number) => {
+    if (stopping) return;
+    stopping = true;
+    process.exitCode = exitCode;
+    removeSignalHandlers();
+    server.close((error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
+        process.stderr.write(`fleet serve: shutdown failed: ${error.message}\n`);
+      }
+    });
+  };
+  const onSigint = () => shutdown(130);
+  const onSigterm = () => shutdown(143);
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  server.once('close', removeSignalHandlers);
   server.on('error', (e: NodeJS.ErrnoException) => {
+    removeSignalHandlers();
     process.stderr.write(
       e.code === 'EADDRINUSE'
         ? `fleet serve: port ${port} is already in use (try --port <n>)\n`

@@ -81,7 +81,12 @@ export function capabilityCell(input: CapabilityCellInput): {
     return { availability: 'installed', management: 'read-only', operations: [] };
   }
   if (management === 'delegated') {
-    const operations: Operation[] = input.delegatedSupported ? (hasInstance ? ['remove'] : ['install']) : [];
+    const operations: Operation[] =
+      input.delegatedSupported && agent.runtimeStatus === 'available'
+        ? hasInstance
+          ? ['remove']
+          : ['install']
+        : [];
     return { availability: hasInstance ? 'installed' : 'missing', management: 'delegated', operations };
   }
   if (management !== 'writable' || !hasWriter(adapter, kind)) {
@@ -126,11 +131,18 @@ export function operationAllowed(input: CapabilityCellInput, operation: Operatio
     return false;
   }
   if (input.kind === 'plugin') {
-    if (cell.management !== 'delegated' || !input.delegatedSupported) return false;
+    if (
+      cell.management !== 'delegated' ||
+      !input.delegatedSupported ||
+      input.agent.runtimeStatus !== 'available'
+    )
+      return false;
     return operation === 'install' ? !input.hasInstance : operation === 'remove' && input.hasInstance;
   }
   if (cell.management !== 'writable' || !hasWriter(input.adapter, input.kind)) return false;
-  if (operation === 'install') return input.kind === 'mcp-server' && !input.hasInstance;
+  if (operation === 'install') {
+    return (input.kind === 'mcp-server' || input.kind === 'skill') && !input.hasInstance;
+  }
   if (operation === 'update') return input.kind === 'mcp-server' && input.hasInstance;
   if (operation === 'remove') return input.hasInstance;
   return operation === 'sync' && input.hasSourceInstance;
